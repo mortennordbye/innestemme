@@ -1,0 +1,14 @@
+[package]
+name = "voice-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+cpal = "0.18"
+hound = "3.5"
+rtrb.workspace = true
+voice-proto.workspace = true
+voice-rt.workspace = true

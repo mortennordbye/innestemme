@@ -1,0 +1,5 @@
+[package]
+name = "voice-proto"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true

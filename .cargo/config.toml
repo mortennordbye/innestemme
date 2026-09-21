@@ -1,0 +1,4 @@
+# candle selects its SIMD kernels with cfg(target_feature), so a baseline x86-64 build runs scalar code.
+# x86-64-v3 (AVX2, FMA, F16C) is the common level of all three hypervisors.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

@@ -1,0 +1,22 @@
+[package]
+name = "voice-engine"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+candle = { version = "0.9.1", package = "candle-core" }
+clap.workspace = true
+mimalloc = "0.1"
+rtrb.workspace = true
+socket2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+voice-codec.workspace = true
+voice-proto.workspace = true
+voice-rt.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

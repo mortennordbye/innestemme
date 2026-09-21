@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+voice-proto = { path = "crates/voice-proto" }
+voice-rt = { path = "crates/voice-rt" }
+voice-codec = { path = "crates/voice-codec" }
+voice-engine = { path = "crates/voice-engine" }
+
+anyhow = "1"
+assert_no_alloc = "1.1.2"
+clap = { version = "4", features = ["derive", "env"] }
+core_affinity = "0.8"
+rtrb = "0.4"
+socket2 = "0.6"
+tokio = { version = "1", features = ["rt", "net", "time", "macros", "sync", "signal", "io-util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"

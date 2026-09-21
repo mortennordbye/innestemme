@@ -1,0 +1,11 @@
+[package]
+name = "voice-rt"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+assert_no_alloc.workspace = true
+core_affinity.workspace = true
+voice-proto.workspace = true
+rayon = "1"

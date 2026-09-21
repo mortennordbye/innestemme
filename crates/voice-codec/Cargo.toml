@@ -1,0 +1,13 @@
+[package]
+name = "voice-codec"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+candle = { version = "0.9.1", package = "candle-core" }
+hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "rustls-tls"] }
+moshi = "0.6.4"
+voice-proto.workspace = true
+voice-rt.workspace = true
