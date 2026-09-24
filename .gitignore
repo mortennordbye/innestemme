@@ -1,2 +1,5 @@
 /target
 *.wav
+.env
+.playwright-mcp/
+config.local.yaml

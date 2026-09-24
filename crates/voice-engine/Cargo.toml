@@ -8,15 +8,24 @@ publish.workspace = true
 anyhow.workspace = true
 candle = { version = "0.9.1", package = "candle-core" }
 clap.workspace = true
+hound = "3.5"
+jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 mimalloc = "0.1"
 rtrb.workspace = true
+serde_yaml_ng = "0.10"
 socket2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+voice-assistant = { path = "../voice-assistant" }
 voice-codec.workspace = true
+voice-esphome = { path = "../voice-esphome" }
 voice-proto.workspace = true
 voice-rt.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+
+[features]
+# Runs the assistant's STT on the Apple GPU (`--stt-gpu`). Local testing on a Mac only.
+metal = ["voice-assistant/metal"]

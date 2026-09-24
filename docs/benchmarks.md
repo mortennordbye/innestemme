@@ -90,3 +90,59 @@ On x86 the `simd` column must show `avx`. If it shows `scalar`, the binary was b
 
 The `--bench moshi` path compiles but has not been executed yet. The development Mac did not have the disk space
 for the weights.
+
+## Kyutai STT-1B (assistant), Mac only so far
+
+`voice-bench --bench stt --wav-in <spoken wav>` times one streaming step (its own 32-codebook Mimi encode plus the
+1B LM) and prints the transcript on stderr. Local numbers from 2026-09-23. The homelab CPUs are slower than
+this Mac, so these rows are an upper bound, not a prediction for hyper1.
+
+| host | cpu | threads | simd | stage | frames | mean ms | p50 ms | p99 ms | max ms | RTF |
+|---|---|---|---|---|---|---|---|---|---|---|
+| mac | Apple M4 Pro | 4 | neon | stt-1b step (mimi 32 cb encode + lm) | 100 | 88.98 | 87.87 | 111.33 | 113.24 | 0.90 |
+| mac | Apple M4 Pro | 8 | neon | stt-1b step (mimi 32 cb encode + lm) | 60 | 89.62 | 89.01 | 104.06 | 104.06 | 0.89 |
+| mac | Apple M4 Pro | 10 | neon | stt-1b step (mimi 32 cb encode + lm) | 60 | 92.11 | 91.90 | 96.66 | 96.66 | 0.87 |
+| mac | Apple M4 Pro | 4 | metal | stt-1b step (mimi 32 cb encode + lm) | 100 | 20.20 | 19.41 | 43.02 | 64.08 | 3.96 |
+
+More threads do not help on the CPU. The weights load as f32 (bf16 on disk), so every step reads about 4 GB, and
+memory bandwidth is the likely limit. Quantized weights are the first thing to try for the cluster.
+
+## Kyutai Pocket TTS (assistant's English voice), Mac only so far
+
+`voice-bench --bench pocket --precision f32|q8 --threads N --frames 5`: a two-sentence reply (8.5 s of audio),
+5 runs after a warm-up, voice "alba". "first audio" is from the call to the first 80 ms chunk; RTF columns are
+not meaningful for these rows, the speed is the stderr line. Local numbers from 2026-09-23.
+
+| host | cpu | threads | precision | stage | runs | mean ms | p50 ms | p99 ms | max ms | x real time |
+|---|---|---|---|---|---|---|---|---|---|---|
+| mac | Apple M4 Pro | 1 | f32 | whole utterance / first audio | 5 | 2343 / 109 | | | | 3.6 |
+| mac | Apple M4 Pro | 2 | f32 | whole utterance / first audio | 5 | 1413 / 61 | | | | 6.0 |
+| mac | Apple M4 Pro | 3 | f32 | whole utterance / first audio | 5 | 1153 / 45 | | | | 7.4 |
+| mac | Apple M4 Pro | 1 | q8 | whole utterance / first audio | 5 | 1495 / 53 | | | | 5.8 |
+| mac | Apple M4 Pro | 2 | q8 | whole utterance / first audio | 5 | 965 / 31 | | | | 9.0 |
+| mac | Apple M4 Pro | 3 | q8 | whole utterance / first audio | 5 | 857 / 24 | | | | 10.2 |
+
+## Language model fallback (2026-09-24, M4 Pro, Ollama 0.33.3 in OrbStack, 8 threads, CPU)
+
+12 requests the rules miss (`cargo run --release -p voice-assistant --example llm_eval`): skill calls
+(weather follow-up, lights, music, joke), ignoring talk meant for someone else, general questions in
+English and Norwegian.
+
+| Model | Right | Mean | Notes |
+|---|---|---|---|
+| qwen3:1.7b | 7-8/12 | 0.3-0.4 s | describes actions instead of calling tools, invents facts |
+| qwen3:4b (thinking) | 0/12 | 3.6 s | thinks aloud, ignores `reasoning_effort` |
+| qwen3:4b-instruct | 12/12 | 0.48 s | chosen |
+
+- llama.cpp with its default thread count (the VM's 14 cores) ran at 0.5 tokens/s; 8 threads gave
+  ~140 tokens/s. Set `num_thread` to the CPU limit in containers.
+- The system prompt and tools must not change between requests (no clock, no language line), or
+  the prompt cache misses: a follow-up took 4.2 s before and 0.87 s after.
+
+## Name matching (2026-09-24, whisper-base, `say` voices, 44 utterances with the user's names)
+
+| Approach | Names right | Per utterance |
+|---|---|---|
+| plain | 15/44 | 704 ms |
+| vocabulary prompt, 79 / 149 / 222 tokens | 21 / 23 / 25 | 931 / 1155 / 1351 ms |
+| plain + sound-alike matching against known names | 33/44, 0 wrong | 691 ms |

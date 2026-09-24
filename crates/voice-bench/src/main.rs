@@ -26,6 +26,11 @@ enum Bench {
     Mimi,
     /// Mimi encode -> Moshi 7B q8 step -> Mimi decode. Downloads ~8 GB and needs ~10 GB of RAM.
     Moshi,
+    /// Kyutai Pocket TTS on the CPU: time to first audio, synthesis speed. Downloads ~240 MB.
+    Pocket,
+    /// Kyutai STT-1B streaming step (its own 32-codebook Mimi encode + LM). Downloads ~2 GB.
+    /// Prints the transcript on stderr, so a spoken `--wav-in` doubles as a recognition check.
+    Stt,
 }
 
 #[derive(Parser)]
@@ -52,6 +57,18 @@ struct Args {
     mimi_model: Option<PathBuf>,
     #[arg(long, env = "VOICE_MOSHI_MODEL")]
     moshi_model: Option<PathBuf>,
+    /// Pocket TTS preset voice.
+    #[arg(long, default_value = "cosette")]
+    voice: String,
+    /// Pocket TTS: also write the last utterance here (24 kHz mono wav).
+    #[arg(long)]
+    wav_out: Option<PathBuf>,
+    /// Pocket TTS weights: f32 or q8.
+    #[arg(long, default_value = "f32")]
+    precision: String,
+    /// Run the STT model on the Apple GPU (needs `--features metal`).
+    #[arg(long)]
+    gpu: bool,
     /// Print the table header before the rows.
     #[arg(long)]
     header: bool,
@@ -102,7 +119,11 @@ fn simd() -> String {
         ("neon", candle::utils::with_neon()),
     ];
     let on: Vec<_> = flags.iter().filter(|(_, on)| *on).map(|(name, _)| *name).collect();
-    if on.is_empty() { "scalar".into() } else { on.join("+") }
+    if on.is_empty() {
+        "scalar".into()
+    } else {
+        on.join("+")
+    }
 }
 
 /// Voiced-speech-like test signal: a 140 Hz harmonic stack under a 4 Hz syllable envelope, plus
@@ -169,13 +190,19 @@ fn main() -> Result<()> {
     };
     let mut input = pcm.as_chunks::<FRAME_SAMPLES>().0.iter().cycle();
 
-    let mimi_path = match args.mimi_model {
+    let mimi_path = match args.mimi_model.clone() {
         Some(path) => path,
         None => MimiCodec::fetch_weights()?,
     };
+    if matches!(args.bench, Bench::Pocket) {
+        return bench_pocket(&args, threads);
+    }
+    if matches!(args.bench, Bench::Stt) {
+        return bench_stt(&args, threads, &mimi_path, &mut input, total);
+    }
     let mut codec = MimiCodec::load(&mimi_path)?;
     let mut moshi = match args.bench {
-        Bench::Mimi => None,
+        Bench::Mimi | Bench::Stt | Bench::Pocket => None,
         Bench::Moshi => Some(load_moshi(args.moshi_model, total + 1)?),
     };
     let mut text_token = GenConfig::v0_1().text_start_token;
@@ -234,5 +261,90 @@ fn main() -> Result<()> {
     for (series, stage) in rows {
         println!("{}", series.row(&prefix, stage).context("nothing measured")?);
     }
+    Ok(())
+}
+
+fn bench_stt<'a>(
+    args: &Args,
+    threads: usize,
+    mimi_path: &Path,
+    input: &mut impl Iterator<Item = &'a [i16; FRAME_SAMPLES]>,
+    total: usize,
+) -> Result<()> {
+    let files = voice_assistant::stt::SttFiles::fetch()?;
+    eprintln!("loading stt from {}", files.model.display());
+    let mut stt = voice_assistant::stt::SpeechToText::load(&files, mimi_path, voice_assistant::stt::device(args.gpu)?)?;
+    let mut step = Series::default();
+    let mut transcript = Vec::new();
+    for i in 0..total {
+        let frame = input.next().context("no input frames")?;
+        let t0 = Instant::now();
+        let out = stt.step(frame)?;
+        if i >= args.warmup {
+            step.0.push(t0.elapsed());
+        }
+        transcript.extend(out.words);
+    }
+    eprintln!("transcript: {}", transcript.join(" "));
+    if args.header {
+        println!("| host | cpu | threads | simd | stage | frames | mean ms | p50 ms | p99 ms | max ms | RTF |");
+        println!("|---|---|---|---|---|---|---|---|---|---|---|");
+    }
+    let simd = if args.gpu { "metal".to_owned() } else { simd() };
+    let prefix = format!("{} | {} | {threads} | {simd}", args.label, cpu_name());
+    println!("{}", step.row(&prefix, "stt-1b step (mimi 32 cb encode + lm)").context("nothing measured")?);
+    Ok(())
+}
+
+fn bench_pocket(args: &Args, threads: usize) -> Result<()> {
+    use voice_assistant::pocket::{PocketFiles, Precision};
+    const TEXT: &str = "Right now in Oslo it is 15 degrees and overcast, with wind at 3 meters per second. \
+                        Tomorrow looks wetter, so bring an umbrella.";
+    voice_assistant::pocket::set_threads(threads);
+    let precision = match args.precision.as_str() {
+        "f32" => Precision::F32,
+        "q8" => Precision::Q8,
+        other => bail!("--precision must be f32 or q8, got {other}"),
+    };
+    let files = PocketFiles::fetch(&args.voice)?;
+    let mut tts = voice_assistant::pocket::load(&files, precision)?;
+    let lang = voice_assistant::lang::Lang::English;
+    tts.speak("Warming up.", lang, &mut |_| {})?;
+    let (mut first, mut total, mut audio) = (Series::default(), Series::default(), 0usize);
+    let mut last = Vec::new();
+    let runs = args.frames.clamp(1, 20);
+    for _ in 0..runs {
+        let start = Instant::now();
+        let mut first_at = None;
+        last.clear();
+        tts.speak(TEXT, lang, &mut |pcm| {
+            first_at.get_or_insert_with(|| start.elapsed());
+            audio += pcm.len();
+            last.extend_from_slice(pcm);
+        })?;
+        first.0.push(first_at.context("no audio produced")?);
+        total.0.push(start.elapsed());
+    }
+    if let Some(path) = &args.wav_out {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec)?;
+        last.iter().try_for_each(|&s| writer.write_sample(s))?;
+        writer.finalize()?;
+    }
+    let audio_s = audio as f64 / f64::from(SAMPLE_RATE) / runs as f64;
+    let synth_s = total.0.iter().sum::<Duration>().as_secs_f64() / runs as f64;
+    eprintln!("{runs} runs, {audio_s:.1} s of audio each, {:.1}x faster than real time", audio_s / synth_s);
+    if args.header {
+        println!("| host | cpu | threads | precision | stage | runs | mean ms | p50 ms | p99 ms | max ms | RTF |");
+        println!("|---|---|---|---|---|---|---|---|---|---|---|");
+    }
+    let prefix = format!("{} | {} | {threads} | {}", args.label, cpu_name(), args.precision);
+    println!("{}", first.row(&prefix, "pocket first audio").context("nothing measured")?);
+    println!("{}", total.row(&prefix, "pocket whole utterance").context("nothing measured")?);
     Ok(())
 }

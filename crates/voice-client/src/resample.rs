@@ -1,6 +1,8 @@
 //! Fixed 2:1 rate conversion for devices that only run at 48 kHz.
 
 const TAPS: usize = 31;
+/// Group delay of the linear-phase filter, in high-rate samples. Applies once per direction.
+pub const DELAY_FRAMES: usize = TAPS / 2;
 
 /// Windowed-sinc low-pass at a quarter of the high rate (the Nyquist of the low rate).
 fn taps() -> [f32; TAPS] {
@@ -57,7 +59,8 @@ mod tests {
 
     #[test]
     fn passes_speech_band_and_rejects_aliases() {
-        let tone = |hz: f32, rate: f32, n: usize| (0..n).map(move |i| (i as f32 / rate * hz * std::f32::consts::TAU).sin());
+        let tone =
+            |hz: f32, rate: f32, n: usize| (0..n).map(move |i| (i as f32 / rate * hz * std::f32::consts::TAU).sin());
         let mut fir = Fir2::new();
         let low: Vec<f32> = tone(1_000.0, 48_000.0, 9_600).filter_map(|s| fir.decimate(s)).collect();
         assert!((rms(&low[100..]) - 0.707).abs() < 0.03);

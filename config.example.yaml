@@ -1,0 +1,56 @@
+# voice-engine settings. Copy to config.local.yaml (git-ignored; `make assistant` reads it) or mount it
+# as a Kubernetes ConfigMap and point VOICE_CONFIG at it. Every key is a `voice-engine --help` option,
+# written without the leading dashes (`wake-name` or `wake_name`). Command-line flags and environment
+# variables (VOICE_WAKE_NAME, ...) override the file. Leave a key out, or empty, for the default.
+#
+# Secrets do not belong here: set HA_TOKEN in the environment, or HA_TOKEN_FILE to a mounted Secret.
+# Inside a Home Assistant add-on, Home Assistant is found automatically.
+
+# --- You ---------------------------------------------------------------------------------------
+# The name that wakes the assistant.
+wake-name: Homie
+# Extra ways the transcriber writes the name on your voice (record some with `--dump-utterances`).
+wake-spellings: []
+# Place for weather questions that name none. Without it the assistant asks which place.
+home: London
+# Also understand and answer Norwegian.
+norwegian: false
+
+# --- Voice -------------------------------------------------------------------------------------
+# Pocket TTS preset: alba, marius, javert, jean, fantine, cosette, eponine, azelma.
+pocket-voice: cosette
+# f32, or q8 (smaller and usually faster on weak CPUs).
+pocket-precision: f32
+# whisper-size: base (290 MB) or small (970 MB, more accurate).
+whisper-size: base
+# Piper (Wyoming) server for Norwegian replies, and optionally English ones (english-tts: piper):
+# Home Assistant's Piper add-on with its port exposed, a sidecar, or `make piper` locally.
+# piper: 127.0.0.1:10200
+# piper-voice-no: no_NO-talesyntese-medium   # or no_NO-nvcc-medium
+
+# --- Language model ----------------------------------------------------------------------------
+# Anything the rules do not understand goes to an OpenAI-compatible chat API with the skills as
+# tools: general questions, follow-ups ("and tomorrow?"), loose phrasing ("it's too dark in here").
+# Ollama locally: `make ollama`. Key, when the API needs one: VOICE_LLM_KEY (a secret).
+# llm-url: http://127.0.0.1:11434/v1
+# llm-model: qwen3:4b-instruct
+
+# --- Home Assistant ----------------------------------------------------------------------------
+# ha-url: http://homeassistant.local:8123
+# Music Assistant player for music, by name or entity id. Optional when there is only one player.
+# speaker: Living Room
+# The room the microphone is in, for "turn off the lights" without a room. A satellite's default is its
+# area in Home Assistant.
+# room: Living Room
+
+# --- Voice satellite (ESPHome) -----------------------------------------------------------------
+# Be the voice assistant of an ESPHome voice device (Voice PE): its address, port 6053. Disable its
+# Assist satellite entity in Home Assistant first. Its encryption key is a secret: VOICE_SATELLITE_KEY.
+# satellite: 192.168.1.50:6053
+# public-url: http://voice.lan:9090
+# Start playing answers while they are synthesized (as Home Assistant does); false waits for the whole answer.
+# satellite-stream: true
+
+# --- Runtime -----------------------------------------------------------------------------------
+# Compute threads: set to the CPU limit in a container (defaults to every core of the host).
+# threads: 3

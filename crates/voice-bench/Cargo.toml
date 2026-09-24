@@ -13,6 +13,10 @@ hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "rus
 hound = "3.5"
 mimalloc = "0.1"
 moshi = "0.6.4"
+voice-assistant = { path = "../voice-assistant" }
 voice-codec.workspace = true
 voice-proto.workspace = true
 voice-rt.workspace = true
+
+[features]
+metal = ["voice-assistant/metal"]

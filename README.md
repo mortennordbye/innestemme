@@ -15,7 +15,8 @@ what you hear is your own voice after a Mimi round trip. No STT, LLM, TTS or Hom
 | `voice-rt` | Real-time plumbing: reorder buffer, atomic histogram, allocation guard, pinned threads. |
 | `voice-codec` | Packet codec (raw PCM) and `MimiCodec` over `moshi` / candle. |
 | `voice-engine` | The server: UDP transport, net task and model thread joined by lock-free rings, `/metrics`. |
-| `voice-client` | Test client: tone, wav file or live microphone. Reports frame turnaround. |
+| `voice-assistant` | "Homie" assistant parts: Kyutai STT-1B streaming, wake word and turn logic, intent rules, Open-Meteo weather, macOS `say` output. |
+| `voice-client` | Test client: tone, wav file or live microphone. Reports frame turnaround and mouth-to-ear. |
 | `voice-bench` | Per-frame step times for [docs/benchmarks.md](docs/benchmarks.md). |
 
 ## Run it
@@ -31,6 +32,127 @@ cargo build --release -p voice-engine -p voice-client
 curl -s 127.0.0.1:9090/metrics
 ```
 
+### Local voice assistant (macOS)
+
+Say "Homie" and ask about the weather, in English or Norwegian: "Homie, what's the weather in Oslo?", "Homie,
+hvordan blir været i Bergen i morgen?". Saying just "Homie" gives a chime, and the next thing you say within 8 s
+is the question. The place is looked up live on Open-Meteo, and the answer is spoken in the language you used:
+English with Kyutai Pocket TTS on the CPU (natural voice, streamed as it is generated), Norwegian with macOS
+`say` (Nora) until there is a Norwegian Pocket TTS model. Answers are one short sentence ("It's 14 degrees and overcast in Oslo, with a high of 17 and rain is likely"),
+mentioning rain only from 30% and wind only from 8 m/s.
+
+Jokes: "Homie, tell me a joke" / "Hei Homie, fortell en vits". English jokes come live from icanhazdadjoke.com
+(with a built-in fallback), Norwegian ones from a built-in list; the last 8 are not repeated. The service's
+jokes are unfiltered dad jokes, and a few lean on stereotypes.
+
+Timers and reminders: "Homie, set a timer for 10 minutes", "set a pasta timer for 8 minutes", "remind me in
+an hour to call my mother", "how much time is left?", "pause / resume / cancel the timer", "add 5 minutes to
+the timer", "cancel all timers"; Norwegian too ("sett en timer på ti minutter", "minn meg på å ringe mamma om
+en time", "hvor lang tid er det igjen?"). Durations in digits or words ("twenty-five minutes", "an hour and a
+half", "en halvtime", "tre kvarter"). "Set a timer" alone asks "For how long?". When a timer ends the engine
+rings and says which one; a reminder speaks its message ("Reminder: call your mother."). Timers live in the
+engine's memory and do not survive a restart.
+
+A greeting before the name works ("Hi Freya", "Hei Freya", "Hei hei Freya", "God morgen Freya"), also when the
+transcript glues them together ("Heifreya"). The terminal shows only what you said, what Freya answered, and a
+dim line for speech that did not start with the name. Anything the rules do not recognise goes to the
+language model when one is set, else gets a polite "only weather, jokes, lights, music and timers so far".
+
+```
+make setup        # once: release build with Metal, downloads the models (about 700 MB)
+make assistant    # wait for "Talk now" and the chime, then talk; Ctrl-C stops
+```
+
+Personal settings (name, home place, speaker, voice) go in `config.local.yaml`; copy
+`config.example.yaml` to start. The variables below override single settings for one run. The name
+is a setting: `WAKE_NAME=Homie` (default). Any name works; known ones also accept common misspellings.
+`DUMP=1 make assistant` saves every utterance to `target/utterances/` for tuning recognition on a real voice.
+
+Conversation: for 8 s after each answer (and after a bare "Homie") you can go on without the name; only
+recognised requests count then, so room chatter is ignored. "Turn them back on", "turn it off", "reverse that"
+and "undo" refer to the lights switched in the last 2 minutes; "turn off the lights" with nothing to refer to
+gets "Which room?" and the next answer is the room. "Thanks" gets "You're welcome"; "never mind" ends it.
+
+Options for `make assistant`: `VOICE=cosette` (Pocket TTS preset, the default; others: alba, fantine, eponine, azelma, marius, javert, jean),
+`POCKET_PRECISION=f32|q8`, `THREADS=3`, `ENGLISH_TTS=pocket|say`, `NORWEGIAN=false|true`,
+`LISTENER=whisper|kyutai`, `WHISPER=base|small`
+(small is more accurate, a 970 MB download on first use), `HOME_PLACE=Oslo`
+(for questions that name no place), `SAY_VOICE=...`, `SAY_VOICE_NO=Nora`, `SECONDS_LIVE=600`. It runs
+`voice-engine --processor assistant --stt-gpu` in the background and `voice-client` on the microphone in the
+foreground, and stops both together. Headphones are optional: the microphone is ignored while a request is
+handled, while the reply plays, and for a second after.
+
+Lights through Home Assistant: "Homie, turn off the light in my living room", "Homie, turn on the kitchen
+lights". Create `.env` next to the Makefile (git-ignored, read by `make assistant`):
+
+```
+HA_URL=http://homeassistant.local:8123
+HA_TOKEN=<long-lived access token: HA > your profile > Security > Long-lived access tokens>
+```
+
+At start the engine lists every light with its area through HA's template API and prints how many it found. A
+request names a room (every light in that area) or a light by name; room names match across English and
+Norwegian ("living room" finds an area called "Stue"). Switching is one `light.turn_on`/`turn_off` call.
+
+Music on the Sonos, from Spotify, through Music Assistant (the Home Assistant add-on): "Homie, play my liked
+songs" (shuffled), "Homie, play Careless Whisper", "Homie, play Hello by Adele", "Homie, play my running
+playlist", then "pause", "play", "next song", "previous song", "louder", "quieter". Norwegian works too ("spill
+de likte sangene mine", "neste sang", "skru ned musikken"). Music Assistant holds the Spotify sign-in and does
+the search; the assistant only calls Home Assistant services (`music_assistant.search`, `get_library`,
+`play_media`, and `media_player.*` on the Music Assistant player). `speaker:` in the settings file (or `SPEAKER=...`) is the
+Music Assistant player's name or entity id. Needs Spotify Premium.
+
+One-time setup, in Home Assistant: install the Music Assistant add-on and integration (done on 2026-09-24), open
+Music Assistant from the sidebar, finish onboarding, and add the Spotify provider (sign in) and the Sonos
+provider. If your Spotify playlists do not show up in Music Assistant's library, use "Synchronise now" in the
+Spotify provider's menu. The engine logs "music assistant connected" with the player it will use. Try a request
+without the microphone: `set -a; . ./.env; set +a; cargo run -p voice-assistant --example music -- "play my liked
+songs"`.
+
+Norwegian replies: Piper over the Wyoming protocol when `piper: host:port` is set (else macOS
+`say`, Nora). `make piper` runs `rhasspy/wyoming-piper` in Docker on 127.0.0.1:10200; Home
+Assistant's Piper add-on works too once its port is exposed, and in Kubernetes it can be a sidecar.
+Voices: `piper-voice-no` (`no_NO-talesyntese-medium`, or `no_NO-nvcc-medium`); `english-tts: piper`
+uses Piper for English as well (lighter than Pocket TTS on a weak CPU). Piper's 22.05 kHz output is
+resampled to 24 kHz. `cargo run -p voice-assistant --example speak -- 127.0.0.1:10200
+no_NO-nvcc-medium out.wav "Hei"` writes a sample.
+
+Norwegian is off by default (`NORWEGIAN=true` turns it on). Off, everything is English: OpenAI's
+`openai/whisper-base` transcribes (more accurate on English than NB-Whisper, and no language-ID model is
+loaded). On, the listener below decides the language per utterance and NB-Whisper transcribes.
+
+How it listens (default `LISTENER=whisper`, with `NORWEGIAN=true`):
+
+- An energy detector cuts the microphone stream into utterances (speech ends after 640 ms of quiet).
+- `openai/whisper-tiny` identifies the language. It is sure about English (above 0.9 on clear speech, with almost
+  nothing on the Nordic languages) but spreads Norwegian over Danish, Swedish, English and more, so an utterance
+  counts as English only when English scores at least 0.5 and at least 30 times Norwegian, Nynorsk, Danish and
+  Swedish together; otherwise Norwegian. Measured: English 320-1500x, Norwegian at most 22x.
+- `NbAiLab/nb-whisper-base` (National Library of Norway) transcribes in that language. Its own language guess
+  leans Norwegian and then translates English speech, which is why it does not decide.
+- The utterance counts when the name comes first (after an optional greeting, or at most two stray words), in
+  any known spelling (`dialog::SPELLINGS`: Homie, Homey, ...). Whisper gets "<Name> is my voice assistant." as
+  previous-text context, which teaches it the spelling; NB-Whisper gets "<Name>," instead.
+- An utterance ends after 640 ms below the noise floor + 8 dB or 20 dB below its loudest part, whichever is
+  higher, so quieter background talk does not keep it open. At most 10 s.
+
+English speech: Kyutai Pocket TTS (100M parameters) through `ptts`, the Rust port on Laurent Mazare's `xn`
+(pure Rust, no MKL or cmake). Weights and the 8 preset voices come from the ungated
+`kyutai/pocket-tts-without-voice-cloning` repository (the main `kyutai/pocket-tts` repository is gated). Each
+80 ms of audio is pushed to the speaker as soon as it is generated. On the M4 Pro CPU it runs 7x faster than
+real time on 3 threads (f32) and 10x with `q8`, first audio 25-45 ms after the text is ready; even one thread is
+3.6x. `voice-bench --bench pocket --precision q8 --threads 3` measures it on another host.
+
+Language ID plus transcription takes about 0.2-0.3 s per utterance on the M4 Pro GPU, and the first reply audio
+starts about 1 s after you stop talking in English: 0.64 s end-of-speech wait, about 0.3 s transcription, the
+weather lookup (0.1-0.4 s), and a few tens of milliseconds for the first Pocket TTS audio.
+
+`LISTENER=kyutai` uses Kyutai STT-1B instead: streaming, English only (it hears nothing useful in Norwegian),
+lower latency, 2 GB of weights. It runs at about 20 ms per 80 ms frame on the M4 Pro GPU and 89 ms on its CPU,
+already slower than real time. The homelab CPUs are slower than this Mac, so none of this is sized for the
+cluster yet: listening needs to run on the CPU there (Whisper base on CPU, or quantized weights), while Pocket TTS
+already fits a CPU.
+
 `--processor passthrough` echoes PCM without loading a model. The Mimi weights (about 385 MB) are downloaded into
 the Hugging Face cache on first use (`HF_HOME` moves it); `--mimi-model` takes a local file instead. Every server
 flag has a `VOICE_*` environment variable, see `voice-engine --help`.
@@ -40,11 +162,91 @@ and network time for the slowest packet (gapless playback has to wait for that o
 to the content. On an M4 Pro with 4 threads the Mimi loop measures about 115 ms at p99 and 140 ms for the worst
 packet; passthrough is about 87 ms.
 
+Live mode (`--seconds`) prints mouth-to-ear with the audio devices included, from cpal's capture and playback
+timestamps: the moment the microphone captured a packet to the moment the speaker plays it back. On an M4 Pro with
+the built-in microphone and speakers (driver latency about 12 ms in and 13 ms out) that is 129 ms for passthrough
+and 161-163 ms for Mimi at 4 threads. The client has no playout buffer, so once playback starts the delay stays
+fixed until the speaker runs dry; each gap adds its length to everything after it, and the client reports it.
+
 Make a test file on macOS:
 
 ```
 say -o in.aiff "some words" && afconvert -f WAVE -d LEI16@24000 -c 1 in.aiff in.wav
 ```
+
+## Smarter answers: name matching and a language model
+
+Names are matched by sound against the home and the music library, so "the round lamb" switches
+the Round lamp, "kakma de faka" plays Kakkmaddafakka and "my cost playlist" plays Kos. No setting.
+
+With `llm-url` set, anything the rules do not understand goes to a language model on an
+OpenAI-compatible API (Ollama, llama.cpp, vLLM or a hosted one), with the skills as tools: "it's too
+dark in the kitchen" switches the lights, "and tomorrow?" after a weather answer gives tomorrow's,
+general questions get a one-sentence answer, and speech meant for someone else is ignored (which is
+also what lets follow-ups work without the name). The last four exchanges are its memory. Rules stay
+first, so common requests do not wait for the model. `make ollama` runs Qwen3 4B instruct locally;
+numbers in `docs/benchmarks.md`.
+
+## Voice satellites (ESPHome): replacing Home Assistant's Assist
+
+The engine can be the voice assistant of an ESPHome voice device (Home Assistant Voice PE, other
+ESPHome voice builds, Linux Voice Assistant) instead of Home Assistant's Assist pipeline. It makes
+the same native API connection Home Assistant makes (plaintext or Noise-encrypted, crate
+`voice-esphome`), takes the microphone, and answers with its own listener, skills and voice.
+
+1. Add the device to Home Assistant as usual (ESPHome integration), then disable the device's
+   **Assist satellite** entity. A device streams to one voice assistant only; with that entity
+   disabled, Home Assistant keeps the device's other controls (LED ring, volume, mute) and leaves
+   the voice to the engine.
+2. For the engine's own wake word (the name, "Homie"), set the device's wake word processing to
+   **in Home Assistant**: the device then streams continuously and the engine listens for its name.
+   With an on-device wake word ("Okay Nabu") the device starts a run itself and the next utterance
+   is the request.
+3. Settings: `satellite: <device ip>:6053`, and `satellite-key` (the device's base64 API encryption
+   key, a secret: `VOICE_SATELLITE_KEY` or `VOICE_SATELLITE_KEY_FILE`). The device fetches spoken
+   answers from the engine's HTTP port (`/speech/<id>.wav`); set `public-url` when the address it
+   reaches the engine on is not the engine's own (Kubernetes LoadBalancer).
+
+Answers start playing while they are still being synthesized, the way Home Assistant does it: the
+answer's URL goes out with the run's start, the device is told to play it (`tts_start_streaming`)
+with the first audio, and the HTTP server streams the wav (chunked) as it grows.
+`satellite-stream: false` serves each answer once it is complete instead. An answer that ends in a
+question ("Which room?", "For how long?") keeps the conversation open: the device listens again
+without its wake word once it has spoken (`continue_conversation`).
+
+The room: "turn off the lights" (or "in here") without a room means the satellite's room, its area in
+Home Assistant, looked up by the device's name when it connects. The `room` setting overrides it,
+and gives the Mac microphone a room too. "Turn them off" still means the lights switched last.
+
+Under the hood the bridge opens an ordinary session on the engine's UDP port, so the engine serves
+one satellite at a time, and `make assistant` cannot connect while a satellite is attached.
+`cargo run -p voice-esphome --example fake_satellite -- 127.0.0.1:16053 question-16k.wav answer.wav`
+pretends to be a device, for testing without hardware (`--speaker` for streamed answers, `--timers` for a
+timer display, `--stay 15` to stay connected after the answer and see timers end, `--then reply.wav` for
+the reply when the conversation stays open).
+
+Timers on a device: devices with a timer display (the Voice PE's LED ring) get the ESPHome timer events
+(started, updated, cancelled, finished) and count down and ring themselves, like with Home Assistant.
+Reminders, and timers on devices without a display, are announced instead: the device fetches the chime and
+the spoken text as a wav and plays it (`VoiceAssistantAnnounceRequest`).
+
+## Configuration
+
+Every option of `voice-engine --help` can be set three ways, with the same name: a flag
+(`--wake-name Jarvis`), an environment variable (`VOICE_WAKE_NAME=Jarvis`), or a key in a YAML
+settings file (`wake-name: Jarvis`) named by `--config` or `VOICE_CONFIG`. Flags win over the
+environment, the environment over the file, the file over the built-in defaults.
+`config.example.yaml` lists the personal ones; `make assistant` reads `config.local.yaml`
+(git-ignored) when it exists. Unknown keys stop the engine with an error; at start it logs which
+settings came from where, never their values.
+
+- **Kubernetes:** mount the file from a ConfigMap and set `VOICE_CONFIG` to it. Secrets stay out of
+  it: for any variable `X`, `X_FILE` reads the value from a file, so `HA_TOKEN_FILE` can point at a
+  mounted Secret (or set `HA_TOKEN` from one).
+- **Home Assistant add-on:** add-on options arrive as `/data/options.json`, which is valid YAML, so
+  `VOICE_CONFIG=/data/options.json` works as is. With no Home Assistant configured and
+  `SUPERVISOR_TOKEN` present, the engine uses the Supervisor's proxy (`http://supervisor/core`)
+  and that token.
 
 ## Wire protocol
 
