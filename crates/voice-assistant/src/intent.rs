@@ -3,6 +3,7 @@
 
 use crate::dialog::normalize;
 use crate::timer::{self, TimerCommand};
+use crate::transit::{self, TransitQuery};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Day {
@@ -23,6 +24,8 @@ pub enum Intent {
     Music(MusicCommand),
     /// Timers and reminders.
     Timer(TimerCommand),
+    /// "When's the next bus": departures from the stops near home.
+    Transit(TransitQuery),
     /// Switch lights; `target` is the request text, resolved against Home Assistant later.
     Lights {
         on: bool,
@@ -265,6 +268,10 @@ pub fn parse(text: &str) -> Intent {
         if let Some(command) = timer::parse(text) {
             return Intent::Timer(command);
         }
+        // Before music: "next bus" is not "next song".
+        if let Some(query) = transit::parse(text) {
+            return Intent::Transit(query);
+        }
     }
     // Then music: song titles contain every other kind of word ("Here Comes the Rain Again").
     if let Some(command) = music(&words) {
@@ -463,6 +470,8 @@ mod tests {
         assert!(!timer("play Timer by Sabrina Carpenter"));
         assert_eq!(parse("stop"), Intent::Cancel);
         assert_eq!(parse("pause"), Intent::Music(MusicCommand::Pause));
+        assert!(matches!(parse("next bus"), Intent::Transit(_)));
+        assert_eq!(parse("next song"), Intent::Music(MusicCommand::Next));
     }
 
     #[test]

@@ -15,7 +15,7 @@ what you hear is your own voice after a Mimi round trip. No STT, LLM, TTS or Hom
 | `voice-rt` | Real-time plumbing: reorder buffer, atomic histogram, allocation guard, pinned threads. |
 | `voice-codec` | Packet codec (raw PCM) and `MimiCodec` over `moshi` / candle. |
 | `voice-engine` | The server: UDP transport, net task and model thread joined by lock-free rings, `/metrics`. |
-| `voice-assistant` | "Homie" assistant parts: Kyutai STT-1B streaming, wake word and turn logic, intent rules, Open-Meteo weather, macOS `say` output. |
+| `voice-assistant` | "Homie" assistant parts: Kyutai STT-1B streaming, wake word and turn logic, intent rules, weather (Yr), departures (Entur), timers, macOS `say` output. |
 | `voice-client` | Test client: tone, wav file or live microphone. Reports frame turnaround and mouth-to-ear. |
 | `voice-bench` | Per-frame step times for [docs/benchmarks.md](docs/benchmarks.md). |
 
@@ -36,7 +36,9 @@ curl -s 127.0.0.1:9090/metrics
 
 Say "Homie" and ask about the weather, in English or Norwegian: "Homie, what's the weather in Oslo?", "Homie,
 hvordan blir været i Bergen i morgen?". Saying just "Homie" gives a chime, and the next thing you say within 8 s
-is the question. The place is looked up live on Open-Meteo, and the answer is spoken in the language you used:
+is the question. The forecast comes live from Yr (MET Norway); a place is looked up by name (a Norwegian place
+of that name first, so "Bergen" is never somewhere abroad), and with `address` set the home's weather is for
+exactly there. The answer is spoken in the language you used:
 English with Kyutai Pocket TTS on the CPU (natural voice, streamed as it is generated), Norwegian with macOS
 `say` (Nora) until there is a Norwegian Pocket TTS model. Answers are one short sentence ("It's 14 degrees and overcast in Oslo, with a high of 17 and rain is likely"),
 mentioning rain only from 30% and wind only from 8 m/s.
@@ -44,6 +46,13 @@ mentioning rain only from 30% and wind only from 8 m/s.
 Jokes: "Homie, tell me a joke" / "Hei Homie, fortell en vits". English jokes come live from icanhazdadjoke.com
 (with a built-in fallback), Norwegian ones from a built-in list; the last 8 are not repeated. The service's
 jokes are unfiltered dad jokes, and a few lean on stereotypes.
+
+Departures from Entur (all of Norway, real time): "Homie, when's the next bus?", "next tram to Majorstuen",
+"når går neste trikk?", "neste tog til Lillestrøm". Without a destination: the next departures from the stops
+nearest `address` (or `transit-stops`) that can still be reached on foot, from the walk to each stop. With one:
+a trip from home, as in [ruter-cli](https://github.com/mortennordbye/ruter-cli), which also finds lines that
+only pass through the destination and says when to head out: "Tram 15 to Majorstuen leaves Øvre Slottsgate in
+9 minutes; head out in 6 minutes." Misheard stop names are found by Entur's geocoder.
 
 Timers and reminders: "Homie, set a timer for 10 minutes", "set a pasta timer for 8 minutes", "remind me in
 an hour to call my mother", "how much time is left?", "pause / resume / cancel the timer", "add 5 minutes to

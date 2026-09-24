@@ -19,14 +19,16 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 use voice_assistant::dialog::{Action, Dialog, WakeWord};
+use voice_assistant::geo::{self, Location};
 use voice_assistant::ha::{self, HomeAssistant, Target};
-use voice_assistant::intent::{self, Intent};
+use voice_assistant::intent::{self, Day, Intent};
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::llm::{self, Decision, Llm, Turn};
 use voice_assistant::music::Player;
 use voice_assistant::stt::SpeechToText;
 use voice_assistant::timer::{self, Notice, Timers};
+use voice_assistant::transit::Transit;
 use voice_assistant::tts::{self, Tts};
 use voice_assistant::vad::Vad;
 use voice_assistant::weather::Weather;
@@ -51,8 +53,14 @@ const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 const FOLLOW_UP: Duration = Duration::from_secs(8);
 
 pub struct AssistantConfig {
-    /// Place used when a weather question names none.
+    /// Place used when a weather question names none; also the home's name in answers.
     pub home: Option<String>,
+    /// The home's street address or coordinates: exact weather, and the stops near it.
+    pub address: Option<String>,
+    /// Stops for departures (names or NSR ids) instead of the ones nearest the address.
+    pub transit_stops: Vec<String>,
+    /// Contact (email or URL) for the User-Agent that MET Norway asks for.
+    pub contact: Option<String>,
     /// Home Assistant base URL and long-lived access token, for lights.
     pub home_assistant: Option<(String, String)>,
     /// The assistant's name, which wakes it.
@@ -173,13 +181,42 @@ impl AssistantProcessor {
         let busy = Arc::new(AtomicBool::new(false));
         let speaker = config.speaker.clone();
         let (events, _) = broadcast::channel(256);
+        // MET Norway asks for an application name and a contact.
+        let user_agent = match &config.contact {
+            Some(contact) => format!("ai-voice/{} {contact}", env!("CARGO_PKG_VERSION")),
+            None => format!("ai-voice/{}", env!("CARGO_PKG_VERSION")),
+        };
+        let home_location = config.address.as_deref().and_then(|address| {
+            match geo::home(&geo::agent(&user_agent), address, config.home.as_deref()) {
+                Ok(Some(home)) => {
+                    info!(
+                        label = home.label,
+                        latitude = home.latitude,
+                        longitude = home.longitude,
+                        "home address found"
+                    );
+                    Some(home)
+                }
+                Ok(None) => {
+                    warn!("the address was not found; weather and departures use `home` instead");
+                    None
+                }
+                Err(error) => {
+                    warn!(error = format!("{error:#}"), "could not look up the address");
+                    None
+                }
+            }
+        });
+        let transit = Transit::new(&user_agent, home_location.clone(), config.transit_stops.clone());
         let mut worker = Worker {
             events: events.clone(),
             reply: reply_tx,
             busy: busy.clone(),
             tts,
             config,
-            weather: Weather::default(),
+            weather: Weather::new(&user_agent),
+            transit,
+            home_location,
             jokes: Jokes::default(),
             home_assistant: None,
             player: Player::new(speaker),
@@ -333,6 +370,9 @@ struct Worker {
     tts: Box<dyn Tts>,
     config: AssistantConfig,
     weather: Weather,
+    transit: Transit,
+    /// The home from the `address` setting.
+    home_location: Option<Location>,
     jokes: Jokes,
     home_assistant: Option<HomeAssistant>,
     player: Player,
@@ -550,27 +590,21 @@ impl Worker {
     fn act(&mut self, intent: Intent, lang: Lang) -> Option<String> {
         let no = lang == Lang::Norwegian;
         Some(match intent {
-            Intent::Weather { place, day } => {
-                let Some(place) = place.or_else(|| self.config.home.clone()) else {
+            Intent::Weather { place, day } => self.weather(place, day, lang),
+            Intent::Transit(query) => {
+                if !self.transit.is_configured() {
                     return Some(if no {
-                        "Hvilket sted? Si for eksempel været i Oslo.".into()
+                        "Jeg vet ikke hvor du bor ennå. Sett address i innstillingene.".into()
                     } else {
-                        "Which place? Say, for example, the weather in London.".into()
+                        "I don't know where home is yet. Set address in the settings.".into()
                     });
-                };
-                match self.weather.report(&place, day, lang) {
-                    Ok(Some(report)) => report,
-                    Ok(None) if no => {
-                        format!("Beklager, jeg fant ikke noe sted som heter {place}.")
-                    }
-                    Ok(None) => format!("Sorry, I could not find a place called {place}."),
+                }
+                match self.transit.next(&query, lang) {
+                    Ok(answer) => answer,
                     Err(error) => {
-                        warn!(%error, place, "weather lookup failed");
-                        if no {
-                            "Beklager, jeg får ikke kontakt med værtjenesten.".into()
-                        } else {
-                            "Sorry, I could not reach the weather service.".into()
-                        }
+                        warn!(%error, "departures lookup failed");
+                        if no { "Beklager, jeg får ikke kontakt med Entur." } else { "Sorry, I couldn't reach Entur." }
+                            .into()
                     }
                 }
             }
@@ -591,9 +625,44 @@ impl Worker {
             Intent::Thanks if no => "Bare hyggelig.".into(),
             Intent::Thanks => "You're welcome.".into(),
             Intent::Cancel => return None,
-            Intent::Unknown if no => "Beklager, foreløpig kan jeg bare været, vitser, lyset, musikk og timere.".into(),
-            Intent::Unknown => "Sorry, so far I can only do the weather, jokes, the lights, music and timers.".into(),
+            Intent::Unknown if no => {
+                "Beklager, foreløpig kan jeg bare været, vitser, lyset, musikk, timere og avganger.".into()
+            }
+            Intent::Unknown => {
+                "Sorry, so far I can only do the weather, jokes, the lights, music, timers and departures.".into()
+            }
         })
+    }
+
+    /// A named place, else the home: the address when it is set, else the `home` place name.
+    fn weather(&mut self, place: Option<String>, day: Day, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let named = place.or_else(|| self.home_location.is_none().then(|| self.config.home.clone()).flatten());
+        let location = match named {
+            None => match &self.home_location {
+                Some(home) => Ok(Some(home.clone())),
+                None if no => return "Hvilket sted? Si for eksempel været i Oslo.".into(),
+                None => return "Which place? Say, for example, the weather in London.".into(),
+            },
+            Some(name) => self.weather.find(&name),
+        };
+        let report = location.and_then(|location| match location {
+            Some(location) => self.weather.report(&location, day, lang).map(Some),
+            None => Ok(None),
+        });
+        match report {
+            Ok(Some(report)) => report,
+            Ok(None) if no => "Beklager, jeg fant ikke det stedet.".into(),
+            Ok(None) => "Sorry, I couldn't find that place.".into(),
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "weather lookup failed");
+                if no {
+                    "Beklager, jeg får ikke kontakt med værtjenesten.".into()
+                } else {
+                    "Sorry, I could not reach the weather service.".into()
+                }
+            }
+        }
     }
 
     fn lights(&mut self, request: &str, on: bool, lang: Lang) -> String {

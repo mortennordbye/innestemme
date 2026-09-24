@@ -158,6 +158,17 @@ struct Args {
     /// Place for weather questions that name none.
     #[arg(long, env = "VOICE_HOME")]
     home: Option<String>,
+    /// The home's street address ("Karl Johans gate 22, Oslo") or coordinates ("59.9132, 10.7403"):
+    /// weather for exactly there, and departures from the stops nearest it.
+    #[arg(long, env = "VOICE_ADDRESS")]
+    address: Option<String>,
+    /// Stops for "when's the next bus", comma-separated names or Entur ids (NSR:StopPlace:58404).
+    /// Default: the stops nearest `address`.
+    #[arg(long, env = "VOICE_TRANSIT_STOPS", value_delimiter = ',')]
+    transit_stops: Vec<String>,
+    /// Your email or website, sent in the User-Agent to MET Norway (Yr), which asks for a contact.
+    #[arg(long, env = "VOICE_CONTACT")]
+    contact: Option<String>,
     /// Speech engine for English replies.
     #[arg(long, env = "VOICE_ENGLISH_TTS", value_enum, default_value = "pocket")]
     english_tts: EnglishTts,
@@ -344,6 +355,9 @@ fn main() -> Result<()> {
                 tts,
                 AssistantConfig {
                     home: args.home.clone(),
+                    address: args.address.clone(),
+                    transit_stops: args.transit_stops.clone(),
+                    contact: args.contact.clone(),
                     home_assistant: args.ha_url.clone().zip(args.ha_token.clone()),
                     dump_utterances: args.dump_utterances.clone(),
                     speaker: args.speaker.clone(),

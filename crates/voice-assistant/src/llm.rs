@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use crate::intent::{Day, Intent, MusicCommand};
 use crate::lang::Lang;
 use crate::timer::{TimerCommand, Which};
+use crate::transit::{Mode, TransitQuery};
 
 pub struct Llm {
     /// Base URL of the OpenAI-compatible API, e.g. `http://127.0.0.1:11434/v1`.
@@ -155,6 +156,20 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             target: text("target").unwrap_or_default(),
         }),
         "joke" => Decision::Act(Intent::Joke),
+        "departures" => {
+            let mode = match text("mode").as_deref() {
+                Some("bus") => Mode::Bus,
+                Some("tram") => Mode::Tram,
+                Some("metro") => Mode::Metro,
+                Some("train") => Mode::Rail,
+                Some("ferry") => Mode::Ferry,
+                _ => Mode::Any,
+            };
+            Decision::Act(Intent::Transit(TransitQuery {
+                mode,
+                destination: text("destination").map(|d| d.to_lowercase()),
+            }))
+        }
         "timer" => {
             let number =
                 |key: &str| args[key].as_f64().or_else(|| text(key).and_then(|s| s.parse().ok())).unwrap_or(0.0);
@@ -250,6 +265,14 @@ fn tools() -> Value {
                 "message": { "type": "string", "description": "For remind: what to remind about, e.g. take the laundry out" }
             } })
         ),
+        tool(
+            "departures",
+            "Public transport: when the next bus, tram, metro, train or ferry leaves from the stops near home.",
+            json!({ "type": "object", "properties": {
+                "mode": { "type": "string", "enum": ["any", "bus", "tram", "metro", "train", "ferry"] },
+                "destination": { "type": "string", "description": "Where the user wants to go, as on the vehicle's sign; omit if not said" }
+            } })
+        ),
         tool("joke", "Tell a joke.", json!({ "type": "object", "properties": {} })),
         tool(
             "ignore",
@@ -268,8 +291,8 @@ pub fn system_prompt(name: &str, home: Option<&str>, room: Option<&str>, today: 
     format!(
         "You are {name}, a voice assistant that controls a home.{home}{room} Today is {today}.\n\
          Rule 1: if the user wants the weather, lights on or off, music (play, pause, skip, volume), a \
-         timer or reminder, or something funny, call the matching tool (weather, lights, music, timer, \
-         joke). Do not describe the action; the tool does it and speaks.\n\
+         timer or reminder, public transport departures, or something funny, call the matching tool \
+         (weather, lights, music, timer, departures, joke). Do not describe the action; the tool does it and speaks.\n\
          Rule 2: if the words were addressed to another person or are background talk, call ignore.\n\
          Rule 3: otherwise answer from your own knowledge in one short spoken sentence, no markdown. \
          Never say you did something without calling a tool.\n\

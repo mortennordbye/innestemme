@@ -3637,6 +3637,7 @@ dependencies = [
  "candle-transformers",
  "hf-hub",
  "hound",
+ "jiff",
  "moshi",
  "ptts",
  "rand 0.9.5",

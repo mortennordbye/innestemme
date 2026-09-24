@@ -13,6 +13,13 @@ wake-name: Homie
 wake-spellings: []
 # Place for weather questions that name none. Without it the assistant asks which place.
 home: London
+# The home's street address or coordinates ("59.9132, 10.7403"): weather for exactly there, and
+# departures from the stops nearest it ("when's the next bus"). Norwegian addresses (Entur's geocoder).
+# address: Karl Johans gate 22, Oslo
+# Stops for departures instead of the nearest ones: names or Entur ids.
+# transit-stops: [Wessels plass, NSR:StopPlace:58404]
+# Your email or website: MET Norway (Yr) asks for a contact in the User-Agent.
+# contact: you@example.com
 # Also understand and answer Norwegian.
 norwegian: false
 

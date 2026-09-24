@@ -2,6 +2,7 @@
 //! wake word and turn logic, intent parsing, tools and speech output.
 
 pub mod dialog;
+pub mod geo;
 pub mod ha;
 pub mod intent;
 pub mod jokes;
@@ -14,6 +15,7 @@ pub mod resample;
 pub mod spm;
 pub mod stt;
 pub mod timer;
+pub mod transit;
 pub mod tts;
 pub mod vad;
 pub mod weather;
