@@ -166,6 +166,10 @@ struct Args {
     /// Default: the stops nearest `address`.
     #[arg(long, env = "VOICE_TRANSIT_STOPS", value_delimiter = ',')]
     transit_stops: Vec<String>,
+    /// Norwegian electricity price area (NO1-NO5) for "what does power cost". Default: a guess from
+    /// `address`.
+    #[arg(long, env = "VOICE_PRICE_AREA")]
+    price_area: Option<String>,
     /// Your email or website, sent in the User-Agent to MET Norway (Yr), which asks for a contact.
     #[arg(long, env = "VOICE_CONTACT")]
     contact: Option<String>,
@@ -358,6 +362,7 @@ fn main() -> Result<()> {
                     address: args.address.clone(),
                     transit_stops: args.transit_stops.clone(),
                     contact: args.contact.clone(),
+                    price_area: args.price_area.clone(),
                     home_assistant: args.ha_url.clone().zip(args.ha_token.clone()),
                     dump_utterances: args.dump_utterances.clone(),
                     speaker: args.speaker.clone(),

@@ -77,7 +77,8 @@ fn better(score: f32, current: &Match, key: &str) -> bool {
     score > current.score + 1e-6 || ((score - current.score).abs() <= 1e-6 && key.len() > sound_key(current.name).len())
 }
 
-fn similarity(a: &str, b: &str) -> f32 {
+/// 1 for equal keys, 0 for nothing in common.
+pub fn similarity(a: &str, b: &str) -> f32 {
     let longest = a.chars().count().max(b.chars().count()).max(1);
     1.0 - levenshtein(a, b) as f32 / longest as f32
 }

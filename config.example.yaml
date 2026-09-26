@@ -18,6 +18,9 @@ home: London
 # address: Karl Johans gate 22, Oslo
 # Stops for departures instead of the nearest ones: names or Entur ids.
 # transit-stops: [Wessels plass, NSR:StopPlace:58404]
+# Norwegian electricity price area for "what does power cost" (NO1 east, NO2 south, NO3 middle,
+# NO4 north, NO5 west). Default: a guess from address.
+# price-area: NO1
 # Your email or website: MET Norway (Yr) asks for a contact in the User-Agent.
 # contact: you@example.com
 # Also understand and answer Norwegian.

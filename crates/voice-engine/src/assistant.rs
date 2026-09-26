@@ -21,11 +21,13 @@ use tracing::{info, warn};
 use voice_assistant::dialog::{Action, Dialog, WakeWord};
 use voice_assistant::geo::{self, Location};
 use voice_assistant::ha::{self, HomeAssistant, Target};
-use voice_assistant::intent::{self, Day, Intent};
+use voice_assistant::intent::{self, Day, Intent, LightLevel};
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::llm::{self, Decision, Llm, Turn};
 use voice_assistant::music::Player;
+use voice_assistant::power::{self, Power};
+use voice_assistant::shopping::{Change, ListCommand, ShoppingList};
 use voice_assistant::stt::SpeechToText;
 use voice_assistant::timer::{self, Notice, Timers};
 use voice_assistant::transit::Transit;
@@ -46,6 +48,8 @@ const DEAF_AFTER_REPLY_FRAMES: u64 = 13;
 const STT_RESET_STEPS: usize = 10_000;
 /// "Them" and "that" refer to the last lights for this long.
 const MEMORY: Duration = Duration::from_secs(120);
+/// How often the worker checks that the language model's prompt is still the one it warmed.
+const WARM_CHECK: Duration = Duration::from_secs(600);
 /// Earlier exchanges the language model sees, for follow-ups ("and tomorrow?").
 const HISTORY_TURNS: usize = 4;
 const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
@@ -61,6 +65,8 @@ pub struct AssistantConfig {
     pub transit_stops: Vec<String>,
     /// Contact (email or URL) for the User-Agent that MET Norway asks for.
     pub contact: Option<String>,
+    /// Norwegian electricity price area (NO1-NO5); guessed from the address when unset.
+    pub price_area: Option<String>,
     /// Home Assistant base URL and long-lived access token, for lights.
     pub home_assistant: Option<(String, String)>,
     /// The assistant's name, which wakes it.
@@ -208,6 +214,18 @@ impl AssistantProcessor {
             }
         });
         let transit = Transit::new(&user_agent, home_location.clone(), config.transit_stops.clone());
+        let in_norway =
+            |home: &Location| (57.5..71.5).contains(&home.latitude) && (4.0..31.5).contains(&home.longitude);
+        let price_area = config.price_area.clone().or_else(|| {
+            home_location
+                .as_ref()
+                .filter(|home| in_norway(home))
+                .map(|h| power::area_for(h.latitude, h.longitude).into())
+        });
+        if let Some(area) = &price_area {
+            info!(area, "electricity price area");
+        }
+        let power = price_area.map(|area| Power::new(&user_agent, &area));
         let mut worker = Worker {
             events: events.clone(),
             reply: reply_tx,
@@ -216,6 +234,7 @@ impl AssistantProcessor {
             config,
             weather: Weather::new(&user_agent),
             transit,
+            power,
             home_location,
             jokes: Jokes::default(),
             home_assistant: None,
@@ -225,8 +244,13 @@ impl AssistantProcessor {
             history: VecDeque::new(),
             last_lights: None,
             pending_lights: None,
+            shopping: ShoppingList::default(),
+            last_list: None,
+            pending_list_add: false,
+            pending_scene: None,
             timers: Timers::default(),
             room: None,
+            warmed_prompt: String::new(),
         };
         worker.room = worker.config.room.clone();
         if let Some((url, token)) = &worker.config.home_assistant {
@@ -245,14 +269,11 @@ impl AssistantProcessor {
         }
         if let Some(llm) = &worker.config.llm {
             let start = Instant::now();
-            match llm.warm_up(&llm::system_prompt(
-                worker.config.wake.name(),
-                worker.config.home.as_deref(),
-                worker.room.as_deref(),
-                &today(),
-            )) {
+            let system = worker.system_prompt();
+            match llm.warm_up(&system) {
                 Ok(()) => {
-                    info!(model = llm.model(), elapsed = ?start.elapsed(), "language model warmed up")
+                    info!(model = llm.model(), elapsed = ?start.elapsed(), "language model warmed up");
+                    worker.warmed_prompt = system;
                 }
                 Err(error) => {
                     warn!(%error, "language model not reachable; unrecognised requests get the fallback")
@@ -371,6 +392,8 @@ struct Worker {
     config: AssistantConfig,
     weather: Weather,
     transit: Transit,
+    /// Electricity prices; `None` outside Norway or without a price area.
+    power: Option<Power>,
     /// The home from the `address` setting.
     home_location: Option<Location>,
     jokes: Jokes,
@@ -387,28 +410,35 @@ struct Worker {
     /// "Turn off the lights" named no room and there was nothing to refer back to: the next
     /// answer is the room.
     pending_lights: Option<bool>,
+    shopping: ShoppingList,
+    /// The last change to the shopping list and when, for "undo".
+    last_list: Option<(Change, Instant)>,
+    /// "Add to the shopping list" named nothing: the next answer is the items.
+    pending_list_add: bool,
+    /// A scene request that exists in several rooms: the next answer is the room.
+    pending_scene: Option<String>,
     timers: Timers,
     /// Where the microphone is: the `room` setting, else the satellite's area.
     room: Option<String>,
+    /// The system prompt the language model last saw. It holds the date and the room; a new one
+    /// costs seconds of prompt processing on a CPU, so it is sent ahead of the next question.
+    warmed_prompt: String,
 }
 
 impl Worker {
     fn run(mut self, jobs: mpsc::Receiver<Job>) {
         loop {
-            // Wake up for the next timer as well as for work.
-            let job = match self.timers.next_deadline() {
-                Some(at) => match jobs.recv_timeout(at.saturating_duration_since(Instant::now())) {
-                    Ok(job) => job,
-                    Err(RecvTimeoutError::Timeout) => {
-                        self.ring_due_timers();
-                        continue;
-                    }
-                    Err(RecvTimeoutError::Disconnected) => return,
-                },
-                None => match jobs.recv() {
-                    Ok(job) => job,
-                    Err(_) => return,
-                },
+            // Wake up for the next timer, and now and then to keep the language model warm.
+            let next_timer = self.timers.next_deadline().map(|at| at.saturating_duration_since(Instant::now()));
+            let wait = next_timer.map_or(WARM_CHECK, |t| t.min(WARM_CHECK));
+            let job = match jobs.recv_timeout(wait) {
+                Ok(job) => job,
+                Err(RecvTimeoutError::Timeout) => {
+                    self.ring_due_timers();
+                    self.keep_warm();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
             };
             match job {
                 Job::Action(Action::Wake) => {
@@ -551,14 +581,27 @@ impl Worker {
                 return Some(self.lights(text, on, lang));
             }
         }
+        if std::mem::take(&mut self.pending_list_add) && intent == Intent::Unknown {
+            // "Milk and eggs": the same splitting as a full request.
+            if let Some(ListCommand::Add(items)) = voice_assistant::shopping::parse(&format!("add {text} to the list"))
+            {
+                return Some(self.shopping_list(ListCommand::Add(items), lang));
+            }
+        }
+        if let Some(scene) = self.pending_scene.take() {
+            if intent == Intent::Unknown {
+                return Some(self.scene(&format!("{scene} in {text}"), lang));
+            }
+        }
+        if intent == Intent::Unknown {
+            // A script or scene said by its name alone: "movie time".
+            if let Some(answer) = self.by_exact_name(text, lang) {
+                return Some(answer);
+            }
+        }
         if intent == Intent::Unknown {
             if let Some(llm) = &self.config.llm {
-                let system = llm::system_prompt(
-                    self.config.wake.name(),
-                    self.config.home.as_deref(),
-                    self.room.as_deref(),
-                    &today(),
-                );
+                let system = self.system_prompt();
                 let history: Vec<Turn> = self
                     .history
                     .iter()
@@ -617,19 +660,36 @@ impl Worker {
                 answer
             }
             Intent::Lights { on, target } => self.lights(&target, on, lang),
-            Intent::Undo => match self.recent_lights() {
-                Some((target, on)) => self.switch(&target, !on, lang, true),
-                None if no => "Det er ingenting å angre.".into(),
-                None => "There's nothing to undo.".into(),
+            Intent::LightsStatus { target } => self.lights_status(&target, lang),
+            Intent::LightLevel { level, target } => self.light_level(&target, &level, lang),
+            Intent::Power(query) => match &mut self.power {
+                None if no => "Jeg vet ikke hvilket prisområde du er i. Sett price-area i innstillingene.".into(),
+                None => "I don't know your electricity price area. Set price-area in the settings.".into(),
+                Some(power) => match power.answer(query, lang) {
+                    Ok(answer) => answer,
+                    Err(error) => {
+                        warn!(error = format!("{error:#}"), "electricity prices failed");
+                        if no { "Beklager, jeg får ikke hentet strømprisene." } else { "Sorry, I couldn't get the electricity prices." }.into()
+                    }
+                },
             },
+            Intent::WhosHome(name) => self.whos_home(name.as_deref(), lang),
+            Intent::Briefing => self.briefing(lang),
+            Intent::ShoppingList(command) => self.shopping_list(command, lang),
+            Intent::Scene(request) => self.scene(&request, lang),
+            Intent::Script(request) => self.script(&request, lang),
+            Intent::Undo => self.undo(lang),
             Intent::Thanks if no => "Bare hyggelig.".into(),
             Intent::Thanks => "You're welcome.".into(),
             Intent::Cancel => return None,
             Intent::Unknown if no => {
-                "Beklager, foreløpig kan jeg bare været, vitser, lyset, musikk, timere og avganger.".into()
+                "Beklager, foreløpig kan jeg bare været, vitser, lyset, scener, musikk, timere, handlelista og avganger."
+                    .into()
             }
             Intent::Unknown => {
-                "Sorry, so far I can only do the weather, jokes, the lights, music, timers and departures.".into()
+                "Sorry, so far I can only do the weather, jokes, lights, scenes, music, timers, the shopping list and \
+                 departures."
+                    .into()
             }
         })
     }
@@ -666,36 +726,374 @@ impl Worker {
     }
 
     fn lights(&mut self, request: &str, on: bool, lang: Lang) -> String {
+        match self.light_target(request, lang) {
+            Ok(Some(target)) => self.switch(&target, on, lang, false),
+            Ok(None) => {
+                self.pending_lights = Some(on);
+                if lang == Lang::Norwegian { "Hvilket rom?" } else { "Which room?" }.into()
+            }
+            Err(answer) => answer,
+        }
+    }
+
+    /// The lights a request means: the ones it names; "in here" and no name at all mean this room;
+    /// "them" the last lights. `Ok(None)`: no idea which room. `Err` is the answer to speak.
+    fn light_target(&mut self, request: &str, lang: Lang) -> Result<Option<Target>, String> {
         let no = lang == Lang::Norwegian;
         let recent = self.recent_lights().map(|(target, _)| target);
+        let Some(ha) = &mut self.home_assistant else {
+            return Err(if no {
+                "Home Assistant er ikke koblet til ennå."
+            } else {
+                "Home Assistant isn't connected yet."
+            }
+            .into());
+        };
+        let found = ha.find(request).map_err(|error| unreachable(&error, no))?;
+        let here = self.room.as_deref().and_then(|room| ha.find(room).ok().flatten());
+        match found {
+            Some(target) => Ok(Some(target)),
+            None if mentions_this_room(request) => Ok(here),
+            None if !ha::names_something(request) => {
+                Ok(if refers_back(request) { recent.or(here) } else { here.or(recent) })
+            }
+            None if no => Err("Jeg fant ikke det lyset.".into()),
+            None => Err("I couldn't find that light.".into()),
+        }
+    }
+
+    fn light_level(&mut self, request: &str, level: &LightLevel, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let target = match self.light_target(request, lang) {
+            Ok(Some(target)) => target,
+            Ok(None) if no => return "Si hvilket rom, for eksempel: demp lyset i stua.".into(),
+            Ok(None) => return "Say which room, for example: dim the living room.".into(),
+            Err(answer) => return answer,
+        };
+        let Some(ha) = &self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
+        if let Err(error) = ha.set_level(&target, level) {
+            return unreachable(&error, no);
+        }
+        info!(label = target.label, ids = ?target.ids, ?level, "light level set");
+        let label = target.label.to_lowercase();
+        let lights = match (no, target.area) {
+            (false, true) => format!("the {label} lights are"),
+            (false, false) => format!("the {label} is"),
+            (true, _) => format!("lyset i {label} er"),
+        };
+        match (no, level) {
+            (false, LightLevel::Percent(0)) => format!("Okay, {lights} off."),
+            (true, LightLevel::Percent(0)) => format!("Ok, {lights} av."),
+            (false, LightLevel::Percent(n)) => format!("Okay, {lights} at {n} percent."),
+            (true, LightLevel::Percent(n)) => format!("Ok, {lights} på {n} prosent."),
+            (false, LightLevel::Brighter) => "Okay, brighter.".into(),
+            (true, LightLevel::Brighter) => "Ok, lysere.".into(),
+            (false, LightLevel::Dimmer) => "Okay, dimmed.".into(),
+            (true, LightLevel::Dimmer) => "Ok, dempet.".into(),
+            (false, LightLevel::Color(colour)) => format!("Okay, {lights} {colour}."),
+            (true, LightLevel::Color(_)) => "Ok, fargen er endret.".into(),
+            (false, LightLevel::Warm) => "Okay, warmer light.".into(),
+            (true, LightLevel::Warm) => "Ok, varmere lys.".into(),
+            (false, LightLevel::Cool) => "Okay, cooler light.".into(),
+            (true, LightLevel::Cool) => "Ok, kaldere lys.".into(),
+        }
+    }
+
+    /// "Who's home?": everyone and where they are; "is Ingrid home?": that person.
+    fn whos_home(&mut self, name: Option<&str>, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let Some(ha) = &self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        let people = match ha.people() {
+            Ok(people) => people,
+            Err(error) => return unreachable(&error, no),
+        };
+        let first_name = |p: &ha::Person| p.name.split_whitespace().next().unwrap_or(&p.name).to_owned();
+        let place = |p: &ha::Person| match (no, p.state.as_str()) {
+            (false, "home") => "home".to_owned(),
+            (true, "home") => "hjemme".to_owned(),
+            (false, "not_home") => "out".to_owned(),
+            (true, "not_home") => "ute".to_owned(),
+            (false, "unknown" | "unavailable") => "somewhere I can't tell".to_owned(),
+            (true, "unknown" | "unavailable") => "et sted jeg ikke vet".to_owned(),
+            (false, zone) => format!("at {zone}"),
+            (true, zone) => format!("på {zone}"),
+        };
+        if let Some(name) = name {
+            let names = voice_assistant::names::Names::new(people.iter().map(first_name));
+            let Some(person) = names.best(name).and_then(|found| people.iter().find(|p| first_name(p) == found.name))
+            else {
+                return if no { format!("Jeg vet ikke hvor {name} er.") } else { format!("I don't track {name}.") };
+            };
+            let who = first_name(person);
+            return match (no, person.state == "home") {
+                (false, true) => format!("Yes, {who} is home."),
+                (true, true) => format!("Ja, {who} er hjemme."),
+                (false, false) => format!("No, {who} is {}.", place(person)),
+                (true, false) => format!("Nei, {who} er {}.", place(person)),
+            };
+        }
+        let home: Vec<String> = people.iter().filter(|p| p.state == "home").map(first_name).collect();
+        let and = if no { "og" } else { "and" };
+        let join = |names: &[String]| match names {
+            [] => String::new(),
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} {and} {last}", rest.join(", ")),
+        };
+        let is = if no { "er" } else { "is" };
+        let mut clauses: Vec<String> = Vec::new();
+        match (no, home.len()) {
+            (_, 0) => {}
+            (false, n) => clauses.push(format!("{} {} home", join(&home), if n == 1 { "is" } else { "are" })),
+            (true, _) => clauses.push(format!("{} er hjemme", join(&home))),
+        }
+        clauses.extend(
+            people.iter().filter(|p| p.state != "home").map(|p| format!("{} {is} {}", first_name(p), place(p))),
+        );
+        match (no, home.is_empty()) {
+            (false, true) if clauses.is_empty() => "Home Assistant tracks nobody.".into(),
+            (true, true) if clauses.is_empty() => "Home Assistant følger ingen.".into(),
+            (false, true) => format!("Nobody is home; {}.", clauses.join(", ")),
+            (true, true) => format!("Ingen er hjemme; {}.", clauses.join(", ")),
+            _ => format!("{}.", clauses.join("; ")),
+        }
+    }
+
+    /// "Good morning": greeting and time, the weather at home, the shopping list, power prices.
+    fn briefing(&mut self, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let now = jiff::Zoned::now();
+        let greeting = match (no, now.hour()) {
+            (false, 4..=11) => "Good morning",
+            (false, 12..=17) => "Good afternoon",
+            (false, _) => "Good evening",
+            (true, 4..=9) => "God morgen",
+            (true, 10..=17) => "Hei",
+            (true, _) => "God kveld",
+        };
+        let mut parts = vec![time_of_day(lang).replacen("It's", &format!("{greeting}! It's"), 1)];
+        if no {
+            parts[0] = format!("{greeting}! {}", time_of_day(lang));
+        }
+        if self.home_location.is_some() || self.config.home.is_some() {
+            parts.push(self.weather(None, Day::Today, lang));
+        }
+        if let Some(ha) = &self.home_assistant {
+            if let Ok((answer, _)) = self.shopping.run(ha, &ListCommand::Read, lang) {
+                // Only a list with something on it is news.
+                if !answer.contains("empty") && !answer.contains("tom") {
+                    parts.push(answer);
+                }
+            }
+        }
+        if let Some(power) = &mut self.power {
+            if let Ok(answer) = power.answer(power::PowerQuery::Now, lang) {
+                parts.push(answer);
+            }
+        }
+        parts.join(" ")
+    }
+
+    fn system_prompt(&self) -> String {
+        llm::system_prompt(self.config.wake.name(), self.config.home.as_deref(), self.room.as_deref(), &today())
+    }
+
+    /// Sends a changed system prompt (new day, new room) to the language model in the background,
+    /// so the next question does not wait for it.
+    fn keep_warm(&mut self) {
+        let Some(llm) = &self.config.llm else { return };
+        let system = self.system_prompt();
+        if system == self.warmed_prompt {
+            return;
+        }
+        self.warmed_prompt = system.clone();
+        let llm = llm.clone();
+        let spawned = std::thread::Builder::new().name("llm-warm".into()).spawn(move || {
+            let start = Instant::now();
+            match llm.warm_up(&system) {
+                Ok(()) => info!(elapsed = ?start.elapsed(), "language model warmed for the new prompt"),
+                Err(error) => warn!(%error, "language model warm-up failed"),
+            }
+        });
+        if let Err(error) = spawned {
+            warn!(%error, "could not start the language model warm-up");
+        }
+    }
+
+    /// "Undo": whichever changed last, the lights or the shopping list.
+    fn undo(&mut self, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let lights_at = self.last_lights.as_ref().filter(|(.., at)| at.elapsed() < MEMORY).map(|(.., at)| *at);
+        let list_at = self.last_list.as_ref().filter(|(_, at)| at.elapsed() < MEMORY).map(|(_, at)| *at);
+        if list_at.is_some() && (lights_at.is_none() || list_at > lights_at) {
+            let (change, _) = self.last_list.take().expect("checked above");
+            let Some(ha) = &self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
+            if let Err(error) = self.shopping.undo(ha, &change) {
+                return unreachable(&error, no);
+            }
+            info!(?change, "shopping list change undone");
+            return match (no, change) {
+                (false, Change::Added(items)) => format!("Okay, took {} off again.", items.join(", ").to_lowercase()),
+                (true, Change::Added(items)) => format!("Ok, fjernet {} igjen.", items.join(", ").to_lowercase()),
+                (false, Change::Removed(items)) => {
+                    format!("Okay, {} is back on the list.", items.join(", ").to_lowercase())
+                }
+                (true, Change::Removed(items)) => {
+                    format!("Ok, {} er tilbake på lista.", items.join(", ").to_lowercase())
+                }
+            };
+        }
+        match self.recent_lights() {
+            Some((target, on)) => self.switch(&target, !on, lang, true),
+            None if no => "Det er ingenting å angre.".into(),
+            None => "There's nothing to undo.".into(),
+        }
+    }
+
+    fn shopping_list(&mut self, command: ListCommand, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let Some(ha) = &self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        self.pending_list_add = command == ListCommand::Add(Vec::new());
+        match self.shopping.run(ha, &command, lang) {
+            Ok((answer, change)) => {
+                info!(?command, ?change, "shopping list");
+                if let Some(change) = change {
+                    self.last_list = Some((change, Instant::now()));
+                }
+                answer
+            }
+            Err(error) => unreachable(&error, no),
+        }
+    }
+
+    /// "Which lights are on?": the rooms with lights on; with a room or light named, yes or no.
+    fn lights_status(&mut self, request: &str, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
         let Some(ha) = &mut self.home_assistant else {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
         };
-        let found = match ha.find(request) {
-            Ok(found) => found,
+        let on = match ha.lights_on() {
+            // Network gear reports its status LED as a light; nobody means that.
+            Ok(on) => on.into_iter().filter(|l| !l.name.ends_with(" LED")).collect::<Vec<_>>(),
             Err(error) => return unreachable(&error, no),
         };
-        // "Turn off the lights", "in here": this room. "Turn them off": the last lights.
-        let here = self.room.as_deref().and_then(|room| ha.find(room).ok().flatten());
-        let target = match found {
-            Some(target) => Some(target),
-            None if mentions_this_room(request) => here,
-            None if !ha::names_something(request) => {
-                if refers_back(request) {
-                    recent.or(here)
-                } else {
-                    here.or(recent)
-                }
+        let question: String = request
+            .split_whitespace()
+            .filter(|w| {
+                !["anything", "everything", "something", "left", "still", "noe", "alt", "fortsatt"]
+                    .contains(&voice_assistant::dialog::normalize(w).as_str())
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        if ha::names_something(&question) && !mentions_this_room(request) {
+            if let Ok(Some(target)) = ha.find(&question) {
+                let lit = on.iter().any(|l| target.ids.contains(&l.id));
+                let label = target.label.to_lowercase();
+                return match (no, lit, target.area) {
+                    (false, true, true) => format!("Yes, the {label} lights are on."),
+                    (false, false, true) => format!("No, the {label} lights are off."),
+                    (false, true, false) => format!("Yes, the {label} is on."),
+                    (false, false, false) => format!("No, the {label} is off."),
+                    (true, true, _) => format!("Ja, lyset i {label} er på."),
+                    (true, false, _) => format!("Nei, lyset i {label} er av."),
+                };
             }
-            None if no => return "Jeg fant ikke det lyset.".into(),
-            None => return "I couldn't find that light.".into(),
+        }
+        // One name per room: the area, or the light's own name when it has none.
+        let mut places: Vec<String> = Vec::new();
+        for light in &on {
+            let place = if light.area.is_empty() { light.name.to_lowercase() } else { light.area.to_lowercase() };
+            if !places.contains(&place) {
+                places.push(place);
+            }
+        }
+        let and = if no { "og" } else { "and" };
+        let list = match places.as_slice() {
+            [] => String::new(),
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} {and} {last}", rest.join(", ")),
         };
-        let Some(target) = target else {
-            self.pending_lights = Some(on);
-            return if no { "Hvilket rom?" } else { "Which room?" }.into();
+        match (no, places.is_empty()) {
+            (false, true) => "All the lights are off.".into(),
+            (true, true) => "Alt lyset er av.".into(),
+            (false, false) => format!("Lights are on in the {list}."),
+            (true, false) => format!("Lyset er på i {list}."),
+        }
+    }
+
+    fn scene(&mut self, request: &str, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let here = self.room.clone();
+        let Some(ha) = &mut self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
         };
-        self.switch(&target, on, lang, false)
+        let scenes = match ha.scenes() {
+            Ok(scenes) => scenes.to_vec(),
+            Err(error) => return unreachable(&error, no),
+        };
+        let scene = match ha::resolve_scene(&scenes, request, here.as_deref()) {
+            ha::SceneMatch::Found(scene) => scene.clone(),
+            ha::SceneMatch::WhichRoom => {
+                self.pending_scene = Some(request.to_owned());
+                return if no { "Hvilket rom?" } else { "Which room?" }.into();
+            }
+            ha::SceneMatch::NotFound if no => return "Jeg fant ikke den scenen.".into(),
+            ha::SceneMatch::NotFound => return "I couldn't find that scene.".into(),
+        };
+        if let Err(error) = ha.activate(&scene) {
+            return unreachable(&error, no);
+        }
+        info!(scene = scene.id, request, "scene activated");
+        let name = scene.name.to_lowercase();
+        if no {
+            format!("Ok, {name}.")
+        } else {
+            format!("Okay, {name}.")
+        }
+    }
+
+    fn script(&mut self, request: &str, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let Some(ha) = &mut self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        let script = match ha.scripts() {
+            Ok(scripts) => ha::resolve_script(scripts, request).cloned(),
+            Err(error) => return unreachable(&error, no),
+        };
+        let Some(script) = script else {
+            return if no { "Jeg fant ikke det skriptet." } else { "I couldn't find that script." }.into();
+        };
+        if let Err(error) = ha.activate(&script) {
+            return unreachable(&error, no);
+        }
+        info!(script = script.id, request, "script started");
+        let name = script.name.to_lowercase();
+        if no {
+            format!("Ok, kjører {name}.")
+        } else {
+            format!("Okay, running {name}.")
+        }
+    }
+
+    /// A script or scene whose whole name is the request; `None` when there is none.
+    fn by_exact_name(&mut self, request: &str, lang: Lang) -> Option<String> {
+        let ha = self.home_assistant.as_mut()?;
+        let script = ha.scripts().ok().and_then(|scripts| ha::exact(scripts, request).cloned());
+        if script.is_some() {
+            return Some(self.script(request, lang));
+        }
+        let ha = self.home_assistant.as_mut()?;
+        let scene = ha.scenes().ok().and_then(|scenes| ha::exact(scenes, request).cloned())?;
+        Some(self.scene(&scene.name, lang))
     }
 
     /// A satellite connected: unless the `room` setting says otherwise, its room is its area in
@@ -710,6 +1108,7 @@ impl Worker {
             Ok(Some(area)) => {
                 info!(room = area, "satellite room from home assistant");
                 self.room = Some(area);
+                self.keep_warm();
             }
             Ok(None) => info!(?names, "the satellite has no area in home assistant; set `room`"),
             Err(error) => warn!(%error, "could not look up the satellite's room"),

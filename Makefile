@@ -44,12 +44,13 @@ piper-stop:
 
 # The language model behind the rules. llama.cpp sizes its thread pool from the physical cores it
 # sees, which oversubscribes a Docker VM (0.5 instead of ~100 tokens/s on an M4 Pro), so the model
-# is wrapped with a fixed thread count.
+# is wrapped with a fixed thread count. KEEP_ALIVE=-1 keeps it loaded: after Ollama's default five
+# idle minutes the next question paid for loading it and ~10 s of prompt on the CPU.
 OLLAMA_IMAGE := ollama/ollama:0.33.3
 OLLAMA_THREADS ?= 8
 ollama:
 	@docker inspect -f '{{.State.Running}}' ai-voice-ollama 2>/dev/null | grep -q true || \
-	  docker run -d --name ai-voice-ollama -p 127.0.0.1:11434:11434 \
+	  docker run -d --name ai-voice-ollama -p 127.0.0.1:11434:11434 -e OLLAMA_KEEP_ALIVE=-1 \
 	    -v $(HOME)/Library/Caches/ai-voice/ollama:/root/.ollama $(OLLAMA_IMAGE)
 	@until curl -sf 127.0.0.1:11434/api/version >/dev/null; do sleep 1; done
 	docker exec ai-voice-ollama sh -c 'ollama pull qwen3:4b-instruct && \

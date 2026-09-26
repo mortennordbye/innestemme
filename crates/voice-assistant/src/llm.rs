@@ -8,11 +8,14 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
-use crate::intent::{Day, Intent, MusicCommand};
+use crate::intent::{Day, Intent, LightLevel, MusicCommand};
 use crate::lang::Lang;
+use crate::power::{PowerQuery, When};
+use crate::shopping::ListCommand;
 use crate::timer::{TimerCommand, Which};
 use crate::transit::{Mode, TransitQuery};
 
+#[derive(Clone)]
 pub struct Llm {
     /// Base URL of the OpenAI-compatible API, e.g. `http://127.0.0.1:11434/v1`.
     url: String,
@@ -145,17 +148,88 @@ fn parse_reply(message: &Value) -> Result<Decision> {
 }
 
 fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
-    let text = |key: &str| args[key].as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+    // Small models leave quotes and commas around values ("living room”,").
+    let text = |key: &str| {
+        args[key]
+            .as_str()
+            .map(|s| s.trim_matches(|c: char| c.is_whitespace() || "\"'“”‘’,.".contains(c)))
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
     Ok(match name {
         "weather" => Decision::Act(Intent::Weather {
             place: text("place"),
             day: if text("day").as_deref() == Some("tomorrow") { Day::Tomorrow } else { Day::Today },
         }),
-        "lights" => Decision::Act(Intent::Lights {
-            on: args["on"].as_bool().unwrap_or(text("state").as_deref() == Some("on")),
-            target: text("target").unwrap_or_default(),
-        }),
+        // One tool for switching, levels and scenes; "light_settings" and "scene" are the older
+        // separate tools, still accepted from models that write calls as text.
+        "lights" | "light_settings" | "scene" => {
+            let target = text("target").or_else(|| text("room")).unwrap_or_default();
+            let scene = text("scene").or_else(|| (name == "scene").then(|| text("name")).flatten());
+            let brightness = args["brightness"]
+                .as_f64()
+                .or_else(|| text("brightness").and_then(|s| s.trim_end_matches('%').parse().ok()));
+            let level = if let Some(b) = brightness {
+                Some(LightLevel::Percent(b.clamp(0.0, 100.0).round() as u8))
+            } else if let Some(color) = text("color") {
+                Some(LightLevel::Color(color.to_lowercase()))
+            } else {
+                match text("change").as_deref() {
+                    Some("brighter") => Some(LightLevel::Brighter),
+                    Some("dimmer") => Some(LightLevel::Dimmer),
+                    Some("warmer") => Some(LightLevel::Warm),
+                    Some("cooler") => Some(LightLevel::Cool),
+                    _ => None,
+                }
+            };
+            if let Some(scene) = scene {
+                let request = if target.is_empty() { scene } else { format!("{scene} in {target}") };
+                Decision::Act(Intent::Scene(request))
+            } else if let Some(level) = level {
+                Decision::Act(Intent::LightLevel { level, target })
+            } else {
+                let on = args["on"].as_bool().unwrap_or(text("state").as_deref() != Some("off"));
+                Decision::Act(Intent::Lights { on, target })
+            }
+        }
         "joke" => Decision::Act(Intent::Joke),
+        "shopping_list" => {
+            // Items as a list, or one string ("milk, eggs") from models that ignore the schema.
+            let items: Vec<String> = match &args["items"] {
+                Value::Array(list) => list.iter().filter_map(Value::as_str).map(str::to_owned).collect(),
+                Value::String(one) => one.split(',').map(str::to_owned).collect(),
+                _ => Vec::new(),
+            };
+            let items: Vec<String> = items
+                .iter()
+                .map(|i| i.trim())
+                .filter(|i| !i.is_empty())
+                .map(|i| {
+                    let mut chars = i.chars();
+                    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+                })
+                .collect();
+            let command = match text("action").as_deref().unwrap_or("read") {
+                "add" => ListCommand::Add(items),
+                "remove" if !items.is_empty() => ListCommand::Remove(items),
+                "clear" => ListCommand::Clear,
+                _ => ListCommand::Read,
+            };
+            Decision::Act(Intent::ShoppingList(command))
+        }
+        "electricity_price" => {
+            let when = match text("when").as_deref() {
+                Some("tonight") => When::Tonight,
+                Some("tomorrow") => When::Tomorrow,
+                _ => When::Today,
+            };
+            Decision::Act(Intent::Power(match text("question").as_deref() {
+                Some("cheapest") => PowerQuery::Cheapest(when),
+                Some("most_expensive") => PowerQuery::Dearest(when),
+                _ => PowerQuery::Now,
+            }))
+        }
+        "who_is_home" => Decision::Act(Intent::WhosHome(text("name").map(|n| n.to_lowercase()))),
         "departures" => {
             let mode = match text("mode").as_deref() {
                 Some("bus") => Mode::Bus,
@@ -224,61 +298,101 @@ fn strip_thinking(text: &str) -> String {
     out.replace(['*', '#', '`'], "").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The skills, as OpenAI function tools.
-fn tools() -> Value {
+/// The skills, as OpenAI function tools. Every token here is in every request and makes each
+/// generated token slower on a CPU, so descriptions are short; cutting them to a few words, or
+/// merging tools, cost half the answers in `llm_eval` (calls written as plain text instead).
+pub fn tools() -> Value {
     let tool = |name: &str, description: &str, parameters: Value| json!({ "type": "function", "function": { "name": name, "description": description, "parameters": parameters } });
+    let none = json!({ "type": "object", "properties": {} });
     json!([
         tool(
             "weather",
-            "Weather now and today, or tomorrow's forecast, for a place (the home when no place is named).",
+            "Weather now and today, or tomorrow's forecast, for a place.",
             json!({ "type": "object", "properties": {
-                "place": { "type": "string", "description": "City or place name; omit for home" },
-                "day": { "type": "string", "enum": ["today", "tomorrow"] }
-            } })
+            "place": { "type": "string", "description": "City; omit for home" },
+            "day": { "type": "string", "enum": ["today", "tomorrow"] }
+        } })
         ),
         tool(
             "lights",
             "Switch lights on or off in a room or by light name.",
             json!({ "type": "object", "required": ["target", "on"], "properties": {
-                "target": { "type": "string", "description": "Room or light name, e.g. kitchen, living room, desk lamp" },
-                "on": { "type": "boolean" }
-            } })
+            "target": { "type": "string", "description": "Room or light name, e.g. kitchen" },
+            "on": { "type": "boolean" }
+        } })
+        ),
+        tool(
+            "light_settings",
+            "Light brightness, brighter or dimmer, warmer or cooler white, or a colour.",
+            json!({ "type": "object", "properties": {
+            "target": { "type": "string", "description": "Room or light; omit for here" },
+            "brightness": { "type": "number", "description": "0-100" },
+            "change": { "type": "string", "enum": ["brighter", "dimmer", "warmer", "cooler"] },
+            "color": { "type": "string", "description": "English colour name" }
+        } })
+        ),
+        tool(
+            "scene",
+            "Light scene or mood: relax, read, concentrate, energize, nightlight, dreamy dusk.",
+            json!({ "type": "object", "required": ["name"], "properties": {
+            "name": { "type": "string" },
+            "room": { "type": "string", "description": "Omit for here" }
+        } })
         ),
         tool(
             "music",
-            "Play music (a song, artist, playlist or the user's liked songs) or control playback.",
+            "Play music (song, artist, playlist, liked songs) or control playback.",
             json!({ "type": "object", "required": ["action"], "properties": {
-                "action": { "type": "string", "enum": ["play", "pause", "resume", "next", "previous", "louder", "quieter"] },
-                "kind": { "type": "string", "enum": ["song", "artist", "playlist", "liked"] },
-                "query": { "type": "string", "description": "What to play: song title, artist or playlist name" }
-            } })
+            "action": { "type": "string", "enum": ["play", "pause", "resume", "next", "previous", "louder", "quieter"] },
+            "kind": { "type": "string", "enum": ["song", "artist", "playlist", "liked"] },
+            "query": { "type": "string" }
+        } })
         ),
         tool(
             "timer",
-            "Timers and reminders: start a timer, set a reminder (remind), cancel, pause or resume one, add time to one, or tell how much time is left (remaining).",
+            "Timers and reminders: start, remind, cancel, pause, resume, add time, or time remaining.",
             json!({ "type": "object", "required": ["action"], "properties": {
-                "action": { "type": "string", "enum": ["start", "remind", "cancel", "pause", "resume", "add", "remaining"] },
-                "hours": { "type": "number" },
-                "minutes": { "type": "number" },
-                "seconds": { "type": "number" },
-                "name": { "type": "string", "description": "What the timer is for, e.g. pasta; all for every timer" },
-                "message": { "type": "string", "description": "For remind: what to remind about, e.g. take the laundry out" }
-            } })
+            "action": { "type": "string", "enum": ["start", "remind", "cancel", "pause", "resume", "add", "remaining"] },
+            "hours": { "type": "number" },
+            "minutes": { "type": "number" },
+            "seconds": { "type": "number" },
+            "name": { "type": "string", "description": "What it is for, e.g. pasta; all for every timer" },
+            "message": { "type": "string", "description": "For remind: what to remind about" }
+        } })
         ),
         tool(
             "departures",
-            "Public transport: when the next bus, tram, metro, train or ferry leaves from the stops near home.",
+            "When the next bus, tram, metro, train or ferry leaves near home.",
             json!({ "type": "object", "properties": {
-                "mode": { "type": "string", "enum": ["any", "bus", "tram", "metro", "train", "ferry"] },
-                "destination": { "type": "string", "description": "Where the user wants to go, as on the vehicle's sign; omit if not said" }
-            } })
+            "mode": { "type": "string", "enum": ["any", "bus", "tram", "metro", "train", "ferry"] },
+            "destination": { "type": "string", "description": "Omit if not said" }
+        } })
         ),
-        tool("joke", "Tell a joke.", json!({ "type": "object", "properties": {} })),
         tool(
-            "ignore",
-            "The words were not meant for the assistant (people talking to each other, TV).",
-            json!({ "type": "object", "properties": {} })
+            "shopping_list",
+            "Shopping list: add, remove, read or clear. Also for things to buy or run out of.",
+            json!({ "type": "object", "required": ["action"], "properties": {
+            "action": { "type": "string", "enum": ["add", "remove", "read", "clear"] },
+            "items": { "type": "array", "items": { "type": "string" } }
+        } })
         ),
+        tool(
+            "electricity_price",
+            "Electricity price now, or the cheapest or most expensive hour.",
+            json!({ "type": "object", "properties": {
+            "question": { "type": "string", "enum": ["now", "cheapest", "most_expensive"] },
+            "when": { "type": "string", "enum": ["today", "tonight", "tomorrow"] }
+        } })
+        ),
+        tool(
+            "who_is_home",
+            "Who is home, or whether one person is.",
+            json!({ "type": "object", "properties": {
+            "name": { "type": "string", "description": "Omit for everyone" }
+        } })
+        ),
+        tool("joke", "Tell a joke.", none.clone()),
+        tool("ignore", "Words not meant for the assistant (people talking to each other, TV).", none),
     ])
 }
 
@@ -290,15 +404,16 @@ pub fn system_prompt(name: &str, home: Option<&str>, room: Option<&str>, today: 
     let room = room.map(|r| format!(" You are in the {r}; \"here\" means the {r}.")).unwrap_or_default();
     format!(
         "You are {name}, a voice assistant that controls a home.{home}{room} Today is {today}.\n\
-         Rule 1: if the user wants the weather, lights on or off, music (play, pause, skip, volume), a \
-         timer or reminder, public transport departures, or something funny, call the matching tool \
-         (weather, lights, music, timer, departures, joke). Do not describe the action; the tool does it and speaks.\n\
+         Rule 1: for the weather, lights, brightness or colour, a light scene or mood, music, a timer or \
+         reminder, the shopping list, departures, electricity prices, who is home, or something funny, call \
+         the matching tool. Do not describe the action; the tool does it and speaks.\n\
          Rule 2: if the words were addressed to another person or are background talk, call ignore.\n\
          Rule 3: otherwise answer from your own knowledge in one short spoken sentence, no markdown. \
          Never say you did something without calling a tool.\n\
-         Examples: \"cheer me up\" -> joke. \"tell me when the eggs are done in 7 minutes\" -> timer. \
-         \"Anna, where are my keys?\" -> ignore. \"it's freezing in here\" -> weather is wrong, answer \
-         instead.\n"
+         Examples: \"cheer me up\" -> joke. \"we're out of coffee\" -> shopping_list add coffee. \
+         \"make it cosy in here\" -> scene relax. \"when should I run the dishwasher\" -> electricity_price \
+         cheapest. \"tell me when the eggs are done in 7 minutes\" -> timer. \"Anna, where are my keys?\" -> \
+         ignore. \"it's freezing in here\" -> answer, not weather.\n"
     )
 }
 
@@ -336,6 +451,30 @@ mod tests {
         assert_eq!(
             parse_reply(&call("timer", r#"{"action":"start","minutes":"7","name":"eggs"}"#)).unwrap(),
             Decision::Act(Intent::Timer(TimerCommand::Start { seconds: Some(420), name: Some("eggs".into()) }))
+        );
+        assert_eq!(
+            parse_reply(&call("shopping_list", r#"{"action":"add","items":["coffee","oat milk"]}"#)).unwrap(),
+            Decision::Act(Intent::ShoppingList(ListCommand::Add(vec!["Coffee".into(), "Oat milk".into()])))
+        );
+        assert_eq!(
+            parse_reply(&call("shopping_list", r#"{"action":"add","items":"milk, eggs"}"#)).unwrap(),
+            Decision::Act(Intent::ShoppingList(ListCommand::Add(vec!["Milk".into(), "Eggs".into()])))
+        );
+        assert_eq!(
+            parse_reply(&call("scene", r#"{"name":"relax","room":"bedroom"}"#)).unwrap(),
+            Decision::Act(Intent::Scene("relax in bedroom".into()))
+        );
+        assert_eq!(
+            parse_reply(&call("light_settings", r#"{"target":"kitchen”,","brightness":"40%"}"#)).unwrap(),
+            Decision::Act(Intent::LightLevel { level: LightLevel::Percent(40), target: "kitchen".into() })
+        );
+        assert_eq!(
+            parse_reply(&call("electricity_price", r#"{"question":"cheapest","when":"tonight"}"#)).unwrap(),
+            Decision::Act(Intent::Power(PowerQuery::Cheapest(When::Tonight)))
+        );
+        assert_eq!(
+            parse_reply(&call("who_is_home", r#"{"name":"Ingrid"}"#)).unwrap(),
+            Decision::Act(Intent::WhosHome(Some("ingrid".into())))
         );
         assert_eq!(parse_reply(&call("ignore", "{}")).unwrap(), Decision::Ignore);
         // Some servers send the arguments as an object.

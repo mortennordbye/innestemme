@@ -2,6 +2,8 @@
 //! route a weather question and pull out the place and day.
 
 use crate::dialog::normalize;
+use crate::power::{self, PowerQuery};
+use crate::shopping::{self, ListCommand};
 use crate::timer::{self, TimerCommand};
 use crate::transit::{self, TransitQuery};
 
@@ -31,12 +33,221 @@ pub enum Intent {
         on: bool,
         target: String,
     },
+    /// "Which lights are on?", "is anything left on?", "is the kitchen light on?"; `target` is the
+    /// request text, resolved against Home Assistant later.
+    LightsStatus {
+        target: String,
+    },
+    /// Brightness or colour: "dim the living room to 30%", "make the bedroom lights red"; `target`
+    /// is the request without the level words, resolved later like [`Intent::Lights`].
+    LightLevel {
+        level: LightLevel,
+        target: String,
+    },
+    /// Electricity prices.
+    Power(PowerQuery),
+    /// "Who's home?" (`None`), "is Ingrid home?" (`Some("ingrid")`).
+    WhosHome(Option<String>),
+    /// "Good morning": the time, the weather at home and the shopping list in a few sentences.
+    Briefing,
+    /// The shopping list (a Home Assistant to-do list).
+    ShoppingList(ListCommand),
+    /// A Home Assistant scene; the request text, resolved later ("set the bedroom to relax").
+    Scene(String),
+    /// A Home Assistant script; the request text, resolved later ("run movie time").
+    Script(String),
     /// Reverse the last action: "reverse that", "undo", "switch it back".
     Undo,
     Thanks,
     /// "Never mind", "cancel": end the conversation without an answer.
     Cancel,
     Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LightLevel {
+    /// Brightness in percent; 0 switches off.
+    Percent(u8),
+    Brighter,
+    Dimmer,
+    /// A CSS colour name, as Home Assistant's `color_name` takes it.
+    Color(String),
+    Warm,
+    Cool,
+}
+
+/// Spoken colours and the CSS names Home Assistant knows.
+const COLOURS: &[(&str, &[&str])] = &[
+    ("red", &["red", "rød", "rødt", "røde"]),
+    ("blue", &["blue", "blå", "blått", "blåe"]),
+    ("green", &["green", "grønn", "grønt", "grønne"]),
+    ("yellow", &["yellow", "gul", "gult", "gule"]),
+    ("orange", &["orange", "oransje"]),
+    ("purple", &["purple", "lilla"]),
+    ("pink", &["pink", "rosa"]),
+    ("turquoise", &["turquoise", "turkis"]),
+    ("white", &["white", "hvit", "hvitt", "hvite"]),
+];
+const DIM_WORDS: &[&str] = &["dim", "dimm", "dimme", "demp", "dempe", "darker", "dimmer", "mørkere"];
+const BRIGHT_WORDS: &[&str] = &["brighten", "brighter", "lysere", "sterkere"];
+const WARM_WORDS: &[&str] = &["warm", "warmer", "varm", "varmt", "varmere", "cosy", "cozy"];
+const COOL_WORDS: &[&str] = &["cool", "cooler", "cold", "colder", "kald", "kaldt", "kaldere"];
+/// Verbs that make a colour a light request without the word "light": "make the bedroom red".
+const COLOUR_VERBS: &[&str] = &["make", "set", "turn", "change", "gjør", "sett", "skru", "endre", "farg"];
+/// Words of a level request that are not the room or light.
+const LEVEL_FILLER: &[&str] = &[
+    "too",
+    "it's",
+    "its",
+    "er",
+    "for",
+    "bright",
+    "dark",
+    "lyst",
+    "mørkt",
+    "percent",
+    "prosent",
+    "brightness",
+    "lysstyrke",
+    "lysstyrken",
+    "full",
+    "max",
+    "maximum",
+    "up",
+    "down",
+    "opp",
+    "ned",
+    "a",
+    "bit",
+    "little",
+    "litt",
+    "more",
+    "mer",
+    "make",
+    "set",
+    "change",
+    "gjør",
+    "sett",
+    "endre",
+    "to",
+    "til",
+    "color",
+    "colour",
+    "farge",
+    "fargen",
+    "light",
+    "lighting",
+    "belysning",
+    "turn",
+    "skru",
+    "switch",
+];
+
+/// A brightness or colour request, from the words and the raw text (for "30%").
+fn light_level(words: &[String], text: &str) -> Option<LightLevel> {
+    let has = |w: &str| words.iter().any(|x| x == w);
+    let any = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
+    let light = any(LIGHT_WORDS);
+    let first = words.iter().map(String::as_str).find(|w| !POLITE.contains(w)).unwrap_or_default();
+    let raw: Vec<&str> = text.split_whitespace().map(|t| t.trim_matches(|c: char| ",.!?".contains(c))).collect();
+    let percent = raw.iter().enumerate().find_map(|(i, t)| {
+        let number: u8 = t.trim_end_matches('%').parse().ok()?;
+        let unit = t.ends_with('%')
+            || raw.get(i + 1).is_some_and(|n| ["percent", "prosent", "%"].contains(&n.to_lowercase().as_str()));
+        unit.then_some(number.min(100))
+    });
+    // "It's too bright in here", "det er for mørkt på kjøkkenet".
+    let too = words
+        .windows(2)
+        .any(|p| (p[0] == "too" || p[0] == "for") && ["bright", "lyst", "dark", "mørkt"].contains(&p[1].as_str()));
+    if too {
+        return Some(if has("bright") || has("lyst") { LightLevel::Dimmer } else { LightLevel::Brighter });
+    }
+    let dim = any(DIM_WORDS);
+    let about_brightness = light || dim || has("brightness") || has("lysstyrke") || has("lysstyrken");
+    if let Some(percent) = percent {
+        if about_brightness || ["set", "sett"].contains(&first) {
+            return Some(LightLevel::Percent(percent));
+        }
+    }
+    if about_brightness && (has("full") || has("max") || has("maximum")) {
+        return Some(LightLevel::Percent(100));
+    }
+    if dim {
+        return Some(LightLevel::Dimmer);
+    }
+    if any(BRIGHT_WORDS) {
+        return Some(LightLevel::Brighter);
+    }
+    if light && (has("up") || has("opp")) {
+        return Some(LightLevel::Brighter);
+    }
+    if light && (has("down") || has("ned")) {
+        return Some(LightLevel::Dimmer);
+    }
+    // Warm and cool only with a light word: "make it warmer in here" is the heating.
+    if light && any(WARM_WORDS) {
+        return Some(LightLevel::Warm);
+    }
+    if light && any(COOL_WORDS) {
+        return Some(LightLevel::Cool);
+    }
+    if light || COLOUR_VERBS.contains(&first) {
+        for (css, spoken) in COLOURS {
+            if any(spoken) {
+                return Some(LightLevel::Color((*css).into()));
+            }
+        }
+    }
+    None
+}
+
+/// The request without the level words, for finding the lights.
+fn level_target(text: &str) -> String {
+    let level_word = |w: &str| {
+        LEVEL_FILLER.contains(&w)
+            || DIM_WORDS.contains(&w)
+            || BRIGHT_WORDS.contains(&w)
+            || WARM_WORDS.contains(&w)
+            || COOL_WORDS.contains(&w)
+            || COLOURS.iter().any(|(_, spoken)| spoken.contains(&w))
+            || w.chars().all(|c| c.is_ascii_digit())
+    };
+    text.split_whitespace().filter(|t| !level_word(&normalize(t))).collect::<Vec<_>>().join(" ")
+}
+
+/// "Who's home", "is anyone home", "is Ingrid home", "hvem er hjemme", "er Ingrid hjemme".
+fn whos_home(words: &[String]) -> Option<Option<String>> {
+    let at = words.iter().position(|w| w == "home" || w == "hjemme")?;
+    let first = words.first()?.as_str();
+    if ["who's", "whos", "who", "hvem"].contains(&first) && at <= 3 {
+        return Some(None);
+    }
+    if !["is", "er"].contains(&first) || at == 1 || at > 3 || at + 2 < words.len() {
+        return None;
+    }
+    let name: Vec<&str> =
+        words[1..at].iter().map(String::as_str).filter(|w| !["at", "still", "fortsatt", "på"].contains(w)).collect();
+    let anyone = ["anyone", "anybody", "someone", "somebody", "noen", "everyone", "everybody", "alle"];
+    match name.as_slice() {
+        [] => None,
+        [one] if anyone.contains(one) => Some(None),
+        // Not a person: "is it cold at home".
+        words if words.iter().any(|w| ["it", "the", "det", "den", "there", "anything", "noe"].contains(w)) => None,
+        words => Some(Some(words.join(" "))),
+    }
+}
+
+/// "Good morning" on its own, or asking for the briefing.
+fn is_briefing(words: &[String]) -> bool {
+    let phrase: Vec<&str> = words
+        .iter()
+        .map(String::as_str)
+        .filter(|w| !["and", "hey", "hi", "ok", "og", "hei", "to", "you", "deg"].contains(w))
+        .collect();
+    matches!(phrase.as_slice(), ["good", "morning"] | ["god", "morgen"] | ["morning"] | ["morn"])
+        || words.iter().any(|w| w == "briefing")
+        || words.windows(2).any(|p| (p[0] == "brief" && p[1] == "me") || (p[0] == "dagens" && p[1] == "oversikt"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,6 +468,16 @@ const FILLER: &[&str] = &["the", "byen"];
 /// "joik" is how NB-Whisper sometimes spells "joke".
 const JOKE_STEMS: &[&str] = &["joke", "joik", "vits", "morsom", "funny"];
 
+/// "Which lights are on", "is anything left on", "står det noe lys på", "er lyset på i stua".
+fn is_lights_question(words: &[String]) -> bool {
+    let has = |w: &str| words.iter().any(|x| x == w);
+    let question = ["which", "what", "are", "is", "any", "hvilke", "hvilket", "er", "står", "hva"];
+    let asks = words.first().is_some_and(|w| question.contains(&w.as_str()));
+    let about = words.iter().any(|w| LIGHT_WORDS.contains(&w.as_str()))
+        || ["anything", "everything", "something", "noe", "alt"].iter().any(|w| has(w));
+    asks && about && (has("on") || has("på") || has("left"))
+}
+
 const LIGHT_WORDS: &[&str] =
     &["light", "lights", "lamp", "lamps", "lys", "lyset", "lysene", "lampe", "lampen", "lampene"];
 
@@ -265,12 +486,22 @@ pub fn parse(text: &str) -> Intent {
     // Timers before music ("pause the timer"), except for a song called "Timer".
     let play = words.iter().find(|w| !POLITE.contains(&w.as_str())).is_some_and(|w| PLAY_WORDS.contains(&w.as_str()));
     if !play {
+        // First: items are any words ("add pause buttons to the list").
+        if let Some(command) = shopping::parse(text) {
+            return Intent::ShoppingList(command);
+        }
         if let Some(command) = timer::parse(text) {
             return Intent::Timer(command);
         }
         // Before music: "next bus" is not "next song".
         if let Some(query) = transit::parse(text) {
             return Intent::Transit(query);
+        }
+        if let Some(query) = power::parse(text) {
+            return Intent::Power(query);
+        }
+        if is_briefing(&words) {
+            return Intent::Briefing;
         }
     }
     // Then music: song titles contain every other kind of word ("Here Comes the Rain Again").
@@ -284,6 +515,26 @@ pub fn parse(text: &str) -> Intent {
         return Intent::Joke;
     }
     let has = |w: &str| words.iter().any(|x| x == w);
+    if is_lights_question(&words) {
+        return Intent::LightsStatus { target: text.to_owned() };
+    }
+    if let Some(name) = whos_home(&words) {
+        return Intent::WhosHome(name);
+    }
+    if let Some(level) = light_level(&words, text) {
+        return Intent::LightLevel { level, target: level_target(text) };
+    }
+    let first = words.iter().map(String::as_str).find(|w| !POLITE.contains(w)).unwrap_or_default();
+    if ["script", "skript", "skriptet"].iter().any(|w| has(w)) || ["run", "kjør", "execute"].contains(&first) {
+        return Intent::Script(text.to_owned());
+    }
+    let scene_word = ["scene", "scenen", "mode", "modus", "stemning", "stemningen"].iter().any(|w| has(w));
+    let setting =
+        (["set", "sett"].contains(&first) && (has("to") || has("til"))) || ["activate", "aktiver"].contains(&first);
+    let not_scene = ["volume", "volumet", "temperature", "temperaturen", "alarm", "timer"].iter().any(|w| has(w));
+    if (scene_word || setting) && !not_scene {
+        return Intent::Scene(text.to_owned());
+    }
     let switching = ["turn", "switch", "skru", "slå"].iter().any(|w| has(w));
     let pronoun = ["them", "it", "those", "these", "they", "that", "dem", "den", "det", "de"].iter().any(|w| has(w));
     // "off"/"av" first: in Norwegian "på" is also the preposition ("av på kjøkkenet").
@@ -472,6 +723,73 @@ mod tests {
         assert_eq!(parse("pause"), Intent::Music(MusicCommand::Pause));
         assert!(matches!(parse("next bus"), Intent::Transit(_)));
         assert_eq!(parse("next song"), Intent::Music(MusicCommand::Next));
+    }
+
+    #[test]
+    fn home_requests() {
+        assert!(matches!(parse("which lights are on?"), Intent::LightsStatus { .. }));
+        assert!(matches!(parse("Is anything left on?"), Intent::LightsStatus { .. }));
+        assert!(matches!(parse("are the kitchen lights on"), Intent::LightsStatus { .. }));
+        assert!(matches!(parse("står det noe lys på?"), Intent::LightsStatus { .. }));
+        assert!(matches!(parse("turn on the kitchen lights"), Intent::Lights { on: true, .. }));
+        assert!(matches!(parse("set the living room to relax"), Intent::Scene(_)));
+        assert!(matches!(parse("activate the reading scene"), Intent::Scene(_)));
+        assert!(matches!(parse("relax mode in the bedroom"), Intent::Scene(_)));
+        assert!(matches!(parse("sett soverommet til relax"), Intent::Scene(_)));
+        assert!(matches!(parse("run movie time"), Intent::Script(_)));
+        assert!(matches!(parse("kjør skriptet movie time"), Intent::Script(_)));
+        assert!(matches!(parse("set a timer for ten minutes"), Intent::Timer(_)));
+        assert!(matches!(parse("set the volume to 20"), Intent::Unknown));
+        assert!(matches!(parse("add milk to the shopping list"), Intent::ShoppingList(_)));
+        assert!(matches!(parse("what's on the shopping list"), Intent::ShoppingList(ListCommand::Read)));
+        assert!(matches!(parse("play my shopping playlist"), Intent::Music(_)));
+    }
+
+    #[test]
+    fn light_levels() {
+        use LightLevel::*;
+        let level = |text: &str| match parse(text) {
+            Intent::LightLevel { level, target } => Some((level, target)),
+            _ => None,
+        };
+        let is = |text: &str, want: LightLevel, target: &str| {
+            assert_eq!(level(text), Some((want, target.to_owned())), "{text}");
+        };
+        is("dim the living room to 30%", Percent(30), "the living room");
+        is("set the kitchen lights to 50 percent", Percent(50), "the kitchen lights");
+        is("dim the lights in the bedroom", Dimmer, "the lights in the bedroom");
+        is("make the living room brighter", Brighter, "the living room");
+        is("turn up the lights", Brighter, "the lights");
+        is("skru ned lyset i stua", Dimmer, "lyset i stua");
+        is("demp lyset på soverommet", Dimmer, "lyset på soverommet");
+        is("make the bedroom lights red", Color("red".into()), "the bedroom lights");
+        is("set the living room to blue", Color("blue".into()), "the living room");
+        is("gjør lyset i stua rødt", Color("red".into()), "lyset i stua");
+        is("make the lights warmer", Warm, "the lights");
+        is("full brightness in the kitchen", Percent(100), "in the kitchen");
+        is("make them brighter", Brighter, "them");
+        is("it's a bit too bright in here", Dimmer, "in here");
+        is("it's too dark in the kitchen", Brighter, "in the kitchen");
+        is("det er for mørkt på kjøkkenet", Brighter, "det på kjøkkenet");
+        assert_eq!(level("make it warmer in here"), None);
+        assert_eq!(level("set the living room to relax"), None);
+        assert!(matches!(parse("play Purple Rain"), Intent::Music(_)));
+        assert!(matches!(parse("turn on the kitchen lights"), Intent::Lights { on: true, .. }));
+    }
+
+    #[test]
+    fn people_power_and_briefing() {
+        assert_eq!(parse("who's home?"), Intent::WhosHome(None));
+        assert_eq!(parse("is anyone home"), Intent::WhosHome(None));
+        assert_eq!(parse("is Ingrid home?"), Intent::WhosHome(Some("ingrid".into())));
+        assert_eq!(parse("er Ingrid hjemme?"), Intent::WhosHome(Some("ingrid".into())));
+        assert_eq!(parse("hvem er hjemme"), Intent::WhosHome(None));
+        assert!(!matches!(parse("is it cold at home"), Intent::WhosHome(_)));
+        assert!(matches!(parse("when is electricity cheapest tonight"), Intent::Power(_)));
+        assert_eq!(parse("Good morning!"), Intent::Briefing);
+        assert_eq!(parse("god morgen"), Intent::Briefing);
+        assert_eq!(parse("give me my morning briefing"), Intent::Briefing);
+        assert!(!matches!(parse("good morning, what's the weather in Bergen"), Intent::Briefing));
     }
 
     #[test]

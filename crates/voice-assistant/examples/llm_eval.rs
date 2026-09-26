@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
         user: "what's the weather in Bergen?".into(),
         assistant: "It's 12 degrees and rain in Bergen, with a high of 14.".into(),
     }];
-    let cases: [(&str, &[Turn], &str); 15] = [
+    let cases: [(&str, &[Turn], &str); 23] = [
         ("what's the capital of France?", &[], "say"),
         ("and what about tomorrow?", &weather, "weather Bergen tomorrow"),
         ("it's too dark in the kitchen", &[], "lights kitchen on"),
@@ -31,6 +31,14 @@ fn main() -> anyhow::Result<()> {
         ("tell me when the eggs are done in 7 minutes", &[], "timer start 7 min eggs"),
         ("don't let me forget the laundry in half an hour", &[], "timer remind 30 min laundry"),
         ("give the pizza another five minutes", &[], "timer add 5 min pizza"),
+        ("we're out of coffee and oat milk", &[], "shopping_list add coffee, oat milk"),
+        ("do we need anything from the store?", &[], "shopping_list read"),
+        ("make it cosy in here", &[], "scene relax"),
+        ("I want to read in the bedroom, set the mood", &[], "scene read bedroom"),
+        ("it's a bit too bright in here", &[], "light_settings dimmer"),
+        ("should I run the dishwasher now or later tonight?", &[], "electricity_price cheapest tonight"),
+        ("is my girlfriend Ingrid back yet?", &[], "who_is_home Ingrid"),
+        ("give the bedroom a romantic purple glow", &[], "light_settings bedroom purple"),
     ];
     llm.warm_up(&system)?;
     let mut total = Duration::ZERO;
