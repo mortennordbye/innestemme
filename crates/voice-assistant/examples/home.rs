@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         Intent::WhosHome(name) => println!("{name:?}: {:?}", ha.people()?),
         Intent::Power(query) => {
             let area = std::env::var("VOICE_PRICE_AREA").unwrap_or_else(|_| "NO1".into());
-            let answer = voice_assistant::power::Power::new("ai-voice-example", &area).answer(query, lang)?;
+            let answer = voice_assistant::power::Power::new("innestemme-example", &area).answer(query, lang)?;
             println!("{query:?} in {area} -> {answer:?}");
         }
         Intent::LightsStatus { target } => {

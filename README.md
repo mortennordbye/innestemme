@@ -1,4 +1,4 @@
-# ai-voice
+# innestemme
 
 A local, CPU-only voice engine in Rust. Audio comes in over UDP, passes through a jitter buffer, is encoded to
 Mimi codes, handed to an `Engine`, decoded back to audio and sent out again. The audio path does no heap
@@ -304,8 +304,8 @@ Platform notes:
 ## Container
 
 ```
-docker build -t ai-voice .
-docker run --rm -p 7000:7000/udp -p 9090:9090 -v voice-models:/models ai-voice
+docker build -t innestemme .
+docker run --rm -p 7000:7000/udp -p 9090:9090 -v voice-models:/models innestemme
 ```
 
 The image runs as uid 65532 with `HF_HOME=/models` and works with a read-only root filesystem and all

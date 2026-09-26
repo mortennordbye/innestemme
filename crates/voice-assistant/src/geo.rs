@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// Entur asks every client to name itself.
-pub const ENTUR_CLIENT: &str = "ai-voice";
+pub const ENTUR_CLIENT: &str = "innestemme";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Location {

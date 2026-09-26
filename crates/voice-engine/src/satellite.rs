@@ -113,7 +113,7 @@ struct Bridge<'a> {
 }
 
 async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &SpeechClips) -> Result<()> {
-    let (device, mut incoming) = voice_esphome::Device::connect(&cfg.address, cfg.key.as_ref(), "ai-voice")
+    let (device, mut incoming) = voice_esphome::Device::connect(&cfg.address, cfg.key.as_ref(), "innestemme")
         .await
         .with_context(|| format!("connecting to satellite {}", cfg.address))?;
     let base_url = cfg

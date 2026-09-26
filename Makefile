@@ -35,12 +35,12 @@ build: tools
 # Piper speech over Wyoming, the same server Home Assistant's Piper add-on runs. Voices are cached.
 PIPER_IMAGE := rhasspy/wyoming-piper:2.5.2
 piper:
-	@docker inspect -f '{{.State.Running}}' ai-voice-piper 2>/dev/null | grep -q true && echo "piper already running" || \
-	  docker run -d --rm --name ai-voice-piper -p 127.0.0.1:10200:10200 \
-	    -v $(HOME)/Library/Caches/ai-voice/piper:/data $(PIPER_IMAGE) --voice no_NO-talesyntese-medium
+	@docker inspect -f '{{.State.Running}}' innestemme-piper 2>/dev/null | grep -q true && echo "piper already running" || \
+	  docker run -d --rm --name innestemme-piper -p 127.0.0.1:10200:10200 \
+	    -v $(HOME)/Library/Caches/innestemme/piper:/data $(PIPER_IMAGE) --voice no_NO-talesyntese-medium
 
 piper-stop:
-	docker stop ai-voice-piper
+	docker stop innestemme-piper
 
 # The language model behind the rules. llama.cpp sizes its thread pool from the physical cores it
 # sees, which oversubscribes a Docker VM (0.5 instead of ~100 tokens/s on an M4 Pro), so the model
@@ -49,11 +49,11 @@ piper-stop:
 OLLAMA_IMAGE := ollama/ollama:0.33.3
 OLLAMA_THREADS ?= 8
 ollama:
-	@docker inspect -f '{{.State.Running}}' ai-voice-ollama 2>/dev/null | grep -q true || \
-	  docker run -d --name ai-voice-ollama -p 127.0.0.1:11434:11434 -e OLLAMA_KEEP_ALIVE=-1 \
-	    -v $(HOME)/Library/Caches/ai-voice/ollama:/root/.ollama $(OLLAMA_IMAGE)
+	@docker inspect -f '{{.State.Running}}' innestemme-ollama 2>/dev/null | grep -q true || \
+	  docker run -d --name innestemme-ollama -p 127.0.0.1:11434:11434 -e OLLAMA_KEEP_ALIVE=-1 \
+	    -v $(HOME)/Library/Caches/innestemme/ollama:/root/.ollama $(OLLAMA_IMAGE)
 	@until curl -sf 127.0.0.1:11434/api/version >/dev/null; do sleep 1; done
-	docker exec ai-voice-ollama sh -c 'ollama pull qwen3:4b-instruct && \
+	docker exec innestemme-ollama sh -c 'ollama pull qwen3:4b-instruct && \
 	  printf "FROM qwen3:4b-instruct\nPARAMETER num_thread $(OLLAMA_THREADS)\n" > /tmp/M && \
 	  ollama create qwen3-voice:4b-instruct -f /tmp/M'
 	@echo "set in config.local.yaml: llm-url: http://127.0.0.1:11434/v1 and llm-model: qwen3-voice:4b-instruct"

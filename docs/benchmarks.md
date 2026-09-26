@@ -48,7 +48,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: voice-bench
-  namespace: ai-voice
+  namespace: innestemme
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 86400
@@ -65,7 +65,7 @@ spec:
                     values: [hyper1]
       containers:
         - name: voice-bench
-          image: ghcr.io/mortennordbye/ai-voice:sha-0000000
+          image: ghcr.io/mortennordbye/innestemme:sha-0000000
           command: ["/usr/local/bin/voice-bench"]
           args: ["--label", "hyper1", "--header"]
           env:
@@ -83,7 +83,7 @@ spec:
 ```
 
 For `--bench moshi` raise memory to 12Gi and give the `emptyDir` room for 9 GB. The namespace's
-CiliumNetworkPolicy selects `app: ai-voice` only, so this pod's download is not restricted by it.
+CiliumNetworkPolicy selects `app: innestemme` only, so this pod's download is not restricted by it.
 
 On x86 the `simd` column must show `avx`. If it shows `scalar`, the binary was built without
 `-C target-cpu=x86-64-v3` and the numbers are meaningless.

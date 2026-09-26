@@ -73,7 +73,7 @@ impl Jokes {
             .agent
             .get("https://icanhazdadjoke.com/")
             .set("Accept", "application/json")
-            .set("User-Agent", "ai-voice local assistant (personal use)")
+            .set("User-Agent", "innestemme voice assistant (https://github.com/mortennordbye/innestemme)")
             .call();
         match response.map(|r| r.into_json::<DadJoke>()) {
             Ok(Ok(DadJoke { joke })) if !self.recent.contains(&joke) => {

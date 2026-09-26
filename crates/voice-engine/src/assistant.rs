@@ -189,8 +189,8 @@ impl AssistantProcessor {
         let (events, _) = broadcast::channel(256);
         // MET Norway asks for an application name and a contact.
         let user_agent = match &config.contact {
-            Some(contact) => format!("ai-voice/{} {contact}", env!("CARGO_PKG_VERSION")),
-            None => format!("ai-voice/{}", env!("CARGO_PKG_VERSION")),
+            Some(contact) => format!("innestemme/{} {contact}", env!("CARGO_PKG_VERSION")),
+            None => format!("innestemme/{}", env!("CARGO_PKG_VERSION")),
         };
         let home_location = config.address.as_deref().and_then(|address| {
             match geo::home(&geo::agent(&user_agent), address, config.home.as_deref()) {
