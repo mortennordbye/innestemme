@@ -86,7 +86,7 @@ struct Normal {
 
 impl ptts::flow_lm::Rng for Normal {
     fn sample(&mut self) -> f32 {
-        use rand::Rng;
+        use rand::RngExt;
         self.rng.sample(self.distr)
     }
 }

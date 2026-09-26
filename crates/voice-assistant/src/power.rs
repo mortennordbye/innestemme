@@ -226,8 +226,10 @@ impl Power {
         }
         let url = format!("{URL}/{}/{}_{}.json", date.year(), date.strftime("%m-%d"), self.area);
         let prices = match self.agent.get(&url).call() {
-            Ok(response) => Some(response.into_json::<Vec<Interval>>().context("parsing electricity prices")?),
-            Err(ureq::Error::Status(404, _)) => None,
+            Ok(mut response) => {
+                Some(response.body_mut().read_json::<Vec<Interval>>().context("parsing electricity prices")?)
+            }
+            Err(ureq::Error::StatusCode(404)) => None,
             Err(error) => return Err(error).context("electricity prices (hvakosterstrommen.no)"),
         };
         self.days.push((date, prices.clone(), Instant::now()));

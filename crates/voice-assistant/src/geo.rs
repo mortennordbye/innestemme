@@ -19,7 +19,7 @@ pub struct Location {
 }
 
 pub fn agent(user_agent: &str) -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(TIMEOUT).user_agent(user_agent).build()
+    ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).user_agent(user_agent).build().into()
 }
 
 /// "59.9133, 10.7403" or "59.9133 10.7403".
@@ -38,14 +38,15 @@ pub fn home(agent: &ureq::Agent, address: &str, label: Option<&str>) -> Result<O
     }
     let found: Features = agent
         .get("https://api.entur.io/geocoder/v1/search")
-        .set("ET-Client-Name", ENTUR_CLIENT)
+        .header("ET-Client-Name", ENTUR_CLIENT)
         .query("text", address)
         .query("size", "1")
         .query("layers", "address,venue")
         .query("lang", "no")
         .call()
         .context("address lookup (Entur geocoder)")?
-        .into_json()?;
+        .body_mut()
+        .read_json()?;
     Ok(found.features.into_iter().next().map(|f| Location {
         longitude: f.geometry.coordinates[0],
         latitude: f.geometry.coordinates[1],
@@ -101,7 +102,7 @@ pub fn place(agent: &ureq::Agent, name: &str) -> Result<Option<Location>> {
         if let Some(country) = country {
             call = call.query("countryCode", country);
         }
-        let geo: Geocoding = call.call().context("place lookup (Open-Meteo geocoder)")?.into_json()?;
+        let geo: Geocoding = call.call().context("place lookup (Open-Meteo geocoder)")?.body_mut().read_json()?;
         Ok(geo.results)
     };
     let same = |p: &Place| p.name.to_lowercase() == name.trim().to_lowercase();

@@ -40,11 +40,12 @@ impl Weather {
             let met: Met = self
                 .agent
                 .get("https://api.met.no/weatherapi/locationforecast/2.0/complete")
-                .query("lat", &format!("{:.2}", key.0 as f64 / 100.0))
-                .query("lon", &format!("{:.2}", key.1 as f64 / 100.0))
+                .query("lat", format!("{:.2}", key.0 as f64 / 100.0))
+                .query("lon", format!("{:.2}", key.1 as f64 / 100.0))
                 .call()
                 .context("forecast request (MET Norway)")?
-                .into_json()
+                .body_mut()
+                .read_json()
                 .context("reading the forecast")?;
             self.cache.insert(key, (Instant::now(), met));
         }

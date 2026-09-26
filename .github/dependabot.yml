@@ -27,6 +27,15 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # moshi 0.6.4 (Mimi codec, Kyutai STT) is built on candle 0.9 and has no newer release; our
+      # tensors cross into it, so candle moves when moshi does.
+      - dependency-name: "candle-*"
+        versions: [">=0.10"]
+      # hf-hub 1.0 is a rewrite on reqwest and hf-xet to fetch a few model files; 0.4 works and
+      # uses the same cache layout, so moving later is safe.
+      - dependency-name: hf-hub
+        versions: [">=1"]
 
   - package-ecosystem: docker
     directory: /

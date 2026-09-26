@@ -259,10 +259,11 @@ impl Transit {
         let mut answer: serde_json::Value = self
             .agent
             .post(JOURNEY_PLANNER)
-            .set("ET-Client-Name", ENTUR_CLIENT)
+            .header("ET-Client-Name", ENTUR_CLIENT)
             .send_json(json!({ "query": query }))
             .context("Entur request")?
-            .into_json()?;
+            .body_mut()
+            .read_json()?;
         if let Some(errors) = answer.get("errors") {
             bail!("Entur answered with errors: {errors}");
         }
@@ -324,17 +325,17 @@ impl Transit {
         let mut call = self
             .agent
             .get("https://api.entur.io/geocoder/v1/autocomplete")
-            .set("ET-Client-Name", ENTUR_CLIENT)
+            .header("ET-Client-Name", ENTUR_CLIENT)
             .query("text", name)
             .query("layers", "venue")
             .query("size", "1")
             .query("lang", "no");
         if let Some(home) = &self.home {
             call = call
-                .query("focus.point.lat", &home.latitude.to_string())
-                .query("focus.point.lon", &home.longitude.to_string());
+                .query("focus.point.lat", home.latitude.to_string())
+                .query("focus.point.lon", home.longitude.to_string());
         }
-        let found: serde_json::Value = call.call().context("stop lookup (Entur geocoder)")?.into_json()?;
+        let found: serde_json::Value = call.call().context("stop lookup (Entur geocoder)")?.body_mut().read_json()?;
         let feature = &found["features"][0];
         let props = &feature["properties"];
         let [lon, lat] = [&feature["geometry"]["coordinates"][0], &feature["geometry"]["coordinates"][1]];

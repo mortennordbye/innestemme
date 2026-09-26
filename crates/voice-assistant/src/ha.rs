@@ -159,7 +159,7 @@ impl HomeAssistant {
         Self {
             base: base.trim_end_matches('/').to_owned(),
             token: token.to_owned(),
-            agent: ureq::AgentBuilder::new().timeout(TIMEOUT).build(),
+            agent: ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).build().into(),
             lights: Vec::new(),
             fetched: None,
             scenes: Vec::new(),
@@ -168,18 +168,25 @@ impl HomeAssistant {
         }
     }
 
-    fn post(&self, path: &str, body: serde_json::Value) -> Result<ureq::Response> {
+    fn post(&self, path: &str, body: serde_json::Value) -> Result<ureq::http::Response<ureq::Body>> {
         self.post_within(path, body, TIMEOUT)
     }
 
-    fn post_within(&self, path: &str, body: serde_json::Value, timeout: Duration) -> Result<ureq::Response> {
+    fn post_within(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<ureq::http::Response<ureq::Body>> {
         self.agent
             .post(&format!("{}{path}", self.base))
-            .timeout(timeout)
-            .set("Authorization", &format!("Bearer {}", self.token))
+            .config()
+            .timeout_global(Some(timeout))
+            .build()
+            .header("Authorization", &format!("Bearer {}", self.token))
             .send_json(body)
             .map_err(|e| match e {
-                ureq::Error::Status(401, _) => {
+                ureq::Error::StatusCode(401) => {
                     anyhow::anyhow!("Home Assistant rejected the token (401)")
                 }
                 other => anyhow::anyhow!("Home Assistant request to {path} failed: {other}"),
@@ -277,23 +284,25 @@ impl HomeAssistant {
     pub fn service_response(&self, domain: &str, service: &str, data: serde_json::Value) -> Result<serde_json::Value> {
         let mut body: serde_json::Value = self
             .post_within(&format!("/api/services/{domain}/{service}?return_response"), data, SERVICE_TIMEOUT)?
-            .into_json()?;
+            .body_mut()
+            .read_json()?;
         Ok(body["service_response"].take())
     }
 
     /// Renders a template.
     pub fn template(&self, template: &str) -> Result<String> {
-        Ok(self.post("/api/template", serde_json::json!({ "template": template }))?.into_string()?)
+        Ok(self.post("/api/template", serde_json::json!({ "template": template }))?.body_mut().read_to_string()?)
     }
 
     /// Any GET under the API, e.g. `/api/states/light.kitchen`.
     pub fn get(&self, path: &str) -> Result<serde_json::Value> {
         self.agent
             .get(&format!("{}{path}", self.base))
-            .set("Authorization", &format!("Bearer {}", self.token))
+            .header("Authorization", &format!("Bearer {}", self.token))
             .call()
             .map_err(|e| anyhow::anyhow!("Home Assistant request to {path} failed: {e}"))?
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(Into::into)
     }
 

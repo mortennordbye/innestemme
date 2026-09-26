@@ -47,7 +47,13 @@ impl Llm {
             url: url.trim_end_matches('/').to_owned(),
             model: model.to_owned(),
             key,
-            agent: ureq::AgentBuilder::new().timeout(timeout).build(),
+            // Error statuses come back as responses: their body says why ("does not support
+            // reasoning"), which `decide` needs to retry.
+            agent: ureq::Agent::config_builder()
+                .timeout_global(Some(timeout))
+                .http_status_as_error(false)
+                .build()
+                .into(),
         }
     }
 
@@ -101,17 +107,15 @@ impl Llm {
     fn post(&self, body: &Value) -> Result<Value> {
         let mut call = self.agent.post(&format!("{}/chat/completions", self.url));
         if let Some(key) = &self.key {
-            call = call.set("Authorization", &format!("Bearer {key}"));
+            call = call.header("Authorization", &format!("Bearer {key}"));
         }
-        call.send_json(body)
-            .map_err(|e| match e {
-                ureq::Error::Status(code, r) => {
-                    anyhow!("language model HTTP {code}: {}", r.into_string().unwrap_or_default().trim())
-                }
-                other => anyhow!("language model request failed: {other}"),
-            })?
-            .into_json()
-            .context("language model answer is not JSON")
+        let mut response = call.send_json(body).map_err(|e| anyhow!("language model request failed: {e}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.body_mut().read_to_string().unwrap_or_default();
+            return Err(anyhow!("language model HTTP {}: {}", status.as_u16(), text.trim()));
+        }
+        response.body_mut().read_json().context("language model answer is not JSON")
     }
 }
 

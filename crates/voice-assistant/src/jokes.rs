@@ -53,7 +53,11 @@ impl Default for Jokes {
         // Start somewhere different on each run.
         let next =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as usize);
-        Self { agent: ureq::AgentBuilder::new().timeout(TIMEOUT).build(), recent: VecDeque::new(), next }
+        Self {
+            agent: ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).build().into(),
+            recent: VecDeque::new(),
+            next,
+        }
     }
 }
 
@@ -72,10 +76,10 @@ impl Jokes {
         let response = self
             .agent
             .get("https://icanhazdadjoke.com/")
-            .set("Accept", "application/json")
-            .set("User-Agent", "innestemme voice assistant (https://github.com/mortennordbye/innestemme)")
+            .header("Accept", "application/json")
+            .header("User-Agent", "innestemme voice assistant (https://github.com/mortennordbye/innestemme)")
             .call();
-        match response.map(|r| r.into_json::<DadJoke>()) {
+        match response.map(|mut r| r.body_mut().read_json::<DadJoke>()) {
             Ok(Ok(DadJoke { joke })) if !self.recent.contains(&joke) => {
                 Some(joke.split_whitespace().collect::<Vec<_>>().join(" "))
             }
