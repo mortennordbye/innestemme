@@ -46,9 +46,9 @@ and every other file. Specifically, never write:
 - Agent-named branches (`claude/...`, `codex/...`, `copilot/...`): name branches after the change instead.
 
 If a tool or harness adds any of this by default (a commit trailer, a PR footer, a session link), remove it
-before committing or posting; that default does not apply here. CI rejects commit messages and identities with
-AI attribution on pull requests and on pushes to `main`, but code, docs and PR bodies are only guarded by this
-rule. Removing a trace afterwards means rewriting published history.
+before committing or posting; that default does not apply here. CI rejects the unambiguous markers (trailers, session
+links, "generated with" or "made by" an agent, 🤖, agent identities) on pull requests and on pushes to `main`;
+wording such as "AI-generated", and code, docs and PR bodies, are only guarded by this rule. Removing a trace afterwards means rewriting published history.
 
 ## Conventions
 

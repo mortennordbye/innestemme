@@ -62,7 +62,7 @@ jobs:
           if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then range="$HEAD"; else range="$BASE..$HEAD"; fi
           agents='claude|anthropic|codex|openai|chatgpt|copilot|gemini|cursor|jules|devin|aider'
           messages=$(git log --format='%H%n%B' "$range" | grep -inE \
-            "^[[:space:]]*(claude-session:|(co-authored-by|assisted-by|generated-by|signed-off-by|reviewed-by):.*($agents))|generated (with|by) \\[?($agents)|(created|made|written) (with|by) \\[?($agents)|claude\\.(ai|com)/|🤖|ai-generated" || true)
+            "^[[:space:]]*(claude-session:|(co-authored-by|assisted-by|generated-by|signed-off-by|reviewed-by):.*($agents))|generated (with|by) \\[?($agents)|(created|made|written) (with|by) \\[?($agents)|claude\\.(ai|com)/|🤖" || true)
           identities=$(git log --format='%H %an <%ae> / %cn <%ce>' "$range" | grep -iE "$agents|noreply@anthropic" | grep -v 'dependabot\[bot\]' || true)
           if [ -n "$messages$identities" ]; then
             echo "::error::AI attribution found"
