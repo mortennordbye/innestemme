@@ -44,29 +44,32 @@ jobs:
         run: cargo test --workspace --locked
 
   # Backstop for commits made anywhere: AI attribution never lands in the history, since removing it
-  # afterwards means rewriting that history.
+  # afterwards means rewriting that history. Runs on pull requests and on direct pushes to main.
   attribution:
     name: Attribution
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - name: Reject AI attribution in commit messages
+      - name: Reject AI attribution in commit messages and identities
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          hits=$(git log --format='%H%n%B' "$BASE..$HEAD" \
-            | grep -inE '^(claude-session:|co-authored-by:.*(claude|anthropic|codex|openai|chatgpt|gemini|jules)|[^a-z]*generated (with|by) \[?(claude|codex|openai|chatgpt|gemini))' || true)
-          if [ -n "$hits" ]; then
-            echo "::error::AI attribution found in commit messages"
-            echo "$hits"
+          # A first push or a manual run has no usable base: check the whole history then.
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then range="$HEAD"; else range="$BASE..$HEAD"; fi
+          agents='claude|anthropic|codex|openai|chatgpt|copilot|gemini|cursor|jules|devin|aider'
+          messages=$(git log --format='%H%n%B' "$range" | grep -inE \
+            "^[[:space:]]*(claude-session:|(co-authored-by|assisted-by|generated-by|signed-off-by|reviewed-by):.*($agents))|generated (with|by) \\[?($agents)|(created|made|written) (with|by) \\[?($agents)|claude\\.(ai|com)/|🤖|ai-generated" || true)
+          identities=$(git log --format='%H %an <%ae> / %cn <%ce>' "$range" | grep -iE "$agents|noreply@anthropic" | grep -v 'dependabot\[bot\]' || true)
+          if [ -n "$messages$identities" ]; then
+            echo "::error::AI attribution found"
+            printf '%s\n' "$messages" "$identities"
             exit 1
           fi
-          echo "clean: $(git rev-list --count "$BASE..$HEAD") commit(s)"
+          echo "clean: $(git rev-list --count "$range") commit(s)"
 
   # Whether a push to main changed anything the image is built from: a new image restarts the pod,
   # and a docs-only push has no business doing that.
