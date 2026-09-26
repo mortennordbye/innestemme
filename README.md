@@ -1,11 +1,42 @@
-# innestemme
+<div align="center">
 
-A local, CPU-only voice engine in Rust. Audio comes in over UDP, passes through a jitter buffer, is encoded to
-Mimi codes, handed to an `Engine`, decoded back to audio and sent out again. The audio path does no heap
-allocation after startup, and every stage reports its latency.
+# 🤫 innestemme
 
-Status: Milestone 1 (core audio loop). The only engine so far is `LoopbackEngine`, which echoes the codes back, so
-what you hear is your own voice after a Mimi round trip. No STT, LLM, TTS or Home Assistant integration yet.
+### A local voice assistant that replaces Home Assistant's Assist, on your own CPU.
+
+[![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)](https://www.rust-lang.org) [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-18BCF2?logo=homeassistant&logoColor=white)](https://www.home-assistant.io) [![ESPHome](https://img.shields.io/badge/ESPHome-000000?logo=esphome&logoColor=white)](https://esphome.io) [![Ollama](https://img.shields.io/badge/Ollama-000000?logo=ollama&logoColor=white)](https://ollama.com)
+
+[![CI](https://github.com/mortennordbye/innestemme/actions/workflows/ci.yml/badge.svg)](https://github.com/mortennordbye/innestemme/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/mortennordbye/innestemme/badge)](https://securityscorecards.dev/viewer/?uri=github.com/mortennordbye/innestemme)
+
+[![License](https://img.shields.io/github/license/mortennordbye/innestemme?style=flat-square)](LICENSE) [![Last Commit](https://img.shields.io/github/last-commit/mortennordbye/innestemme?style=flat-square)](https://github.com/mortennordbye/innestemme/commits/main) [![Stars](https://img.shields.io/github/stars/mortennordbye/innestemme?style=flat-square)](https://github.com/mortennordbye/innestemme/stargazers)
+
+*Innestemme* is Norwegian for "indoor voice": a voice assistant that never leaves the house. Speech recognition,
+the language model and the voice all run locally, in English and Norwegian, and it talks to Home Assistant and
+ESPHome satellites such as the Home Assistant Voice PE.
+
+</div>
+
+---
+
+## Overview
+
+Audio comes in over UDP (from the test client or an ESPHome satellite bridged by the engine), Whisper turns it
+into text, rules handle the common requests and a small local language model (any OpenAI-compatible server, for
+example Ollama with Qwen3 4B) handles the rest by picking a skill. Answers are spoken with Pocket TTS (English) or
+Piper (Norwegian). The audio path does no heap allocation after startup, and every stage reports its latency.
+
+| Skill | Examples |
+|---|---|
+| Lights | "turn off the kitchen lights", "dim the living room to 30%", "make the bedroom red", "which lights are on?" |
+| Scenes and scripts | "set the living room to relax", "run movie time", or a script's name on its own |
+| Shopping list | "add milk and eggs to the shopping list", "what's on the list?", "legg til melk på handlelista" |
+| Music | "play my liked songs", "next song", "turn it down" (Music Assistant) |
+| Timers and reminders | "set a pasta timer for 8 minutes", "remind me to call mum in an hour" |
+| Weather | "what's the weather tomorrow?", "hvordan blir været i Bergen?" (Yr) |
+| Departures | "when's the next bus?", "how do I get to Majorstuen?" (Entur) |
+| Electricity prices | "when is power cheapest tonight?", "hva koster strømmen nå?" |
+| Home | "who's home?", "good morning" (a short briefing) |
+| Anything else | answered by the language model in one sentence |
 
 ## Layout
 
@@ -15,7 +46,8 @@ what you hear is your own voice after a Mimi round trip. No STT, LLM, TTS or Hom
 | `voice-rt` | Real-time plumbing: reorder buffer, atomic histogram, allocation guard, pinned threads. |
 | `voice-codec` | Packet codec (raw PCM) and `MimiCodec` over `moshi` / candle. |
 | `voice-engine` | The server: UDP transport, net task and model thread joined by lock-free rings, `/metrics`. |
-| `voice-assistant` | "Homie" assistant parts: Kyutai STT-1B streaming, wake word and turn logic, intent rules, weather (Yr), departures (Entur), timers, macOS `say` output. |
+| `voice-assistant` | Assistant parts: Whisper and Kyutai STT, wake word and turn logic, intent rules, the language model client, skills (Home Assistant lights, scenes, shopping list, Music Assistant, timers, Yr, Entur, electricity prices), Pocket TTS and Piper output. |
+| `voice-esphome` | ESPHome native API client (plaintext and Noise), so the engine can serve a Voice PE instead of Home Assistant's Assist. |
 | `voice-client` | Test client: tone, wav file or live microphone. Reports frame turnaround and mouth-to-ear. |
 | `voice-bench` | Per-frame step times for [docs/benchmarks.md](docs/benchmarks.md). |
 
@@ -306,8 +338,38 @@ Platform notes:
 ```
 docker build -t innestemme .
 docker run --rm -p 7000:7000/udp -p 9090:9090 -v voice-models:/models innestemme
+docker pull ghcr.io/mortennordbye/innestemme:latest    # built by CI from main
 ```
 
 The image runs as uid 65532 with `HF_HOME=/models` and works with a read-only root filesystem and all
 capabilities dropped. It is linux/amd64 only and requires an x86-64-v3 CPU (AVX2). The build stage cross-compiles
 when Docker runs on another architecture, so it does not go through emulation.
+
+---
+
+## Workflows
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| CI | push, PR | clippy and tests; on main, build the image, smoke-test it, scan it with Trivy and push it to GHCR |
+| Dependency Review | PR | block dependency changes with known vulnerabilities |
+| Scorecard | push, weekly | OpenSSF supply-chain score |
+| GHCR retention | weekly | keep the newest image versions, delete the rest |
+
+---
+
+<div align="center">
+
+### ⭐ Star this repo if you find it useful ⭐
+
+<a href="https://www.star-history.com/#mortennordbye/innestemme&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=mortennordbye/innestemme&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=mortennordbye/innestemme&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=mortennordbye/innestemme&type=Date" width="600" />
+  </picture>
+</a>
+
+Made by [Morten Victor Nordbye](https://github.com/mortennordbye)
+
+</div>
