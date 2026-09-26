@@ -272,7 +272,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-metal",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.5.1",
  "rayon",
  "safetensors 0.7.0",
  "thiserror 2.0.20",
@@ -980,7 +980,7 @@ dependencies = [
  "half",
  "num-traits",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.5.1",
 ]
 
 [[package]]
@@ -1389,7 +1389,7 @@ dependencies = [
  "crunchy",
  "num-traits",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.5.1",
  "zerocopy",
 ]
 
@@ -2456,7 +2456,7 @@ checksum = "ac94d2bd728b04a652915919e799e39d9d0881e6322f21785be6a56f12feb55e"
 dependencies = [
  "ebur128",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.5.1",
  "serde",
  "tracing",
  "tracing-subscriber",
@@ -2631,6 +2631,16 @@ checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
 dependencies = [
  "num-traits",
  "rand 0.9.5",
+]
+
+[[package]]
+name = "rand_distr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d431c2703ccf129de4d45253c03f49ebb22b97d6ad79ee3ecfc7e3f4862c1d8"
+dependencies = [
+ "num-traits",
+ "rand 0.10.3",
 ]
 
 [[package]]
@@ -3641,7 +3651,7 @@ dependencies = [
  "moshi",
  "ptts",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.6.0",
  "serde",
  "serde_json",
  "tokenizers",
@@ -4225,7 +4235,7 @@ dependencies = [
  "num-traits",
  "num_cpus",
  "rand 0.9.5",
- "rand_distr",
+ "rand_distr 0.5.1",
  "rayon",
  "safetensors 0.7.0",
  "thiserror 2.0.20",
