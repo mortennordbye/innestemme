@@ -9,7 +9,7 @@ anyhow.workspace = true
 candle = { version = "0.9.1", package = "candle-core" }
 candle-transformers = "0.9.1"
 clap.workspace = true
-hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "rustls-tls"] }
+hf-hub = { version = "0.5.0", default-features = false, features = ["ureq", "rustls-tls"] }
 hound = "3.5"
 mimalloc = "0.1"
 moshi = "0.6.4"
