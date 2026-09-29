@@ -3849,6 +3849,7 @@ dependencies = [
  "libc",
  "mimalloc",
  "rtrb",
+ "serde_json",
  "serde_yaml_ng",
  "socket2",
  "tokio",

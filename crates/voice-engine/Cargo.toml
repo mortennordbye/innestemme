@@ -12,6 +12,7 @@ hound = "3.5"
 jiff = { version = "0.2", features = ["tzdb-bundle-always"] }
 mimalloc = "0.1"
 rtrb.workspace = true
+serde_json = "1"
 serde_yaml_ng = "0.10"
 socket2.workspace = true
 tokio.workspace = true

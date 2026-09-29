@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
 use tracing::info;
 use voice_assistant::dialog::WakeWord;
+use voice_assistant::ha::HomeAssistant;
 use voice_assistant::lang::Lang;
 use voice_assistant::pocket::PocketFiles;
 use voice_assistant::stt::{SpeechToText, SttFiles};
@@ -18,7 +19,7 @@ use voice_engine::assistant::{AssistantConfig, AssistantProcessor, Listener};
 use voice_engine::settings;
 use voice_engine::{
     metrics::{serve_http, SpeechClips},
-    satellite::SatelliteConfig,
+    satellite::{AnswerPlayer, SatelliteConfig},
     serve, Config, FrameProcessor, LoopbackEngine, Metrics, MimiProcessor, Passthrough, UdpTransport,
 };
 
@@ -237,6 +238,13 @@ struct Args {
     /// synthesized, like Home Assistant does; `false` serves each answer once it is complete.
     #[arg(long, env = "VOICE_SATELLITE_STREAM", default_value_t = true, action = clap::ArgAction::Set)]
     satellite_stream: bool,
+    /// Home Assistant media player that speaks a satellite's answers instead of the device, e.g.
+    /// media_player.living_room (a Sonos), as an announcement over whatever it plays.
+    #[arg(long, env = "VOICE_ANSWER_PLAYER")]
+    answer_player: Option<String>,
+    /// Announcement volume on `--answer-player`, 0 to 1. Default: the player's own volume.
+    #[arg(long, env = "VOICE_ANSWER_VOLUME")]
+    answer_volume: Option<f32>,
     /// Download and load the models, then exit.
     #[arg(long)]
     download_only: bool,
@@ -409,6 +417,24 @@ fn main() -> Result<()> {
                 if args.bind.ip().is_unspecified() { [127, 0, 0, 1].into() } else { args.bind.ip() },
                 args.bind.port(),
             );
+            let answer_player = match &args.answer_player {
+                Some(entity) => {
+                    let (url, token) = args
+                        .ha_url
+                        .as_deref()
+                        .zip(args.ha_token.as_deref())
+                        .context("`--answer-player` needs Home Assistant (`--ha-url` and `--ha-token`)")?;
+                    if args.answer_volume.is_some_and(|v| !(0.0..=1.0).contains(&v)) {
+                        anyhow::bail!("`--answer-volume` is 0 to 1");
+                    }
+                    Some(Arc::new(AnswerPlayer {
+                        ha: HomeAssistant::new(url, token),
+                        entity: entity.clone(),
+                        volume: args.answer_volume,
+                    }))
+                }
+                None => None,
+            };
             let cfg = SatelliteConfig {
                 address,
                 key,
@@ -416,6 +442,7 @@ fn main() -> Result<()> {
                 public_url: args.public_url.clone(),
                 http_port: args.metrics_bind.port(),
                 stream_answers: args.satellite_stream,
+                answer_player,
             };
             tokio::spawn(voice_engine::satellite::run(cfg, assistant, speech));
         }
