@@ -60,6 +60,9 @@ whisper-size: base
 # public-url: http://voice.lan:9090
 # Start playing answers while they are synthesized (as Home Assistant does); false waits for the whole answer.
 # satellite-stream: true
+# Speak answers on a Home Assistant media player (a Sonos) instead of the device, as an announcement.
+# answer-player: media_player.living_room
+# answer-volume: 0.65
 
 # --- Runtime -----------------------------------------------------------------------------------
 # Compute threads: set to the CPU limit in a container (defaults to every core of the host).

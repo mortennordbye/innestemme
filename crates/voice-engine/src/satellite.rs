@@ -10,6 +10,9 @@
 //! still being synthesized. An answer that ends in a question keeps the conversation open: the
 //! device listens again without its wake word once it has spoken.
 //!
+//! With an answer player (a Sonos in Home Assistant), the device only listens: the answer, once
+//! complete, is announced on that player instead, and the device gets no speech events.
+//!
 //! Wake word: with the device's wake word processing set to "in Home Assistant", the device streams
 //! continuously and the assistant listens for its own name. With an on-device wake word ("Okay
 //! Nabu"), the device starts a run itself and the next utterance is the request.
@@ -28,6 +31,9 @@ use voice_assistant::timer::NoticeKind;
 use voice_esphome::proto::{feature, Announce, Event, TimerEvent, TimerUpdate, REQUEST_USE_WAKE_WORD};
 use voice_esphome::{Device, Incoming};
 use voice_proto::{Codec, Header, Kind, HEADER_LEN, MAX_DATAGRAM, PACKET_SAMPLES, SAMPLE_RATE};
+
+use serde_json::json;
+use voice_assistant::ha::HomeAssistant;
 
 use crate::assistant::{AssistantEvent, AssistantHandle};
 use crate::metrics::{Clip, SpeechClips};
@@ -57,6 +63,31 @@ pub struct SatelliteConfig {
     pub http_port: u16,
     /// URL devices: start playing the answer while it is synthesized, instead of when it is complete.
     pub stream_answers: bool,
+    /// Speak answers on this Home Assistant media player instead of the device.
+    pub answer_player: Option<Arc<AnswerPlayer>>,
+}
+
+/// A Home Assistant media player that announces the answers, e.g. a Sonos.
+pub struct AnswerPlayer {
+    pub ha: HomeAssistant,
+    pub entity: String,
+    /// Announcement volume, 0 to 1; the player's own volume when unset.
+    pub volume: Option<f32>,
+}
+
+impl AnswerPlayer {
+    fn announce(&self, url: &str) -> Result<()> {
+        let mut data = json!({
+            "entity_id": self.entity,
+            "media_content_id": url,
+            "media_content_type": "music",
+            "announce": true,
+        });
+        if let Some(volume) = self.volume {
+            data["extra"] = json!({ "volume": volume });
+        }
+        self.ha.service("media_player", "play_media", data)
+    }
 }
 
 /// Keeps a satellite connected, reconnecting with backoff.
@@ -100,6 +131,7 @@ struct Bridge<'a> {
     /// URL devices without streaming: the answer so far, 24 kHz.
     answer: Vec<i16>,
     stream_answers: bool,
+    player: Option<Arc<AnswerPlayer>>,
     /// URL devices with streaming: this run's answer URL, sent at the run's start, and whether the
     /// device was told to start playing it.
     clip: Option<(String, Arc<Clip>)>,
@@ -127,7 +159,11 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         model = device.info.model,
         esphome = device.info.esphome_version,
         flags = device.info.voice_assistant_feature_flags,
-        answers = if device.info.has(feature::SPEAKER) { "streamed" } else { base_url.as_str() },
+        answers = match &cfg.answer_player {
+            Some(player) => player.entity.as_str(),
+            None if device.info.has(feature::SPEAKER) => "streamed",
+            None => base_url.as_str(),
+        },
         "satellite connected"
     );
 
@@ -148,6 +184,7 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         up: resample::Stream::new(DEVICE_RATE, SAMPLE_RATE),
         answer: Vec::new(),
         stream_answers: cfg.stream_answers,
+        player: cfg.answer_player.clone(),
         clip: None,
         clip_playing: false,
         down: resample::Stream::new(SAMPLE_RATE, DEVICE_RATE),
@@ -210,7 +247,7 @@ impl Bridge<'_> {
                 }
                 self.device.accept_run().await?;
                 self.finish_clip();
-                if self.stream_answers && !self.speaker {
+                if self.stream_answers && !self.speaker && self.player.is_none() {
                     let (path, clip) = self.speech.open(SAMPLE_RATE);
                     let url = format!("{}{path}", self.base_url);
                     self.device.event(Event::RunStart, &[("url", &url)]).await?;
@@ -275,11 +312,17 @@ impl Bridge<'_> {
                 if self.run != Run::Answering {
                     return Ok(());
                 }
-                // "Which room?", "For how long?": the device listens again once it has spoken.
-                let question = if text.trim_end().ends_with('?') { "1" } else { "0" };
-                self.device.event(Event::IntentEnd, &[("continue_conversation", question)]).await?;
-                self.device.event(Event::TtsStart, &[("text", &text)]).await?;
+                // "Which room?", "For how long?": the device listens again once it has spoken. Not with
+                // an answer player: the device would listen at once, to the player's question.
+                let question = text.trim_end().ends_with('?') && self.player.is_none();
+                self.device
+                    .event(Event::IntentEnd, &[("continue_conversation", if question { "1" } else { "0" })])
+                    .await?;
                 (self.answer, self.spoken, self.stream_start, self.streamed) = (Vec::new(), false, None, 0);
+                if self.player.is_some() {
+                    return Ok(());
+                }
+                self.device.event(Event::TtsStart, &[("text", &text)]).await?;
                 self.clip_playing = false;
                 self.outgoing.clear();
                 self.down = resample::Stream::new(SAMPLE_RATE, DEVICE_RATE);
@@ -310,7 +353,16 @@ impl Bridge<'_> {
                 if self.run != Run::Answering {
                     return Ok(());
                 }
-                if self.speaker {
+                if let Some(player) = self.player.clone() {
+                    let url = format!("{}{}", self.base_url, self.speech.put(&self.answer, SAMPLE_RATE));
+                    info!(url, player = player.entity, "answer for the player");
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(error) = player.announce(&url) {
+                            warn!(error = format!("{error:#}"), "answer player failed");
+                        }
+                    });
+                    self.end_run().await?;
+                } else if self.speaker {
                     // The stream ends once the queued audio has gone out (see `tick`).
                     self.spoken = true;
                 } else {

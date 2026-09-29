@@ -255,6 +255,12 @@ with the first audio, and the HTTP server streams the wav (chunked) as it grows.
 question ("Which room?", "For how long?") keeps the conversation open: the device listens again
 without its wake word once it has spoken (`continue_conversation`).
 
+Answers on another speaker: `answer-player: media_player.living_room` announces each answer on that
+Home Assistant media player (a Sonos) instead of the device, over whatever it is playing, and
+`answer-volume: 0.65` sets the announcement's volume. The device only listens then. The player fetches
+the answer from `public-url` too, so it needs to reach the engine's HTTP port. An answer that ends in a
+question does not keep the conversation open with a player, since the device would hear the question.
+
 The room: "turn off the lights" (or "in here") without a room means the satellite's room, its area in
 Home Assistant, looked up by the device's name when it connects. The `room` setting overrides it,
 and gives the Mac microphone a room too. "Turn them off" still means the lights switched last.
