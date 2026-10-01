@@ -26,9 +26,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      # voice-client links ALSA through cpal.
+      # voice-client links ALSA through cpal. Cached: apt-get update alone takes most of a minute.
       - name: Install ALSA headers
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
+        with:
+          packages: libasound2-dev pkg-config
+          version: 1
 
       # rust-toolchain.toml pins the version; this installs it.
       - name: Install toolchain
@@ -36,6 +39,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Pull requests read main's cache but cannot share their own with other branches.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -152,12 +158,14 @@ jobs:
         with:
           image-ref: innestemme:smoke
           format: sarif
-          output: trivy.sarif
+          # Outside the checkout: a new file in the build context makes the push build below
+          # recompile the workspace instead of reusing the first build.
+          output: ${{ runner.temp }}/trivy.sarif
           severity: HIGH,CRITICAL
           scanners: vuln
       - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
         with:
-          sarif_file: trivy.sarif
+          sarif_file: ${{ runner.temp }}/trivy.sarif
           category: trivy-image
       - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
