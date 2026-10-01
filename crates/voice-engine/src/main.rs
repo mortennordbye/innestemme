@@ -242,6 +242,12 @@ struct Args {
     /// media_player.living_room (a Sonos), as an announcement over whatever it plays.
     #[arg(long, env = "VOICE_ANSWER_PLAYER")]
     answer_player: Option<String>,
+    /// The satellite's own wake words to turn on, comma-separated phrases or ids, e.g. "Okay
+    /// Nabu,Hey Jarvis". Only words in the device's firmware (Voice PE: Okay Nabu, Hey Jarvis, Hey
+    /// Mycroft).
+    /// Home Assistant's wake word selects do not reach the device while the engine holds it.
+    #[arg(long, env = "VOICE_SATELLITE_WAKE_WORDS", value_delimiter = ',')]
+    satellite_wake_words: Vec<String>,
     /// Announcement volume on `--answer-player`, 0 to 1. Default: the player's own volume.
     #[arg(long, env = "VOICE_ANSWER_VOLUME")]
     answer_volume: Option<f32>,
@@ -443,6 +449,8 @@ fn main() -> Result<()> {
                 http_port: args.metrics_bind.port(),
                 stream_answers: args.satellite_stream,
                 answer_player,
+                wake_words: args.satellite_wake_words.clone(),
+                dump: args.dump_utterances.clone(),
             };
             tokio::spawn(voice_engine::satellite::run(cfg, assistant, speech));
         }

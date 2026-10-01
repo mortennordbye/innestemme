@@ -19,6 +19,7 @@
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -65,6 +66,10 @@ pub struct SatelliteConfig {
     pub stream_answers: bool,
     /// Speak answers on this Home Assistant media player instead of the device.
     pub answer_player: Option<Arc<AnswerPlayer>>,
+    /// On-device wake words to turn on, by phrase or id ("Hey Jarvis"); empty keeps the device's.
+    pub wake_words: Vec<String>,
+    /// Directory for a wav of each run's microphone audio, as the device sent it.
+    pub dump: Option<PathBuf>,
 }
 
 /// A Home Assistant media player that announces the answers, e.g. a Sonos.
@@ -84,7 +89,8 @@ impl AnswerPlayer {
             "announce": true,
         });
         if let Some(volume) = self.volume {
-            data["extra"] = json!({ "volume": volume });
+            // Passed through to the Sonos audio clip API, which takes 0 to 100: 0.65 there is silent.
+            data["extra"] = json!({ "volume": (volume * 100.0).round() as u32 });
         }
         self.ha.service("media_player", "play_media", data)
     }
@@ -142,12 +148,16 @@ struct Bridge<'a> {
     stream_start: Option<Instant>,
     streamed: usize,
     spoken: bool,
+    dump: Option<PathBuf>,
+    /// This run's 16 kHz microphone audio, when dumping.
+    recording: Vec<i16>,
 }
 
 async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &SpeechClips) -> Result<()> {
-    let (device, mut incoming) = voice_esphome::Device::connect(&cfg.address, cfg.key.as_ref(), "innestemme")
-        .await
-        .with_context(|| format!("connecting to satellite {}", cfg.address))?;
+    let (device, mut incoming) =
+        voice_esphome::Device::connect(&cfg.address, cfg.key.as_ref(), "innestemme", &cfg.wake_words)
+            .await
+            .with_context(|| format!("connecting to satellite {}", cfg.address))?;
     let base_url = cfg
         .public_url
         .clone()
@@ -166,6 +176,10 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         },
         "satellite connected"
     );
+    if let Some(words) = &device.wake_words {
+        let available: Vec<&str> = words.available.iter().map(|(_, phrase)| phrase.as_str()).collect();
+        info!(active = ?words.active, ?available, max = words.max_active, "satellite wake words");
+    }
 
     let udp = UdpSocket::bind("127.0.0.1:0").await?;
     udp.connect(cfg.engine).await?;
@@ -192,6 +206,8 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         stream_start: None,
         streamed: 0,
         spoken: false,
+        dump: cfg.dump.clone(),
+        recording: Vec::new(),
     };
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -272,6 +288,9 @@ impl Bridge<'_> {
                 }
             }
             Incoming::Audio(pcm) => {
+                if self.dump.is_some() && self.run != Run::Idle {
+                    self.recording.extend_from_slice(&pcm);
+                }
                 if matches!(self.run, Run::WakeWord | Run::Listening(_)) {
                     let mut up = Vec::with_capacity(pcm.len() * 3 / 2 + 2);
                     self.up.push(&pcm, &mut up);
@@ -458,6 +477,12 @@ impl Bridge<'_> {
 
     async fn end_run(&mut self) -> Result<()> {
         self.finish_clip();
+        if let Some(dir) = &self.dump {
+            let audio = std::mem::take(&mut self.recording);
+            if let Err(error) = crate::assistant::save_wav(dir, "run", &audio, DEVICE_RATE) {
+                warn!(%error, "could not save the run");
+            }
+        }
         self.run = Run::Idle;
         self.mic.clear();
         self.device.event(Event::RunEnd, &[]).await
