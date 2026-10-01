@@ -63,6 +63,9 @@ whisper-size: base
 # Speak answers on a Home Assistant media player (a Sonos) instead of the device, as an announcement.
 # answer-player: media_player.living_room
 # answer-volume: 0.65
+# The device's own wake words (Voice PE: Okay Nabu, Hey Jarvis, Hey Mycroft). Home Assistant's wake word
+# selects do not reach the device while the engine holds it. Default: whatever the device has.
+# satellite-wake-words: [Okay Nabu, Hey Jarvis]
 
 # --- Runtime -----------------------------------------------------------------------------------
 # Compute threads: set to the CPU limit in a container (defaults to every core of the host).

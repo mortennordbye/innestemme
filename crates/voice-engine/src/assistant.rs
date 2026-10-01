@@ -471,7 +471,7 @@ impl Worker {
 
     fn utterance(&mut self, audio: &[i16]) {
         if let Some(dir) = &self.config.dump_utterances {
-            if let Err(error) = dump(dir, audio) {
+            if let Err(error) = save_wav(dir, "utterance", audio, SAMPLE_RATE) {
                 warn!(%error, "could not save utterance");
             }
         }
@@ -1216,20 +1216,16 @@ fn unreachable(error: &anyhow::Error, no: bool) -> String {
         .into()
 }
 
-fn dump(dir: &std::path::Path, audio: &[i16]) -> anyhow::Result<()> {
+pub(crate) fn save_wav(dir: &std::path::Path, kind: &str, audio: &[i16], rate: u32) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
-    let path = dir.join(format!("utterance-{stamp}.wav"));
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: SAMPLE_RATE,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
+    let path = dir.join(format!("{kind}-{stamp}.wav"));
+    let spec =
+        hound::WavSpec { channels: 1, sample_rate: rate, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
     let mut writer = hound::WavWriter::create(&path, spec)?;
     audio.iter().try_for_each(|&s| writer.write_sample(s))?;
     writer.finalize()?;
-    info!(path = %path.display(), "utterance saved");
+    info!(path = %path.display(), "{kind} saved");
     Ok(())
 }
 

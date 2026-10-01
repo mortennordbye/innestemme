@@ -261,6 +261,10 @@ Home Assistant media player (a Sonos) instead of the device, over whatever it is
 the answer from `public-url` too, so it needs to reach the engine's HTTP port. An answer that ends in a
 question does not keep the conversation open with a player, since the device would hear the question.
 
+Wake words on the device: `satellite-wake-words: [Okay Nabu, Hey Jarvis]` turns on those of the device's own
+wake words each time the engine connects. Home Assistant's wake word selects go through its Assist satellite
+entity, which is disabled while the engine holds the device, so they no longer reach it.
+
 The room: "turn off the lights" (or "in here") without a room means the satellite's room, its area in
 Home Assistant, looked up by the device's name when it connects. The `room` setting overrides it,
 and gives the Mac microphone a room too. "Turn them off" still means the lights switched last.

@@ -12,7 +12,7 @@ use tracing::{debug, warn};
 use crate::frame::{self, FrameReader, FrameWriter};
 use crate::proto::{
     self, feature, id, Announce, DeviceInfo, Event, HelloResponse, TimerUpdate, VoiceAssistantAudio,
-    VoiceAssistantRequest,
+    VoiceAssistantRequest, WakeWordConfig,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -39,6 +39,8 @@ pub enum Incoming {
 pub struct Device {
     pub info: DeviceInfo,
     pub hello: HelloResponse,
+    /// The on-device wake words after `connect` applied the wanted ones; `None` when none were asked.
+    pub wake_words: Option<WakeWordConfig>,
     /// This end of the connection: an address the device can reach us on.
     pub local_addr: std::net::SocketAddr,
     writer: Arc<Mutex<FrameWriter>>,
@@ -46,11 +48,13 @@ pub struct Device {
 
 impl Device {
     /// Connects, identifies the device and subscribes to its voice assistant. Messages arrive on
-    /// the receiver until the connection ends (the receiver then closes).
+    /// the receiver until the connection ends (the receiver then closes). `wake_words` (ids or
+    /// phrases), when not empty, become the device's active on-device wake words.
     pub async fn connect(
         address: &str,
         key: Option<&[u8; 32]>,
         client_info: &str,
+        wake_words: &[String],
     ) -> Result<(Self, mpsc::Receiver<Incoming>)> {
         let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(address))
             .await
@@ -75,12 +79,34 @@ impl Device {
                 &proto::subscribe_voice_assistant(true, proto::SUBSCRIBE_API_AUDIO),
             )
             .await?;
+        // Home Assistant sets these through its Assist satellite entity, which is disabled while
+        // the engine holds the device, so its wake word selects never reach the device.
+        let wake_words = if wake_words.is_empty() {
+            None
+        } else {
+            writer.write(id::VOICE_ASSISTANT_CONFIGURATION_REQUEST, &[]).await?;
+            let payload = expect(&mut reader, &mut writer, id::VOICE_ASSISTANT_CONFIGURATION_RESPONSE).await?;
+            let mut config = WakeWordConfig::decode(&payload)?;
+            debug!(active = ?config.active, "device wake words");
+            let (ids, unknown) = config.resolve(wake_words);
+            if !unknown.is_empty() {
+                let known: Vec<&str> = config.available.iter().map(|(_, phrase)| phrase.as_str()).collect();
+                warn!(?unknown, ?known, "the device has no such wake word");
+            }
+            // No cut to `max_active`: ESPHome always reports 1 but turns on every id it is sent, which
+            // is how Home Assistant's second wake word slot works.
+            if !ids.is_empty() && ids != config.active {
+                writer.write(id::VOICE_ASSISTANT_SET_CONFIGURATION, &proto::set_wake_words(&ids)).await?;
+                config.active = ids;
+            }
+            Some(config)
+        };
 
         let writer = Arc::new(Mutex::new(writer));
         let (tx, rx) = mpsc::channel(256);
         tokio::spawn(read_loop(reader, writer.clone(), tx.clone(), info.name.clone()));
         tokio::spawn(ping_loop(writer.clone(), tx));
-        Ok((Self { info, hello, local_addr, writer }, rx))
+        Ok((Self { info, hello, wake_words, local_addr, writer }, rx))
     }
 
     async fn send(&self, kind: u16, payload: &[u8]) -> Result<()> {
@@ -287,7 +313,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
         let device = tokio::spawn(fake_device(listener, key));
-        let (dev, mut rx) = Device::connect(&address, key.as_ref(), "test").await.unwrap();
+        let (dev, mut rx) = Device::connect(&address, key.as_ref(), "test", &[]).await.unwrap();
         assert_eq!(dev.info.friendly_name, "Voice PE");
         assert_eq!(dev.hello.name, "voice-pe");
         let Some(Incoming::Start(start)) = rx.recv().await else { panic!("no start") };
@@ -309,5 +335,47 @@ mod tests {
     async fn encrypted_session() {
         let key = frame::parse_key("px7tsbK3C7bpXHr2OevEV2ZMg/FsNTw2dH1uaA2Z3ts=").unwrap();
         run(Some(key)).await;
+    }
+
+    /// A device that offers three wake words, one active, and reports what it is told to use.
+    async fn wake_word_device(listener: TcpListener) -> Result<Vec<String>> {
+        let (stream, _) = listener.accept().await?;
+        let (mut r, mut w, _) = frame::open(stream, None).await?;
+        loop {
+            let (kind, payload) = r.read().await?;
+            match kind {
+                id::HELLO_REQUEST => w.write(id::HELLO_RESPONSE, &Writer::default().uint(1, 1).finish()).await?,
+                id::DEVICE_INFO_REQUEST => {
+                    let flags = feature::VOICE_ASSISTANT | feature::API_AUDIO;
+                    w.write(id::DEVICE_INFO_RESPONSE, &Writer::default().uint(17, flags as u64).finish()).await?
+                }
+                id::VOICE_ASSISTANT_CONFIGURATION_REQUEST => {
+                    let mut config = Writer::default();
+                    for (id, phrase) in
+                        [("okay_nabu", "Okay Nabu"), ("hey_jarvis", "Hey Jarvis"), ("hey_mycroft", "Hey Mycroft")]
+                    {
+                        config.message(1, &Writer::default().str(1, id).str(2, phrase).finish());
+                    }
+                    let config = config.str(2, "okay_nabu").uint(3, 1).finish();
+                    w.write(id::VOICE_ASSISTANT_CONFIGURATION_RESPONSE, &config).await?
+                }
+                id::VOICE_ASSISTANT_SET_CONFIGURATION => {
+                    return Ok(proto::fields(&payload)?.iter().map(|(_, v)| v.string()).collect());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sets_wake_words_by_phrase() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let device = tokio::spawn(wake_word_device(listener));
+        let wanted = ["Okay Nabu", "hey jarvis", "Hey Homie", "hey_mycroft"].map(String::from);
+        let (dev, _rx) = Device::connect(&address, None, "test", &wanted).await.unwrap();
+        let set = tokio::time::timeout(Duration::from_secs(5), device).await.unwrap().unwrap().unwrap();
+        assert_eq!(set, ["okay_nabu", "hey_jarvis", "hey_mycroft"]);
+        assert_eq!(dev.wake_words.unwrap().active, ["okay_nabu", "hey_jarvis", "hey_mycroft"]);
     }
 }

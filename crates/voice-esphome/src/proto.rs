@@ -22,6 +22,9 @@ pub mod id {
     pub const VOICE_ASSISTANT_TIMER_EVENT_RESPONSE: u16 = 115;
     pub const VOICE_ASSISTANT_ANNOUNCE_REQUEST: u16 = 119;
     pub const VOICE_ASSISTANT_ANNOUNCE_FINISHED: u16 = 120;
+    pub const VOICE_ASSISTANT_CONFIGURATION_REQUEST: u16 = 121;
+    pub const VOICE_ASSISTANT_CONFIGURATION_RESPONSE: u16 = 122;
+    pub const VOICE_ASSISTANT_SET_CONFIGURATION: u16 = 123;
 }
 
 /// `DeviceInfoResponse.voice_assistant_feature_flags` (aioesphomeapi `VoiceAssistantFeature`).
@@ -287,6 +290,64 @@ impl DeviceInfo {
 
 pub fn subscribe_voice_assistant(subscribe: bool, flags: u32) -> Vec<u8> {
     Writer::default().bool(1, subscribe).uint(2, flags as u64).finish()
+}
+
+/// The device's on-device wake words: all it has, and the ones it listens for.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct WakeWordConfig {
+    /// (id, phrase), e.g. ("hey_jarvis", "Hey Jarvis").
+    pub available: Vec<(String, String)>,
+    pub active: Vec<String>,
+    /// Not a limit: ESPHome reports 1 and still runs every wake word it is told to.
+    pub max_active: u32,
+}
+
+impl WakeWordConfig {
+    pub fn decode(buf: &[u8]) -> Result<Self> {
+        let mut m = Self::default();
+        for (f, v) in fields(buf)? {
+            match f {
+                1 => {
+                    let (mut id, mut phrase) = (String::new(), String::new());
+                    for (f, v) in fields(v.bytes())? {
+                        match f {
+                            1 => id = v.string(),
+                            2 => phrase = v.string(),
+                            _ => {}
+                        }
+                    }
+                    m.available.push((id, phrase));
+                }
+                2 => m.active.push(v.string()),
+                3 => m.max_active = v.uint() as u32,
+                _ => {}
+            }
+        }
+        Ok(m)
+    }
+
+    /// The ids of the wanted wake words, given by id or phrase in any case ("hey jarvis",
+    /// "hey_jarvis"); unknown ones are returned separately.
+    pub fn resolve(&self, wanted: &[String]) -> (Vec<String>, Vec<String>) {
+        let norm = |s: &str| s.to_lowercase().replace(['_', '-'], " ").split_whitespace().collect::<Vec<_>>().join(" ");
+        let (mut ids, mut unknown) = (Vec::new(), Vec::new());
+        for w in wanted {
+            match self.available.iter().find(|(id, phrase)| norm(id) == norm(w) || norm(phrase) == norm(w)) {
+                Some((id, _)) if !ids.contains(id) => ids.push(id.clone()),
+                Some(_) => {}
+                None => unknown.push(w.clone()),
+            }
+        }
+        (ids, unknown)
+    }
+}
+
+pub fn set_wake_words(ids: &[String]) -> Vec<u8> {
+    let mut w = Writer::default();
+    for id in ids {
+        w.str(1, id);
+    }
+    w.finish()
 }
 
 /// The device starting (a wake word was heard, or continuous streaming began) or stopping a run.
