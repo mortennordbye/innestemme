@@ -32,9 +32,9 @@ use voice_assistant::stt::SpeechToText;
 use voice_assistant::timer::{self, Notice, Timers};
 use voice_assistant::transit::Transit;
 use voice_assistant::tts::{self, Tts};
-use voice_assistant::vad::Vad;
+use voice_assistant::vad::{self, Vad};
 use voice_assistant::weather::Weather;
-use voice_assistant::whisper::Transcriber;
+use voice_assistant::whisper::{Transcriber, Transcript};
 use voice_proto::{FRAME_SAMPLES, SAMPLE_RATE};
 use voice_rt::noalloc::permit_alloc;
 
@@ -149,6 +149,8 @@ enum Job {
     Action(Action),
     /// Whisper path: audio still to transcribe.
     Utterance(Vec<i16>),
+    /// Whisper path: the speaker paused and may be done. Transcribed ahead of the utterance.
+    Draft(Vec<i16>),
     /// A satellite connected, by its names.
     Satellite(Vec<String>),
 }
@@ -240,6 +242,7 @@ impl AssistantProcessor {
             home_assistant: None,
             player: Player::new(speaker),
             transcriber,
+            draft: None,
             follow_up_until: None,
             history: VecDeque::new(),
             last_lights: None,
@@ -320,9 +323,14 @@ impl FrameProcessor for AssistantProcessor {
             Ear::Vad(vad) => {
                 if deaf {
                     vad.reset();
-                } else if let Some(utterance) = vad.push(input) {
-                    info!(seconds = utterance.len() as f32 / SAMPLE_RATE as f32, "utterance");
-                    let _ = self.jobs.send(Job::Utterance(utterance));
+                } else {
+                    if let Some(utterance) = vad.push(input) {
+                        info!(seconds = utterance.len() as f32 / SAMPLE_RATE as f32, "utterance");
+                        let _ = self.jobs.send(Job::Utterance(utterance));
+                    }
+                    if let Some(draft) = vad.draft() {
+                        let _ = self.jobs.send(Job::Draft(draft));
+                    }
                 }
                 Ok(())
             }
@@ -400,6 +408,8 @@ struct Worker {
     home_assistant: Option<HomeAssistant>,
     player: Player,
     transcriber: Option<Box<Transcriber>>,
+    /// The latest draft and its transcripts.
+    draft: Option<(Vec<i16>, Vec<Transcript>)>,
     /// Until then, speech counts without the name: after a bare name, and for a while after each
     /// answer, like a person who is still looking at you. Only recognised requests are acted on.
     follow_up_until: Option<Instant>,
@@ -427,11 +437,13 @@ struct Worker {
 
 impl Worker {
     fn run(mut self, jobs: mpsc::Receiver<Job>) {
+        // Jobs taken off the channel early, to see whether a draft is still worth transcribing.
+        let mut queued = VecDeque::new();
         loop {
             // Wake up for the next timer, and now and then to keep the language model warm.
             let next_timer = self.timers.next_deadline().map(|at| at.saturating_duration_since(Instant::now()));
             let wait = next_timer.map_or(WARM_CHECK, |t| t.min(WARM_CHECK));
-            let job = match jobs.recv_timeout(wait) {
+            let job = match queued.pop_front().map_or_else(|| jobs.recv_timeout(wait), Ok) {
                 Ok(job) => job,
                 Err(RecvTimeoutError::Timeout) => {
                     self.ring_due_timers();
@@ -459,6 +471,13 @@ impl Worker {
                 Job::Satellite(names) => self.satellite(&names),
                 Job::Action(Action::Request(text)) => self.answer(&text, Lang::English, Instant::now()),
                 Job::Utterance(audio) => self.utterance(&audio),
+                Job::Draft(audio) => {
+                    queued.extend(jobs.try_iter());
+                    // The speaker went on, or ended: a later job has newer audio.
+                    if !queued.iter().any(|job| matches!(job, Job::Draft(_) | Job::Utterance(_))) {
+                        self.transcribe_draft(audio);
+                    }
+                }
                 Job::Ready => {
                     info!("ready");
                     (self.follow_up_until, self.last_lights, self.pending_lights) = (None, None, None);
@@ -479,7 +498,15 @@ impl Worker {
             return;
         };
         let start = Instant::now();
-        let candidates = match transcriber.transcribe(audio) {
+        // The utterance ended in the pause the draft was taken in: same speech, more silence.
+        let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
+        let draft = self
+            .draft
+            .take()
+            .filter(|(draft, _)| audio.len() == draft.len() + closing && audio.starts_with(draft))
+            .map(|(_, candidates)| candidates);
+        let from_draft = draft.is_some();
+        let candidates = match draft.map_or_else(|| transcriber.transcribe(audio), Ok) {
             Ok(candidates) if candidates.is_empty() => {
                 info!(took = ?start.elapsed(), "not speech");
                 return;
@@ -497,7 +524,7 @@ impl Worker {
             Some(i) if !follow_up => &candidates[i],
             _ => &candidates[0],
         };
-        info!(text = heard.text, lang = ?heard.lang, took = ?start.elapsed(), "heard");
+        info!(text = heard.text, lang = ?heard.lang, took = ?start.elapsed(), from_draft, "heard");
         let request = match self.config.wake.strip(&heard.text) {
             Some(rest) if rest.is_empty() => {
                 info!("wake word");
@@ -525,6 +552,19 @@ impl Worker {
         }
         self.busy.store(true, Relaxed);
         self.answer(&request, heard.lang, start);
+    }
+
+    fn transcribe_draft(&mut self, audio: Vec<i16>) {
+        let Some(transcriber) = &mut self.transcriber else {
+            return;
+        };
+        self.draft = match transcriber.transcribe(&audio) {
+            Ok(candidates) => Some((audio, candidates)),
+            Err(error) => {
+                warn!(%error, "draft transcription failed");
+                None
+            }
+        };
     }
 
     fn answer(&mut self, text: &str, lang: Lang, start: Instant) {
