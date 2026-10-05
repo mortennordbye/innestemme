@@ -33,6 +33,9 @@ pocket-voice: cosette
 pocket-precision: f32
 # whisper-size: base (290 MB) or small (970 MB, more accurate).
 whisper-size: base
+# Whisper encodes the request and 3 s of silence (8 s at the least). true: its full 30 s window,
+# as trained, about three times slower.
+# whisper-full-window: false
 # Piper (Wyoming) server for Norwegian replies, and optionally English ones (english-tts: piper):
 # Home Assistant's Piper add-on with its port exposed, a sidecar, or `make piper` locally.
 # piper: 127.0.0.1:10200
