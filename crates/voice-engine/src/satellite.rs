@@ -10,8 +10,9 @@
 //! still being synthesized. An answer that ends in a question keeps the conversation open: the
 //! device listens again without its wake word once it has spoken.
 //!
-//! With an answer player (a Sonos in Home Assistant), the device only listens: the answer, once
-//! complete, is announced on that player instead, and the device gets no speech events.
+//! With an answer player (a Sonos in Home Assistant), the device only listens: the answer is
+//! announced on that player instead, as a URL that streams the audio while it is synthesized, and
+//! the device gets no speech events.
 //!
 //! Wake word: with the device's wake word processing set to "in Home Assistant", the device streams
 //! continuously and the assistant listens for its own name. With an on-device wake word ("Okay
@@ -138,8 +139,9 @@ struct Bridge<'a> {
     answer: Vec<i16>,
     stream_answers: bool,
     player: Option<Arc<AnswerPlayer>>,
-    /// URL devices with streaming: this run's answer URL, sent at the run's start, and whether the
-    /// device was told to start playing it.
+    /// URL devices with streaming, and the answer player: this run's answer URL and its audio so
+    /// far. For a device it is sent at the run's start; `clip_playing` says whether the device was
+    /// told to start playing it.
     clip: Option<(String, Arc<Clip>)>,
     clip_playing: bool,
     /// Speaker devices: 16 kHz answer audio not yet sent, and pacing.
@@ -338,7 +340,20 @@ impl Bridge<'_> {
                     .event(Event::IntentEnd, &[("continue_conversation", if question { "1" } else { "0" })])
                     .await?;
                 (self.answer, self.spoken, self.stream_start, self.streamed) = (Vec::new(), false, None, 0);
-                if self.player.is_some() {
+                if let Some(player) = self.player.clone() {
+                    // Announced before the first audio exists: the call and the player's fetch take
+                    // longer than synthesizing the first words.
+                    self.finish_clip();
+                    let (path, clip) = self.speech.open(SAMPLE_RATE);
+                    let url = format!("{}{path}", self.base_url);
+                    info!(url, player = player.entity, "answer for the player");
+                    let announced = url.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(error) = player.announce(&announced) {
+                            warn!(error = format!("{error:#}"), "answer player failed");
+                        }
+                    });
+                    self.clip = Some((url, clip));
                     return Ok(());
                 }
                 self.device.event(Event::TtsStart, &[("text", &text)]).await?;
@@ -353,7 +368,11 @@ impl Bridge<'_> {
                 if self.run != Run::Answering {
                     return Ok(());
                 }
-                if self.speaker {
+                if self.player.is_some() {
+                    if let Some((_, clip)) = &self.clip {
+                        clip.push(&pcm);
+                    }
+                } else if self.speaker {
                     let mut down = Vec::with_capacity(pcm.len() * 2 / 3 + 2);
                     self.down.push(&pcm, &mut down);
                     self.outgoing.extend(down);
@@ -372,14 +391,8 @@ impl Bridge<'_> {
                 if self.run != Run::Answering {
                     return Ok(());
                 }
-                if let Some(player) = self.player.clone() {
-                    let url = format!("{}{}", self.base_url, self.speech.put(&self.answer, SAMPLE_RATE));
-                    info!(url, player = player.entity, "answer for the player");
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(error) = player.announce(&url) {
-                            warn!(error = format!("{error:#}"), "answer player failed");
-                        }
-                    });
+                if self.player.is_some() {
+                    // Ends the player's stream.
                     self.end_run().await?;
                 } else if self.speaker {
                     // The stream ends once the queued audio has gone out (see `tick`).
