@@ -12,7 +12,7 @@ use voice_assistant::ha::HomeAssistant;
 use voice_assistant::lang::Lang;
 use voice_assistant::pocket::PocketFiles;
 use voice_assistant::stt::{SpeechToText, SttFiles};
-use voice_assistant::whisper::{Transcriber, WakePrompt, WhisperFiles};
+use voice_assistant::whisper::{Transcriber, WakePrompt, WhisperFiles, Window};
 use voice_assistant::wyoming::WyomingTts;
 use voice_codec::MimiCodec;
 use voice_engine::assistant::{AssistantConfig, AssistantProcessor, Listener};
@@ -143,6 +143,10 @@ struct Args {
     /// Whisper size: base (290 MB) or small (970 MB, more accurate).
     #[arg(long, env = "VOICE_WHISPER_SIZE", default_value = "base")]
     whisper_size: String,
+    /// Encode Whisper's full 30 s window, the way it was trained, instead of the utterance and a
+    /// few seconds of silence. About three times slower on a short request.
+    #[arg(long, env = "VOICE_WHISPER_FULL_WINDOW", default_value_t = false, action = clap::ArgAction::Set)]
+    whisper_full_window: bool,
     /// Hugging Face repo of the Whisper model, overriding the size-based default (openai/whisper-*,
     /// or NbAiLab/nb-whisper-* with Norwegian on).
     #[arg(long, env = "VOICE_WHISPER_REPO")]
@@ -317,7 +321,8 @@ fn main() -> Result<()> {
                         None => WakePrompt::Name,
                     };
                     info!(?prompt, "wake word prompt");
-                    let mut transcriber = transcriber.with_wake_prompt(prompt, &args.wake_name);
+                    let window = (!args.whisper_full_window).then_some(Window::DEFAULT);
+                    let mut transcriber = transcriber.with_wake_prompt(prompt, &args.wake_name).with_window(window);
                     info!(prompt = transcriber.prompt_text(), "whisper prompt");
                     if !args.norwegian {
                         transcriber.restrict(Lang::English);

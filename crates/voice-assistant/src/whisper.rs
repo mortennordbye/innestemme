@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use candle::{Device, IndexOp, Tensor, D};
-use candle_transformers::models::whisper::{self as w, audio, model::Whisper};
+use candle_transformers::models::whisper::{self as w, audio, model::AudioEncoder, model::Whisper};
 use tracing::debug;
 
 use crate::lang::Lang;
+use crate::whisper_decoder::Decoder;
 
 /// English only: OpenAI's multilingual checkpoints, forced to English. With Norwegian: the
 /// National Library of Norway's fine-tune, which transcribes Norwegian far better.
@@ -23,6 +24,10 @@ pub fn default_repo(norwegian: bool, size: &str) -> String {
 }
 pub const LANGUAGE_ID_REPO: &str = "openai/whisper-tiny";
 const MAX_TOKENS: usize = 120;
+/// Tokens allowed per second of audio, on top of `MIN_TOKENS`: fast speech is about four. Ends a
+/// transcript that repeats itself long before `MAX_TOKENS`.
+const TOKENS_PER_SECOND: f32 = 8.0;
+const MIN_TOKENS: usize = 16;
 /// Previous-text context that teaches the decoder how to spell the assistant's name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WakePrompt {
@@ -45,6 +50,24 @@ impl WakePrompt {
 }
 /// Above this, the utterance is treated as noise.
 const NO_SPEECH_THRESHOLD: f32 = 0.6;
+/// How much of Whisper's 30 s window is encoded. The encoder's cost grows with its input; with
+/// too little silence after the speech Whisper repeats the sentence until it runs out of tokens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Window {
+    /// Seconds of silence after the utterance.
+    pub tail: f32,
+    /// Seconds encoded at the least.
+    pub min: f32,
+}
+
+impl Window {
+    pub const DEFAULT: Self = Self { tail: 3.0, min: 10.0 };
+
+    fn samples(self, speech: usize) -> usize {
+        let seconds = |s: f32| (s * w::SAMPLE_RATE as f32) as usize;
+        (speech + seconds(self.tail)).max(seconds(self.min)).min(w::N_SAMPLES)
+    }
+}
 /// Language-ID probability of English above which an utterance is English.
 const ENGLISH_MIN: f32 = 0.5;
 /// ... and at least this many times the Nordic languages together.
@@ -74,7 +97,9 @@ pub struct Transcript {
 
 /// One loaded Whisper checkpoint and its special tokens.
 struct Model {
-    whisper: Whisper,
+    config: w::Config,
+    encoder: AudioEncoder,
+    decoder: Decoder,
     vocab: Vocab,
     filters: Vec<f32>,
     device: Device,
@@ -100,29 +125,41 @@ impl Model {
         let langs = vec![(Lang::English, id("<|en|>")?), (Lang::Norwegian, id("<|no|>")?)];
         let english = id("<|en|>")?;
         let nordic = ["<|no|>", "<|nn|>", "<|da|>", "<|sv|>"].iter().map(|t| id(t)).collect::<Result<_>>()?;
-        let whisper = Whisper::load(&vb, config)?;
-        Ok(Self { whisper, vocab, filters, device: device.clone(), sot, eot, no_speech, langs, english, nordic })
+        let decoder = Decoder::load(vb.pp("model.decoder"), &config)?;
+        // Only the encoder: the decoder above replaces candle's, and its weights are freed here.
+        let Whisper { encoder, .. } = Whisper::load(&vb, config.clone())?;
+        Ok(Self {
+            config,
+            encoder,
+            decoder,
+            vocab,
+            filters,
+            device: device.clone(),
+            sot,
+            eot,
+            no_speech,
+            langs,
+            english,
+            nordic,
+        })
     }
 
-    fn features(&mut self, samples: &[f32]) -> Result<Tensor> {
-        let bins = self.whisper.config.num_mel_bins;
-        let mel = audio::pcm_to_mel(&self.whisper.config, samples, &self.filters);
+    /// Encodes the first `window` samples (at most 30 s) and hands them to the decoder.
+    fn set_audio(&mut self, samples: &[f32], window: usize) -> Result<()> {
+        let bins = self.config.num_mel_bins;
+        let mel = audio::pcm_to_mel(&self.config, samples, &self.filters);
         let frames = mel.len() / bins;
-        let mel = Tensor::from_vec(mel, (1, bins, frames), &self.device)?.narrow(2, 0, w::N_FRAMES.min(frames))?;
-        Ok(self.whisper.encoder.forward(&mel, true)?)
-    }
-
-    /// Logits for the position after `tokens`.
-    fn logits(&mut self, tokens: &[u32], features: &Tensor, flush: bool) -> Result<Tensor> {
-        let input = Tensor::new(tokens, &self.device)?.unsqueeze(0)?;
-        let ys = self.whisper.decoder.forward(&input, features, flush)?;
-        let last = ys.i((.., tokens.len() - 1..))?;
-        Ok(self.whisper.decoder.final_linear(&last)?.i((0, 0))?)
+        // The encoder's convolution halves the frame count, so keep it even.
+        let keep = (window / w::HOP_LENGTH).next_multiple_of(2).min(w::N_FRAMES).min(frames);
+        let mel = Tensor::from_vec(mel, (1, bins, frames), &self.device)?.narrow(2, 0, keep)?;
+        let features = self.encoder.forward(&mel, true)?;
+        Ok(self.decoder.set_audio(&features)?)
     }
 
     /// Probabilities of "no speech", English and the Nordic languages, from the first decoder step.
-    fn first_step(&mut self, features: &Tensor) -> Result<(f32, f32, f32)> {
-        let probs = candle_nn::ops::softmax(&self.logits(&[self.sot], features, true)?, D::Minus1)?.to_vec1::<f32>()?;
+    fn first_step(&mut self) -> Result<(f32, f32, f32)> {
+        self.decoder.restart();
+        let probs = candle_nn::ops::softmax(&self.decoder.step(&[self.sot])?, D::Minus1)?.to_vec1::<f32>()?;
         let nordic = self.nordic.iter().map(|&t| probs[t as usize]).sum();
         Ok((self.no_speech.map_or(0.0, |t| probs[t as usize]), probs[self.english as usize], nordic))
     }
@@ -139,6 +176,8 @@ pub struct Transcriber {
     prompt: Vec<u32>,
     /// Added to the logits: `-inf` for suppressed tokens (timestamps, specials, config list).
     suppress: Tensor,
+    /// `None` encodes the full 30 s window.
+    window: Option<Window>,
 }
 
 impl Transcriber {
@@ -149,7 +188,7 @@ impl Transcriber {
         let language_id = language_id.map(|f| Model::load(f, &device)).transpose()?;
         let id = |t: &str| model.vocab.special(t).with_context(|| format!("token {t} missing"));
         let (transcribe, no_timestamps) = (id(w::TRANSCRIBE_TOKEN)?, id(w::NO_TIMESTAMPS_TOKEN)?);
-        let config = &model.whisper.config;
+        let config = &model.config;
         let mut mask = vec![0f32; config.vocab_size];
         for (i, m) in mask.iter_mut().enumerate() {
             if i as u32 > model.eot || config.suppress_tokens.contains(&(i as u32)) {
@@ -158,7 +197,8 @@ impl Transcriber {
         }
         let suppress = Tensor::new(mask.as_slice(), &device)?;
         let prompt = Vec::new();
-        Ok(Self { model, language_id, transcribe, no_timestamps, prompt, suppress })
+        let window = Some(Window::DEFAULT);
+        Ok(Self { model, language_id, transcribe, no_timestamps, prompt, suppress, window })
     }
 
     /// Sets the spelling prompt for the wake word.
@@ -200,6 +240,13 @@ impl Transcriber {
         self
     }
 
+    /// Part of the window to encode, or `None` for Whisper's full 30 s: slower on short
+    /// utterances, the way the model was trained.
+    pub fn with_window(mut self, window: Option<Window>) -> Self {
+        self.window = window;
+        self
+    }
+
     /// Prompt length in tokens.
     pub fn prompt_tokens(&self) -> usize {
         self.prompt.len()
@@ -224,13 +271,15 @@ impl Transcriber {
     /// which is why it is not used.
     pub fn transcribe(&mut self, pcm: &[i16]) -> Result<Vec<Transcript>> {
         let mut samples = resample_24k_to_16k(pcm);
-        // Whisper is trained on 30 s windows; shorter input is padded with silence.
-        samples.resize(w::N_SAMPLES, 0.0);
+        // Whisper is trained on 30 s windows of speech padded with silence. Encoding less than that
+        // costs far less on a short request.
+        let window = self.window.map_or(w::N_SAMPLES, |window| window.samples(samples.len()));
+        samples.resize(window, 0.0);
 
         let mut langs = self.model.langs.clone();
         if let Some(lid) = &mut self.language_id {
-            let features = lid.features(&samples)?;
-            let (no_speech, english, nordic) = lid.first_step(&features)?;
+            lid.set_audio(&samples, window)?;
+            let (no_speech, english, nordic) = lid.first_step()?;
             if no_speech > NO_SPEECH_THRESHOLD {
                 return Ok(Vec::new());
             }
@@ -243,16 +292,17 @@ impl Transcriber {
             langs.retain(|(l, _)| *l == lang);
         }
 
-        let features = self.model.features(&samples)?;
+        self.model.set_audio(&samples, window)?;
         if self.language_id.is_none() {
-            let (no_speech, _, _) = self.model.first_step(&features)?;
+            let (no_speech, _, _) = self.model.first_step()?;
             if no_speech > NO_SPEECH_THRESHOLD {
                 return Ok(Vec::new());
             }
         }
+        let max_tokens = (MIN_TOKENS + (pcm.len() as f32 / 24_000.0 * TOKENS_PER_SECOND) as usize).min(MAX_TOKENS);
         let mut out = Vec::new();
         for (lang, lang_token) in langs {
-            let (text, score) = self.decode(lang_token, &features)?;
+            let (text, score) = self.decode(lang_token, max_tokens)?;
             debug!(?lang, score, text, "whisper candidate");
             if !text.is_empty() {
                 out.push(Transcript { lang, text, score });
@@ -264,13 +314,15 @@ impl Transcriber {
 
     /// Greedy decode with the given language token. Returns the text and the mean log
     /// probability of its tokens.
-    fn decode(&mut self, lang_token: u32, features: &Tensor) -> Result<(String, f32)> {
+    fn decode(&mut self, lang_token: u32, max_tokens: usize) -> Result<(String, f32)> {
         let mut tokens = self.prompt.clone();
         tokens.extend([self.model.sot, lang_token, self.transcribe, self.no_timestamps]);
         let prefix = tokens.len();
         let mut logprob = 0f32;
-        for i in 0..MAX_TOKENS {
-            let logits = (self.model.logits(&tokens, features, i == 0)? + &self.suppress)?;
+        self.model.decoder.restart();
+        let mut next_logits = self.model.decoder.step(&tokens)?;
+        for _ in 0..max_tokens {
+            let logits = (next_logits + &self.suppress)?;
             let logp = candle_nn::ops::log_softmax(&logits, D::Minus1)?;
             let next = logits.argmax(D::Minus1)?.to_scalar::<u32>()?;
             logprob += logp.i(next as usize)?.to_scalar::<f32>()?;
@@ -278,6 +330,7 @@ impl Transcriber {
                 break;
             }
             tokens.push(next);
+            next_logits = self.model.decoder.step(&[next])?;
         }
         let count = (tokens.len() - prefix + 1) as f32;
         Ok((self.model.vocab.decode(&tokens[prefix..]), logprob / count))

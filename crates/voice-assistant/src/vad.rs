@@ -13,7 +13,10 @@ const START_FRAMES: u32 = 2;
 /// The second one ends an utterance when background talk or noise never lets the room go quiet.
 const END_DB: f32 = 8.0;
 const END_BELOW_PEAK_DB: f32 = 20.0;
-const END_FRAMES: u32 = 8;
+pub const END_FRAMES: u32 = 8;
+/// A pause this long may be the end: the utterance so far is offered as a draft, so it can be
+/// transcribed while the rest of `END_FRAMES` passes.
+pub const DRAFT_FRAMES: u32 = 3;
 /// Absolute minimum level for speech, for a digitally silent input.
 const MIN_SPEECH_DB: f32 = -50.0;
 const PREROLL_FRAMES: usize = 3;
@@ -32,6 +35,7 @@ pub struct Vad {
     peak: f32,
     preroll: VecDeque<Vec<i16>>,
     utterance: Vec<i16>,
+    draft_ready: bool,
 }
 
 impl Default for Vad {
@@ -45,6 +49,7 @@ impl Default for Vad {
             peak: -100.0,
             preroll: VecDeque::new(),
             utterance: Vec::new(),
+            draft_ready: false,
         }
     }
 }
@@ -62,6 +67,12 @@ impl Vad {
     pub fn reset(&mut self) {
         let floor = self.floor;
         *self = Self { floor, ..Self::default() };
+    }
+
+    /// The utterance so far, once per pause of `DRAFT_FRAMES`. If it ends in this pause, the
+    /// finished utterance is the draft and `END_FRAMES - DRAFT_FRAMES` more frames.
+    pub fn draft(&mut self) -> Option<Vec<i16>> {
+        std::mem::take(&mut self.draft_ready).then(|| self.utterance.clone())
     }
 
     /// Returns the finished utterance, with a little audio from before it started.
@@ -93,12 +104,14 @@ impl Vad {
         self.peak = self.peak.max(db);
         let end_level = (self.floor + END_DB).max(self.peak - END_BELOW_PEAK_DB);
         self.quiet_run = if db < end_level { self.quiet_run + 1 } else { 0 };
+        self.draft_ready = self.quiet_run == DRAFT_FRAMES && self.voiced >= MIN_VOICED_FRAMES;
         let too_long = self.utterance.len() >= MAX_FRAMES * FRAME_SAMPLES;
         if self.quiet_run < END_FRAMES && !too_long {
             return None;
         }
         self.speaking = false;
         self.loud_run = 0;
+        self.draft_ready = false;
         let utterance = std::mem::take(&mut self.utterance);
         (self.voiced >= MIN_VOICED_FRAMES).then_some(utterance)
     }
@@ -131,6 +144,28 @@ mod tests {
             (15 + END_FRAMES as usize..=15 + END_FRAMES as usize + PREROLL_FRAMES + 1).contains(&frames),
             "{frames}"
         );
+    }
+
+    #[test]
+    fn offers_a_draft_in_the_final_pause() {
+        let mut vad = Vad::default();
+        let quiet = frame(30.0);
+        let speech = frame(8000.0);
+        let (mut drafts, mut found) = (Vec::new(), Vec::new());
+        for f in std::iter::repeat_n(&quiet, 20)
+            .chain(std::iter::repeat_n(&speech, 10))
+            .chain(std::iter::repeat_n(&quiet, DRAFT_FRAMES as usize))
+            .chain(std::iter::repeat_n(&speech, 5))
+            .chain(std::iter::repeat_n(&quiet, 20))
+        {
+            found.extend(vad.push(f));
+            drafts.extend(vad.draft());
+        }
+        // One per pause; the last is the utterance without its closing frames.
+        assert_eq!((drafts.len(), found.len()), (2, 1));
+        let closing = (END_FRAMES - DRAFT_FRAMES) as usize * FRAME_SAMPLES;
+        assert_eq!(drafts[1].len() + closing, found[0].len());
+        assert_eq!(drafts[1][..], found[0][..drafts[1].len()]);
     }
 
     #[test]

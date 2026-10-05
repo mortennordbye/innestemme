@@ -22,4 +22,5 @@ pub mod tts;
 pub mod vad;
 pub mod weather;
 pub mod whisper;
+mod whisper_decoder;
 pub mod wyoming;
