@@ -1,6 +1,6 @@
-//! Jokes: English ones live from icanhazdadjoke.com (no key), with a built-in fallback; Norwegian
-//! ones from a built-in list, since there is no free Norwegian joke service. The last few are not
-//! repeated.
+//! Jokes: English ones live from icanhazdadjoke.com (no key), with a built-in fallback, or only the
+//! built-in ones when speech is rendered ahead of time (`built_in_only`); Norwegian ones from a
+//! built-in list, since there is no free Norwegian joke service. The last few are not repeated.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -22,6 +22,28 @@ const ENGLISH: &[&str] = &[
     "What do you call a bear with no teeth? A gummy bear.",
     "Why can't a bicycle stand up by itself? It's two tired.",
     "What did the ocean say to the beach? Nothing, it just waved.",
+    "Why do cows wear bells? Because their horns don't work.",
+    "What do you call a factory that makes okay products? A satisfactory.",
+    "Why did the coffee file a police report? It got mugged.",
+    "I used to hate facial hair, but then it grew on me.",
+    "What do you call a pile of cats? A meowntain.",
+    "Why don't eggs tell jokes? They'd crack each other up.",
+    "How does a penguin build its house? Igloos it together.",
+    "What do you call a fish wearing a bowtie? Sofishticated.",
+    "Why did the math book look so sad? Because it had too many problems.",
+    "I would tell you a construction joke, but I'm still working on it.",
+    "What did the grape do when it got stepped on? It let out a little wine.",
+    "Why couldn't the leopard play hide and seek? Because he was always spotted.",
+    "What do you call cheese that isn't yours? Nacho cheese.",
+    "Why did the golfer bring two pairs of trousers? In case he got a hole in one.",
+    "I only know twenty five letters of the alphabet. I don't know y.",
+    "What do you call an alligator in a vest? An investigator.",
+    "Why are elevator jokes so classic? They work on many levels.",
+    "Did you hear about the claustrophobic astronaut? He just needed a little space.",
+    "What did one wall say to the other? I'll meet you at the corner.",
+    "Why don't scientists trust atoms? Because they make up everything.",
+    "I'm afraid for the calendar. Its days are numbered.",
+    "What do you call a sleeping bull? A bulldozer.",
 ];
 
 const NORWEGIAN: &[&str] = &[
@@ -44,6 +66,8 @@ struct DadJoke {
 
 pub struct Jokes {
     agent: ureq::Agent,
+    /// Only the built-in jokes: their speech can be rendered ahead of time.
+    built_in_only: bool,
     recent: VecDeque<String>,
     next: usize,
 }
@@ -55,6 +79,7 @@ impl Default for Jokes {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as usize);
         Self {
             agent: ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).build().into(),
+            built_in_only: false,
             recent: VecDeque::new(),
             next,
         }
@@ -62,8 +87,18 @@ impl Default for Jokes {
 }
 
 impl Jokes {
+    pub fn built_in_only(self) -> Self {
+        Self { built_in_only: true, ..self }
+    }
+
+    /// Every built-in English joke, to render ahead of time.
+    pub fn english() -> &'static [&'static str] {
+        ENGLISH
+    }
+
     pub fn tell(&mut self, lang: Lang) -> String {
         let joke = match lang {
+            Lang::English if self.built_in_only => self.built_in(ENGLISH),
             Lang::English => self.fetch().unwrap_or_else(|| self.built_in(ENGLISH)),
             Lang::Norwegian => self.built_in(NORWEGIAN),
         };

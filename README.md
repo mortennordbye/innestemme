@@ -290,6 +290,12 @@ A more natural English voice: `english-tts: kokoro` speaks through [Kokoro](http
 behind Kokoro-FastAPI (`make kokoro` runs it on 127.0.0.1:8880; `kokoro-url` points elsewhere). `kokoro-voice` picks
 the voice, default `am_onyx` (American, deep); `bm_george` is British. Audio streams as it is synthesized.
 
+Pre-rendered speech: `speech-cache: <dir>` keeps every fixed English sentence once it is spoken (one folder per
+voice): the persona's openers and remarks, lead-ins, all jokes (the built-in list, then) and confirmations such as
+"The kitchen lights are off." The fixed ones are rendered ahead in idle time after start. Sentences with numbers are
+live data and are always synthesized; a slow answer (weather, departures, prices, what's on, who's home) opens
+with a lead-in ("Checking the forecast, sir.") that plays while its data sentence is synthesized.
+
 On the web page, "Hear response" answers a typed request aloud in the browser, with the assistant's voice and
 style, when answering changes nothing (weather, departures, prices, what's on, who's home, the shopping list);
 requests that switch or play something are not run from the page.
