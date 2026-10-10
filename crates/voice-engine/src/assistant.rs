@@ -55,6 +55,9 @@ const HISTORY_TURNS: usize = 4;
 const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// After a bare name or an answer, speech within this time needs no name.
 const FOLLOW_UP: Duration = Duration::from_secs(8);
+/// An utterance that starts this soon after a device's wake word holds the end of the wake word
+/// ("Oh", "What?"), not the request.
+const WAKE_TAIL: Duration = Duration::from_millis(500);
 
 pub struct AssistantConfig {
     /// Place used when a weather question names none; also the home's name in answers.
@@ -127,7 +130,7 @@ impl AssistantHandle {
     /// is the request. The device has finished playing, so there is no echo to wait out.
     pub fn woke(&self) {
         self.hear_now.store(true, Relaxed);
-        let _ = self.jobs.send(Job::Woken);
+        let _ = self.jobs.send(Job::Woken(Instant::now()));
     }
 
     /// A satellite connected: its names, to look up its room in Home Assistant.
@@ -143,12 +146,12 @@ impl AssistantHandle {
 enum Job {
     /// A session started: tell the speaker they can talk.
     Ready,
-    /// A satellite heard its wake word itself.
-    Woken,
+    /// A satellite heard its wake word itself, at this time.
+    Woken(Instant),
     /// Kyutai path: already transcribed, English.
     Action(Action),
-    /// Whisper path: audio still to transcribe.
-    Utterance(Vec<i16>),
+    /// Whisper path: audio still to transcribe, and when it ended.
+    Utterance(Vec<i16>, Instant),
     /// Whisper path: the speaker paused and may be done. Transcribed ahead of the utterance.
     Draft(Vec<i16>),
     /// A satellite connected, by its names.
@@ -244,6 +247,7 @@ impl AssistantProcessor {
             transcriber,
             draft: None,
             follow_up_until: None,
+            woken_at: None,
             history: VecDeque::new(),
             last_lights: None,
             pending_lights: None,
@@ -326,7 +330,7 @@ impl FrameProcessor for AssistantProcessor {
                 } else {
                     if let Some(utterance) = vad.push(input) {
                         info!(seconds = utterance.len() as f32 / SAMPLE_RATE as f32, "utterance");
-                        let _ = self.jobs.send(Job::Utterance(utterance));
+                        let _ = self.jobs.send(Job::Utterance(utterance, Instant::now()));
                     }
                     if let Some(draft) = vad.draft() {
                         let _ = self.jobs.send(Job::Draft(draft));
@@ -413,6 +417,8 @@ struct Worker {
     /// Until then, speech counts without the name: after a bare name, and for a while after each
     /// answer, like a person who is still looking at you. Only recognised requests are acted on.
     follow_up_until: Option<Instant>,
+    /// A satellite woke on its own wake word and nothing has been answered since.
+    woken_at: Option<Instant>,
     /// Recent exchanges, oldest first, for the language model.
     history: VecDeque<(Instant, Turn)>,
     /// The lights switched last, how, and when, for "turn them back on" and "reverse that".
@@ -463,24 +469,26 @@ impl Worker {
                     self.emit(AssistantEvent::Done);
                     self.play(&tts::give_up_chime());
                 }
-                Job::Woken => {
+                Job::Woken(at) => {
                     info!("device wake word");
+                    self.woken_at = Some(at);
                     self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
                     self.emit(AssistantEvent::Listening);
                 }
                 Job::Satellite(names) => self.satellite(&names),
                 Job::Action(Action::Request(text)) => self.answer(&text, Lang::English, Instant::now()),
-                Job::Utterance(audio) => self.utterance(&audio),
+                Job::Utterance(audio, ended) => self.utterance(&audio, ended),
                 Job::Draft(audio) => {
                     queued.extend(jobs.try_iter());
                     // The speaker went on, or ended: a later job has newer audio.
-                    if !queued.iter().any(|job| matches!(job, Job::Draft(_) | Job::Utterance(_))) {
+                    if !queued.iter().any(|job| matches!(job, Job::Draft(_) | Job::Utterance(..))) {
                         self.transcribe_draft(audio);
                     }
                 }
                 Job::Ready => {
                     info!("ready");
                     (self.follow_up_until, self.last_lights, self.pending_lights) = (None, None, None);
+                    self.woken_at = None;
                     self.history.clear();
                     self.play(&tts::ready_chime());
                 }
@@ -488,7 +496,7 @@ impl Worker {
         }
     }
 
-    fn utterance(&mut self, audio: &[i16]) {
+    fn utterance(&mut self, audio: &[i16], ended: Instant) {
         if let Some(dir) = &self.config.dump_utterances {
             if let Err(error) = save_wav(dir, "utterance", audio, SAMPLE_RATE) {
                 warn!(%error, "could not save utterance");
@@ -537,6 +545,7 @@ impl Worker {
             None if follow_up => (heard.text.clone(), false),
             None => {
                 info!(text = heard.text, "not addressed");
+                self.not_understood(&heard.text, audio, ended, heard.lang, start);
                 return;
             }
         };
@@ -548,10 +557,32 @@ impl Worker {
         let pending = self.pending_lights.is_some() || self.timers.awaiting_duration();
         if !addressed && !pending && unknown && self.config.llm.is_none() {
             info!(text = heard.text, "not addressed");
+            self.not_understood(&heard.text, audio, ended, heard.lang, start);
             return;
         }
         self.busy.store(true, Relaxed);
         self.answer(&request, heard.lang, start);
+    }
+
+    /// A device woke on its wake word and the request was not understood: say so, once, rather
+    /// than end the run in silence, which sounds as if the device never woke.
+    fn not_understood(&mut self, text: &str, audio: &[i16], ended: Instant, lang: Lang, start: Instant) {
+        let Some(woken) = self.woken_at else {
+            return;
+        };
+        let began = ended.checked_sub(Duration::from_secs_f32(audio.len() as f32 / SAMPLE_RATE as f32));
+        if began.is_none_or(|began| began < woken + WAKE_TAIL) {
+            return;
+        }
+        info!(text, "not understood after the wake word");
+        let answer = if lang == Lang::Norwegian {
+            "Beklager, det fikk jeg ikke med meg."
+        } else {
+            "Sorry, I didn't catch that."
+        };
+        self.busy.store(true, Relaxed);
+        self.emit(AssistantEvent::Heard { text: text.to_owned() });
+        self.say(answer.to_owned(), lang, start);
     }
 
     fn transcribe_draft(&mut self, audio: Vec<i16>) {
@@ -572,6 +603,7 @@ impl Worker {
         let Some(answer) = self.compose(text, lang) else {
             info!(request = text, "conversation ended");
             self.emit(AssistantEvent::Done);
+            self.woken_at = None;
             self.follow_up_until = None;
             self.pending_lights = None;
             self.timers.clear_pending();
@@ -583,6 +615,12 @@ impl Worker {
         while self.history.len() > HISTORY_TURNS {
             self.history.pop_front();
         }
+        self.say(answer, lang, start);
+    }
+
+    /// Speaks an answer and opens the follow-up window.
+    fn say(&mut self, answer: String, lang: Lang, start: Instant) {
+        self.woken_at = None;
         self.emit(AssistantEvent::Answer { text: answer.clone() });
         // Audio goes to the speaker as it is synthesized; `say` hands over whole sentences.
         let (reply, events, mut samples, mut first) = (&mut self.reply, &self.events, 0usize, None);
