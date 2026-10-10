@@ -311,6 +311,26 @@ Timers on a device: devices with a timer display (the Voice PE's LED ring) get t
 Reminders, and timers on devices without a display, are announced instead: the device fetches the chime and
 the spoken text as a wav and plays it (`VoiceAssistantAnnounceRequest`).
 
+### When a satellite seems to stop responding
+
+Measured with a Voice PE and a Sonos as `answer-player` (2026-10-10):
+
+- **A loud answer player next to the device deafens its wake word detector** for several seconds: the detector
+  adapts to loud sound, and the device's echo cancellation only removes its own speaker. A quiet "Hey Jarvis"
+  was missed after an answer at volume 45 and still woke the device after 25 to 35. Keep `answer-volume` low
+  when the player stands close, or answer on the device.
+- **Whisper's short window invented text** on real satellite recordings ("What are you doing?" ten times), so
+  `whisper-full-window` is on by default. Turn it off only after checking real recordings with the
+  `whisper_window` example.
+- **Saying the wake word again during a run stops the run** on the official Voice PE firmware; the engine logs
+  `device ended the run`.
+- **Check both sides before guessing:** the engine log shows what was heard and answered, `dump-utterances`
+  keeps each run's audio, and the device's own log (any ESPHome API client calling `subscribe_logs` with the
+  device's key) shows each detection with its score and the voice assistant's state changes.
+- **Testing without talking:** announce a synthetic "Hey Jarvis." plus a request on the answer player and read
+  the device log; detections are logged with their score, misses are not logged at all.
+- `firmware/` holds a patched Voice PE firmware that is not ready: it scored lower than the official build.
+
 ## Configuration
 
 Every option of `voice-engine --help` can be set three ways, with the same name: a flag
