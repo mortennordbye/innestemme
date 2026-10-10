@@ -51,7 +51,9 @@ h1 { margin: 0; font-size: 28px; letter-spacing: .18em; font-weight: 700; }
 .field input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 17px; padding: 10px 0; }
 .result { margin-top: 14px; min-height: 64px; display: grid; gap: 8px; }
 .result .head { display: flex; align-items: center; gap: 10px; font-size: 17px; }
-.result .icon { font-size: 24px; }
+.result .icon { width: 24px; height: 24px; color: var(--accent); }
+.result .icon.miss { color: var(--warn); }
+.ico { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 .result .muted { color: var(--dim); }
 .ok { color: var(--good); font-weight: 600; }
 .no { color: var(--warn); font-weight: 600; }
@@ -74,7 +76,10 @@ h2 { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: v
 .card:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
 .card.hit { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
 .card .title { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; }
-.card .title span:first-child { font-size: 22px; }
+.card .badge {
+  width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: 10px;
+  background: var(--accent-dim); color: var(--accent);
+}
 .card p { margin: 0; color: var(--dim); }
 .meta { display: grid; gap: 4px; font-size: 13px; }
 .meta .k { color: var(--dim); }
@@ -105,10 +110,55 @@ h2 { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: v
 .miss .heard { font-size: 16px; overflow-wrap: anywhere; }
 .miss .why { grid-column: 2; color: var(--dim); font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 560px) { .miss { grid-template-columns: 1fr; } .miss .why { grid-column: 1; } }
+.listen {
+  margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px;
+}
+.listen > .ico { width: 24px; height: 24px; color: var(--good); }
+.listen .state { font-weight: 650; }
+.listen .detail { color: var(--dim); font-size: 13px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.seg button { border: 0; background: transparent; color: var(--dim); font: inherit; font-size: 13px; padding: 6px 11px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { color: var(--text); background: var(--accent-dim); }
+.seg button:disabled { cursor: progress; }
+body.paused .listen { border-color: color-mix(in srgb, var(--warn) 55%, var(--line)); }
+body.paused .listen > .ico { color: var(--warn); }
+body.paused .reactor circle { stroke: var(--warn); }
+body.paused .reactor * { animation: none; }
+@media (max-width: 720px) { .listen { margin-left: 0; width: 100%; } }
 footer { margin-top: 40px; color: var(--dim); font-size: 13px; }
 </style>
 </head>
 <body>
+<!-- Line icons after Lucide (ISC license). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-clapper" viewBox="0 0 24 24"><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-scroll" viewBox="0 0 24 24"><path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v3h4"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+  <symbol id="i-cloud-sun" viewBox="0 0 24 24"><path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.95 12.65a4 4 0 0 0-5.93-4.13"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6z"/></symbol>
+  <symbol id="i-bus" viewBox="0 0 24 24"><path d="M8 6v6"/><path d="M15 6v6"/><path d="M2 12h19.6"/><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+  <symbol id="i-timer" viewBox="0 0 24 24"><path d="M10 2h4"/><path d="m12 14 3-3"/><circle cx="12" cy="14" r="8"/></symbol>
+  <symbol id="i-cart" viewBox="0 0 24 24"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+  <symbol id="i-sunrise" viewBox="0 0 24 24"><path d="M12 2v8"/><path d="m4.93 10.93 1.41 1.41"/><path d="M2 18h2"/><path d="M20 18h2"/><path d="m19.07 10.93-1.41 1.41"/><path d="M22 22H2"/><path d="m8 6 4-4 4 4"/><path d="M16 18a4 4 0 0 0-8 0"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><path d="M9 9h.01"/><path d="M15 9h.01"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7z"/></symbol>
+  <symbol id="i-newspaper" viewBox="0 0 24 24"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-calculator" viewBox="0 0 24 24"><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M8 6h8"/><path d="M16 14v4"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/></symbol>
+  <symbol id="i-ruler" viewBox="0 0 24 24"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></symbol>
+  <symbol id="i-question" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 24 24"><path d="m2 2 20 20"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M12 19v3"/></symbol>
+</svg>
 <main>
   <header>
     <svg class="reactor" viewBox="0 0 64 64" aria-hidden="true">
@@ -121,6 +171,19 @@ footer { margin-top: 40px; color: var(--dim); font-size: 13px; }
       <p class="sub">Everything you can say, and what happens when you do.</p>
       <div class="chips" id="about"></div>
     </div>
+    <section class="listen" id="listen" aria-label="Listening" hidden>
+      <svg class="ico" aria-hidden="true"><use href="#i-mic"/></svg>
+      <div>
+        <div class="state" id="listen-state">Listening</div>
+        <div class="detail" id="listen-detail"></div>
+      </div>
+      <div class="seg" role="group" aria-label="Listen">
+        <button data-set="resume">On</button>
+        <button data-set="pause=60">Pause 1 h</button>
+        <button data-set="pause=180">3 h</button>
+        <button data-set="pause=0">Off</button>
+      </div>
+    </section>
   </header>
 
   <section class="try">
@@ -154,6 +217,15 @@ const el = (tag, cls, text) => {
   if (cls) e.className = cls;
   if (text != null) e.textContent = text;
   return e;
+};
+const icon = (name, cls) => {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "ico" + (cls ? " " + cls : ""));
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", "#i-" + name);
+  svg.append(use);
+  return svg;
 };
 let skills = [], about = {}, group = "All";
 
@@ -191,7 +263,9 @@ function card(s) {
   const c = el("article", "card");
   c.id = "skill-" + s.id;
   const t = el("div", "title");
-  t.append(el("span", null, s.icon), el("span", null, s.name));
+  const badge = el("span", "badge");
+  badge.append(icon(s.icon));
+  t.append(badge, el("span", null, s.name));
   c.append(t, el("p", null, s.does));
   const meta = el("div", "meta");
   const src = el("div"); src.append(el("span", "k", "Data "), document.createTextNode(s.source)); meta.append(src);
@@ -235,10 +309,10 @@ async function tryPhrase(text, fill) {
   if (ticket !== pending) return;
   const head = el("div", "head");
   if (r.skill) {
-    head.append(el("span", "icon", r.skill.icon), el("span", "ok", "Understood"), el("span", null, "→ " + r.skill.name));
+    head.append(icon(r.skill.icon, "icon"), el("span", "ok", "Understood"), el("span", null, "→ " + r.skill.name));
     document.getElementById("skill-" + r.skill.id)?.classList.add("hit");
   } else {
-    head.append(el("span", "icon", "🤷"), el("span", "no", "Not understood by the rules"));
+    head.append(icon("question", "icon miss"), el("span", "no", "Not understood by the rules"));
   }
   const parts = [head];
   if (r.request !== r.text) parts.push(el("div", "muted", `Name removed; the request is “${r.request}”.`));
@@ -317,11 +391,49 @@ async function loadMisses() {
   }));
 }
 
+let chosen = null;
+// Polled, so a timed pause that ran out shows as listening again.
+function showListening(r) {
+  if (!r.available) return;
+  $("#listen").hidden = false;
+  document.body.classList.toggle("paused", !r.listening);
+  $("#listen > .ico use").setAttribute("href", r.listening ? "#i-mic" : "#i-mic-off");
+  const wake = about.wake_words?.[0] || about.name || "the wake word";
+  let state = "Listening", detail = `Say “${wake}”`, pressed = "resume";
+  if (!r.listening && r.until == null) {
+    [state, detail, pressed] = ["Not listening", "Until switched on again", "pause=0"];
+  } else if (!r.listening) {
+    const at = new Date(r.until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    [state, detail, pressed] = ["Paused", `Listening again at ${at}`, chosen];
+  }
+  $("#listen-state").textContent = state;
+  $("#listen-detail").textContent = detail;
+  document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.set === pressed));
+}
+
+async function loadListening() {
+  showListening(await (await fetch("api/listening")).json());
+}
+
+document.querySelectorAll(".seg button").forEach((b) => b.onclick = async () => {
+  const buttons = document.querySelectorAll(".seg button");
+  buttons.forEach((x) => x.disabled = true);
+  chosen = b.dataset.set;
+  try {
+    showListening(await (await fetch("api/listening?" + b.dataset.set, { method: "POST" })).json());
+  } catch {
+    $("#listen-detail").textContent = "Could not reach the assistant.";
+  }
+  buttons.forEach((x) => x.disabled = false);
+});
+
 let timer;
 $("#phrase").addEventListener("input", (e) => { clearTimeout(timer); timer = setTimeout(() => tryPhrase(e.target.value), 150); });
 $("#filter").addEventListener("input", render);
-load().catch(() => { $("#map").replaceChildren(el("div", "empty", "Could not load the skills.")); });
+load().catch(() => { $("#map").replaceChildren(el("div", "empty", "Could not load the skills.")); }).then(() => loadListening().catch(() => {}));
 loadMisses().catch(() => {});
+setInterval(() => loadListening().catch(() => {}), 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadListening().catch(() => {}); });
 </script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 //! The optional web page (`--web`): a map of everything the assistant understands, from the skill
-//! catalogue, and a box that shows how a typed phrase would be understood. Read-only: phrases are
-//! parsed, and only requests that change nothing (weather, departures, what is on) are answered
-//! aloud, so the page is safe on the same port as the answers.
+//! catalogue, and a box that shows how a typed phrase would be understood. Phrases are only parsed,
+//! and only requests that change nothing (weather, departures, what is on) are answered aloud. The
+//! one thing it changes is whether the assistant listens: a pause for guests or a long conversation.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,6 +45,38 @@ impl Web {
         unhandled: Option<Arc<UnhandledLog>>,
     ) -> Self {
         Self { wake, about, assistant, speech, unhandled }
+    }
+
+    /// `/api/listening`: whether the assistant listens. A POST with `pause=<minutes>` (0: until
+    /// switched on) or `resume` changes it.
+    pub fn listening(&self, post: bool, target: &str) -> Option<Response> {
+        let query = target.strip_prefix("/api/listening")?;
+        let query = match query.strip_prefix('?') {
+            Some(query) => query,
+            None if query.is_empty() => "",
+            None => return None,
+        };
+        let Some(assistant) = &self.assistant else {
+            return Some(json_response(&json!({ "available": false })));
+        };
+        if post {
+            let pause = query.split('&').find_map(|pair| pair.strip_prefix("pause="));
+            match pause.map(str::parse::<u64>) {
+                Some(Ok(0)) => assistant.pause.pause(None),
+                Some(Ok(minutes)) => assistant.pause.pause(Some(minutes)),
+                Some(Err(_)) => return Some(bad_request("`pause` is a number of minutes")),
+                None if query.split('&').any(|pair| pair == "resume") => assistant.pause.resume(),
+                None => return Some(bad_request("`pause=<minutes>` or `resume`")),
+            }
+            tracing::info!(until = ?assistant.pause.until(), "listening changed from the web page");
+        }
+        let until = assistant.pause.until();
+        Some(json_response(&json!({
+            "available": true,
+            "listening": until.is_none(),
+            // Seconds since the epoch, or null while paused until switched on.
+            "until": until.filter(|&u| u != u64::MAX),
+        })))
     }
 
     /// `/api/hear?q=...`: the spoken answer as a URL under `/speech/`, when the request only reads.
@@ -102,6 +134,10 @@ fn json_response(value: &serde_json::Value) -> Response {
     ("200 OK", "application/json", value.to_string().into_bytes())
 }
 
+fn bad_request(reason: &str) -> Response {
+    ("400 Bad Request", "application/json", json!({ "reason": reason }).to_string().into_bytes())
+}
+
 /// Percent-decoding for a query value; `+` is a space.
 fn decode(value: &str) -> String {
     let bytes = value.as_bytes();
@@ -156,6 +192,23 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["skills"].as_array().unwrap().len(), SKILLS.len());
         assert!(web().route("/nothing").is_none());
+    }
+
+    #[test]
+    fn draws_every_skill_icon() {
+        for skill in SKILLS {
+            assert!(PAGE.contains(&format!("id=\"i-{}\"", skill.icon)), "no symbol for {}", skill.icon);
+        }
+        let emoji = PAGE.chars().find(|&c| matches!(c, '\u{2600}'..='\u{27bf}' | '\u{1f000}'..));
+        assert_eq!(emoji, None, "icons are drawn, not emoji");
+    }
+
+    #[test]
+    fn listening_without_an_assistant() {
+        let body = web().listening(true, "/api/listening?pause=60").unwrap().2;
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["available"], false);
+        assert!(web().listening(false, "/api/listeningx").is_none());
     }
 
     #[test]

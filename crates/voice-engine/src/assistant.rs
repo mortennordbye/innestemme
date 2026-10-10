@@ -11,10 +11,10 @@
 //! microphone is ignored so the assistant does not answer itself through a laptop speaker.
 
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -133,6 +133,41 @@ pub enum AssistantEvent {
     Announcement { text: String, audio: Arc<[i16]>, timer_ring: bool },
 }
 
+/// Listening switched off from the web page (guests, a long conversation in the room), for a while
+/// or until it is switched on again. Only the wake word and requests are ignored: timers and
+/// reminders still ring.
+#[derive(Default)]
+pub struct Pause {
+    /// Unix seconds when listening resumes: 0 while listening, `u64::MAX` until switched on.
+    until: AtomicU64,
+}
+
+impl Pause {
+    /// Stops listening for `minutes`, or until `resume` without them.
+    pub fn pause(&self, minutes: Option<u64>) {
+        let until = minutes.map_or(u64::MAX, |m| unix_now().saturating_add(m.saturating_mul(60)));
+        self.until.store(until, Relaxed);
+    }
+
+    pub fn resume(&self) {
+        self.until.store(0, Relaxed);
+    }
+
+    /// When listening resumes, in unix seconds (`u64::MAX`: when switched on), if it is paused.
+    pub fn until(&self) -> Option<u64> {
+        let until = self.until.load(Relaxed);
+        (until > unix_now()).then_some(until)
+    }
+
+    pub fn paused(&self) -> bool {
+        self.until().is_some()
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
 /// Talks to the assistant from outside the audio path (a satellite bridge).
 #[derive(Clone)]
 pub struct AssistantHandle {
@@ -140,6 +175,7 @@ pub struct AssistantHandle {
     events: broadcast::Sender<AssistantEvent>,
     hear_now: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
+    pub pause: Arc<Pause>,
 }
 
 impl AssistantHandle {
@@ -217,6 +253,7 @@ pub struct AssistantProcessor {
     /// A satellite started listening: stop ignoring the microphone at once.
     hear_now: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
+    pause: Arc<Pause>,
     was_busy: bool,
     frame: u64,
     deaf_until: u64,
@@ -241,6 +278,7 @@ impl AssistantProcessor {
         let (reply_tx, reply) = rtrb::RingBuffer::new(SAMPLE_RATE as usize * 60);
         let busy = Arc::new(AtomicBool::new(false));
         let interrupted = Arc::new(AtomicBool::new(false));
+        let pause = Arc::new(Pause::default());
         let speaker = config.speaker.clone();
         let (events, _) = broadcast::channel(256);
         // MET Norway asks for an application name and a contact.
@@ -288,6 +326,7 @@ impl AssistantProcessor {
             reply: reply_tx,
             busy: busy.clone(),
             interrupted: interrupted.clone(),
+            pause: pause.clone(),
             tts,
             config,
             weather: Weather::new(&user_agent),
@@ -362,7 +401,19 @@ impl AssistantProcessor {
         }
         std::thread::Builder::new().name("assistant".into()).spawn(move || worker.run(rx))?;
         let hear_now = Arc::new(AtomicBool::new(false));
-        Ok(Self { ear, jobs, events, reply, busy, hear_now, interrupted, was_busy: false, frame: 0, deaf_until: 0 })
+        Ok(Self {
+            ear,
+            jobs,
+            events,
+            reply,
+            busy,
+            hear_now,
+            interrupted,
+            pause,
+            was_busy: false,
+            frame: 0,
+            deaf_until: 0,
+        })
     }
 
     pub fn handle(&self) -> AssistantHandle {
@@ -371,6 +422,7 @@ impl AssistantProcessor {
             events: self.events.clone(),
             hear_now: self.hear_now.clone(),
             interrupted: self.interrupted.clone(),
+            pause: self.pause.clone(),
         }
     }
 }
@@ -516,6 +568,7 @@ struct Worker {
     busy: Arc<AtomicBool>,
     /// Set by a satellite when the wake word is said over an answer.
     interrupted: Arc<AtomicBool>,
+    pause: Arc<Pause>,
     tts: Box<dyn Tts>,
     config: AssistantConfig,
     weather: Weather,
@@ -595,6 +648,14 @@ impl Worker {
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
             };
+            // A wake word or request while paused is dropped; a give-up still ends a listening run.
+            let heard = matches!(
+                job,
+                Job::Action(Action::Wake | Action::Request(_)) | Job::Woken(_) | Job::Utterance(..) | Job::Draft(_)
+            );
+            if heard && self.pause.paused() {
+                continue;
+            }
             match job {
                 Job::Action(Action::Wake) => {
                     info!("wake word");
@@ -1758,6 +1819,22 @@ fn push(reply: &mut rtrb::Producer<i16>, pcm: &[i16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pauses_for_a_while_or_until_resumed() {
+        let pause = Pause::default();
+        assert!(!pause.paused());
+        pause.pause(Some(60));
+        let until = pause.until().unwrap();
+        assert!((3590..=3610).contains(&(until - unix_now())));
+        pause.pause(None);
+        assert_eq!(pause.until(), Some(u64::MAX));
+        pause.resume();
+        assert!(!pause.paused());
+        // A pause that ran out is over without anyone resuming it.
+        pause.until.store(unix_now() - 1, Relaxed);
+        assert!(!pause.paused());
+    }
 
     #[test]
     fn this_room_and_back_references() {
