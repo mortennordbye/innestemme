@@ -12,8 +12,8 @@ What the patch changes:
   the time and the engine detects the wake word (`wake-model`). Media is ducked only once the wake word is
   heard, the center button still asks a question without the wake word, muting stops the stream, and a
   1 s check restarts streaming after anything stopped it. Turned off, the device uses its own wake word as
-  the official firmware does. The "stop" word for a ringing timer only works with the switch off; the
-  button always stops it.
+  the official firmware does. The on-device detector keeps running with the switch on, but only to stop
+  a ringing timer ("stop" or a wake word), as before.
 - `voice_kit` comes from the release instead of upstream's `dev` branch. A build with the `dev` one scored
   0.70 to 0.86 on "Hey Jarvis" where the official binary scored 0.88 to 0.96 with the same test clip.
 - A second on-device wake word detection within 3 s of the last start is ignored. The official firmware

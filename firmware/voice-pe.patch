@@ -46,7 +46,7 @@ index 73add02..98497f5 100644
 -      - lambda: id(update_http_request).set_source_url("https://firmware.esphome.io/home-assistant-voice-pe/home-assistant-voice/manifest.json");
 -      - component.update: update_http_request
 diff --git a/home-assistant-voice.yaml b/home-assistant-voice.yaml
-index dbf258e..948a1c5 100644
+index dbf258e..81bd389 100644
 --- a/home-assistant-voice.yaml
 +++ b/home-assistant-voice.yaml
 @@ -129,6 +129,11 @@ psram:
@@ -61,7 +61,7 @@ index dbf258e..948a1c5 100644
    # Global index for our LEDs. So that switching between different animation does not lead to unwanted effects.
    - id: global_led_animation_index
      type: int
-@@ -189,6 +194,26 @@ globals:
+@@ -189,6 +194,22 @@ globals:
      initial_value: 'false'
  
  switch:
@@ -74,21 +74,17 @@ index dbf258e..948a1c5 100644
 +    entity_category: config
 +    optimistic: true
 +    restore_mode: RESTORE_DEFAULT_ON
++    # The on-device detector keeps running either way: with this on it only stops a ringing timer.
 +    on_turn_on:
-+      - micro_wake_word.stop:
 +      - lambda: id(va).set_use_wake_word(true);
 +      # The interval below starts streaming.
 +    on_turn_off:
 +      - lambda: id(va).set_use_wake_word(false);
 +      - voice_assistant.stop:
-+      - wait_until:
-+          not:
-+            voice_assistant.is_running:
-+      - micro_wake_word.start:
    # This is the master mute switch. It is exposed to Home Assistant. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)
    - platform: template
      id: master_mute_switch
-@@ -217,6 +242,14 @@ switch:
+@@ -217,6 +238,14 @@ switch:
              - microphone.unmute:
      on_turn_on:
        - script.execute: control_leds
@@ -103,7 +99,7 @@ index dbf258e..948a1c5 100644
      on_turn_off:
        - script.execute: control_leds
    # Wake Word Sound Switch.
-@@ -334,39 +367,60 @@ binary_sensor:
+@@ -334,39 +363,60 @@ binary_sensor:
                      else:
                        - if:
                            condition:
@@ -193,7 +189,7 @@ index dbf258e..948a1c5 100644
        # Double Click
        #  . Exposed as an event entity. To be used in automations inside Home Assistant
        - timing:
-@@ -1684,8 +1738,10 @@ media_player:
+@@ -1684,8 +1734,10 @@ media_player:
          condition:
            and:
              - switch.is_off: timer_ringing
@@ -206,7 +202,7 @@ index dbf258e..948a1c5 100644
              - not:
                  media_player.is_announcing: external_media_player
          then:
-@@ -1708,7 +1764,9 @@ external_components:
+@@ -1708,7 +1760,9 @@ external_components:
    - source:
        type: git
        url: https://github.com/esphome/home-assistant-voice-pe
@@ -217,7 +213,30 @@ index dbf258e..948a1c5 100644
      components:
        - voice_kit
      refresh: 0s
-@@ -1748,13 +1806,20 @@ micro_wake_word:
+@@ -1737,10 +1791,21 @@ micro_wake_word:
+       internal: true
+   vad:
+   on_wake_word_detected:
++    # With the wake word in innestemme, the on-device detector only stops a ringing timer ("stop", or a
++    # wake word); innestemme handles everything else.
++    - if:
++        condition:
++          and:
++            - switch.is_on: server_wake_word
++            - switch.is_on: timer_ringing
++        then:
++          - switch.turn_off: timer_ringing
+     # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
+     - if:
+         condition:
+-          switch.is_off: master_mute_switch
++          and:
++            - switch.is_off: master_mute_switch
++            - switch.is_off: server_wake_word
+         then:
+           # If a timer is ringing: Stop it, do not start the voice assistant (We can stop timer from voice!)
+           - if:
+@@ -1748,13 +1813,20 @@ micro_wake_word:
                  switch.is_on: timer_ringing
                then:
                  - switch.turn_off: timer_ringing
@@ -240,7 +259,7 @@ index dbf258e..948a1c5 100644
                      # Stop any other media player announcement
                      else:
                        - if:
-@@ -1776,6 +1841,7 @@ micro_wake_word:
+@@ -1776,6 +1848,7 @@ micro_wake_word:
                                        priority: true
                                        sound_file: "wake_word_triggered_sound"
                                    - delay: 300ms
@@ -248,7 +267,7 @@ index dbf258e..948a1c5 100644
                              - voice_assistant.start:
                                  wake_word: !lambda return wake_word;
  
-@@ -1811,6 +1877,26 @@ select:
+@@ -1811,6 +1884,26 @@ select:
            id(hey_mycroft).set_probability_cutoff(237);  // 0.93 -> 1.878 FAPH on DipCo
          }
  
@@ -275,22 +294,15 @@ index dbf258e..948a1c5 100644
  voice_assistant:
    id: va
    microphone:
-@@ -1826,7 +1912,13 @@ voice_assistant:
+@@ -1826,6 +1919,7 @@ voice_assistant:
    volume_multiplier: 1
    on_client_connected:
      - lambda: id(init_in_progress) = false;
--    - micro_wake_word.start:
 +    - lambda: id(va).set_use_wake_word(id(server_wake_word).state);
-+    # With the wake word in innestemme, the interval below starts streaming instead.
-+    - if:
-+        condition:
-+          switch.is_off: server_wake_word
-+        then:
-+          - micro_wake_word.start:
+     - micro_wake_word.start:
      - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
      - script.execute: control_leds
-   on_client_disconnected:
-@@ -1855,11 +1947,30 @@ voice_assistant:
+@@ -1855,11 +1949,30 @@ voice_assistant:
                priority: true
                sound_file: "error_cloud_expired"
    # When the voice assistant starts: Play a wake up sound, duck audio.
@@ -323,7 +335,7 @@ index dbf258e..948a1c5 100644
    on_listening:
      - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
      - script.execute: control_leds
-@@ -1891,9 +2002,9 @@ voice_assistant:
+@@ -1891,9 +2004,9 @@ voice_assistant:
            - script.execute: activate_stop_word_once
    # When the voice assistant ends ...
    on_end:
@@ -335,7 +347,7 @@ index dbf258e..948a1c5 100644
      # Stop ducking audio.
      - mixer_speaker.apply_ducking:
          id: media_mixing_input
-@@ -1908,6 +2019,8 @@ voice_assistant:
+@@ -1908,6 +2021,8 @@ voice_assistant:
      # Reset the voice assistant phase id and reset the LED animations.
      - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
      - script.execute: control_leds
@@ -344,7 +356,7 @@ index dbf258e..948a1c5 100644
    on_timer_finished:
      - switch.turn_on: timer_ringing
    on_timer_started:
-@@ -1919,6 +2032,25 @@ voice_assistant:
+@@ -1919,6 +2034,25 @@ voice_assistant:
    on_timer_tick:
      - script.execute: control_leds
  
@@ -370,7 +382,7 @@ index dbf258e..948a1c5 100644
  button:
    - platform: factory_reset
      id: factory_reset_button
-@@ -1929,7 +2061,7 @@ button:
+@@ -1929,7 +2063,7 @@ button:
      id: restart_button
      name: "Restart"
      entity_category: config
