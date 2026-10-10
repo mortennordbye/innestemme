@@ -131,6 +131,34 @@ impl Persona {
         format!("{}{tail}", with_honorific(first, &h))
     }
 
+    /// The answer after a lead-in that already addressed the user ("Checking the forecast, sir."):
+    /// no second honorific or opener, now and then a remark.
+    pub fn after_lead(&mut self, answer: &str) -> String {
+        let answer = answer.trim();
+        self.last_spoke = Some(Instant::now());
+        let styled = plain(answer);
+        match self.quip(answer) {
+            Some(quip) if !styled.ends_with('?') => format!("{styled} {quip}"),
+            _ => styled,
+        }
+    }
+
+    /// Every fixed sentence the persona says, to render ahead of time. Answers are spoken a
+    /// sentence at a time, so these are whole sentences as they are spoken.
+    pub fn phrases(&self) -> Vec<String> {
+        let h = &self.honorific;
+        let mut phrases: Vec<String> = OPENERS.iter().chain(WELCOME).map(|o| format!("{o}, {h}.")).collect();
+        phrases.extend(["Good morning", "Good afternoon", "Good evening"].map(|g| format!("{g}, {h}.")));
+        phrases.extend([
+            format!("I'm afraid I didn't catch that, {h}."),
+            format!("Pardon me, {h}, I missed that."),
+            format!("Could you say that again, {h}?"),
+            format!("My apologies, {h}."),
+        ]);
+        phrases.extend(QUIPS.iter().flat_map(|(_, quips)| quips.iter().map(|q| q.to_string())));
+        phrases
+    }
+
     /// Now and then a remark that fits the answer, never the same one twice running.
     fn quip(&mut self, answer: &str) -> Option<&'static str> {
         let lower = answer.to_lowercase();

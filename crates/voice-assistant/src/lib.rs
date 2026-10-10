@@ -17,6 +17,7 @@ pub mod pocket;
 pub mod power;
 pub mod resample;
 pub mod shopping;
+pub mod speech_cache;
 pub mod spm;
 pub mod stt;
 pub mod timer;

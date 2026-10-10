@@ -138,6 +138,11 @@ struct Args {
     /// shows how a phrase is understood (nothing is acted on).
     #[arg(long, env = "VOICE_WEB", default_value_t = false, action = clap::ArgAction::Set)]
     web: bool,
+    /// Keep rendered English speech here (one folder per voice): fixed sentences are rendered ahead
+    /// of time and played back at once, jokes come from the built-in list, and slow answers open
+    /// with a lead-in while the sentence with live data is synthesized.
+    #[arg(long, env = "VOICE_SPEECH_CACHE")]
+    speech_cache: Option<PathBuf>,
     /// Speak English answers like a butler and address the user this way, e.g. "sir".
     #[arg(long, env = "VOICE_HONORIFIC")]
     honorific: Option<String>,
@@ -399,6 +404,20 @@ fn main() -> Result<()> {
                 None if args.piper.is_some() && args.norwegian => Box::new(piper()?),
                 _ => Box::new(say()),
             };
+            let english: Box<dyn voice_assistant::tts::Tts> = match &args.speech_cache {
+                Some(dir) => {
+                    let voice = match args.english_tts {
+                        EnglishTts::Pocket => format!("pocket-{}", args.pocket_voice),
+                        EnglishTts::Say => format!("say-{}", args.say_voice.as_deref().unwrap_or("default")),
+                        EnglishTts::Piper => format!("piper-{}", args.piper_voice_en.as_deref().unwrap_or("default")),
+                        EnglishTts::Kokoro => format!("kokoro-{}", args.kokoro_voice),
+                    };
+                    let dir = dir.join(voice);
+                    info!(dir = %dir.display(), "speech cache");
+                    Box::new(voice_assistant::speech_cache::CachedTts::new(english, Some(dir)))
+                }
+                None => english,
+            };
             let tts = Box::new(voice_assistant::tts::ByLanguage { english, norwegian });
             let assistant = AssistantProcessor::new(
                 listener,
@@ -414,6 +433,7 @@ fn main() -> Result<()> {
                     speaker: args.speaker.clone(),
                     room: args.room.clone(),
                     honorific: args.honorific.clone(),
+                    prerender: args.speech_cache.is_some(),
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");
                         voice_assistant::llm::Llm::new(

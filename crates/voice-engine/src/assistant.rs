@@ -85,6 +85,9 @@ pub struct AssistantConfig {
     pub room: Option<String>,
     /// English answers in a butler's words, addressing the user this way ("sir").
     pub honorific: Option<String>,
+    /// Speech is kept once rendered: fixed sentences are rendered ahead of time, jokes come from
+    /// the built-in list, and slow answers open with a lead-in.
+    pub prerender: bool,
     /// Directory for a wav of every utterance (debugging recognition).
     pub dump_utterances: Option<std::path::PathBuf>,
 }
@@ -282,11 +285,18 @@ impl AssistantProcessor {
             pending_scene: None,
             timers: Timers::default(),
             persona: None,
+            prerender: VecDeque::new(),
+            lead_turn: 0,
             room: None,
             warmed_prompt: String::new(),
         };
         worker.room = worker.config.room.clone();
         worker.persona = worker.config.honorific.as_deref().map(Persona::new);
+        if worker.config.prerender {
+            worker.jokes = Jokes::default().built_in_only();
+            worker.prerender = worker.fixed_sentences().into();
+            info!(sentences = worker.prerender.len(), "rendering speech ahead");
+        }
         if let Some((url, token)) = &worker.config.home_assistant {
             let mut ha = HomeAssistant::new(url, token);
             match ha.check() {
@@ -423,6 +433,29 @@ impl FrameProcessor for AssistantProcessor {
     }
 }
 
+/// What an answer has put out so far.
+#[derive(Default)]
+struct Spoken {
+    samples: usize,
+    first: Option<Instant>,
+}
+
+const LEADS_WEATHER: &[&str] = &["Checking the forecast", "Let me look at the weather"];
+const LEADS_TRANSIT: &[&str] = &["Checking the departures", "Let me look up the next departures"];
+const LEADS_POWER: &[&str] = &["Checking the electricity prices"];
+const LEADS_LIGHTS: &[&str] = &["Let me check the lights"];
+const LEADS_HOME: &[&str] = &["Let me see who's in"];
+const LEADS_THINK: &[&str] = &["Let me think"];
+const LEADS: &[&[&str]] = &[LEADS_WEATHER, LEADS_TRANSIT, LEADS_POWER, LEADS_LIGHTS, LEADS_HOME, LEADS_THINK];
+
+/// "Checking the forecast, sir." or "Checking the forecast."
+fn lead_sentence(lead: &str, honorific: Option<&str>) -> String {
+    match honorific {
+        Some(h) => format!("{lead}, {h}."),
+        None => format!("{lead}."),
+    }
+}
+
 struct Worker {
     events: broadcast::Sender<AssistantEvent>,
     reply: rtrb::Producer<i16>,
@@ -464,6 +497,9 @@ struct Worker {
     pending_scene: Option<String>,
     timers: Timers,
     persona: Option<Persona>,
+    /// Sentences still to render ahead of time.
+    prerender: VecDeque<String>,
+    lead_turn: usize,
     /// Where the microphone is: the `room` setting, else the satellite's area.
     room: Option<String>,
     /// The system prompt the language model last saw. It holds the date and the room; a new one
@@ -479,11 +515,17 @@ impl Worker {
             // Wake up for the next timer, and now and then to keep the language model warm.
             let next_timer = self.timers.next_deadline().map(|at| at.saturating_duration_since(Instant::now()));
             let wait = next_timer.map_or(WARM_CHECK, |t| t.min(WARM_CHECK));
+            // With speech still to render ahead, that is done between jobs, a sentence at a time.
+            let wait = if self.prerender.is_empty() { wait } else { Duration::from_millis(20) };
             let job = match queued.pop_front().map_or_else(|| jobs.recv_timeout(wait), Ok) {
                 Ok(job) => job,
                 Err(RecvTimeoutError::Timeout) => {
                     self.ring_due_timers();
-                    self.keep_warm();
+                    if self.prerender.is_empty() {
+                        self.keep_warm();
+                    } else {
+                        self.render_ahead();
+                    }
                     continue;
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -681,14 +723,26 @@ impl Worker {
 
     fn answer(&mut self, text: &str, lang: Lang, start: Instant) {
         self.emit(AssistantEvent::Heard { text: text.to_owned() });
+        // A slow answer (weather, departures) opens with a lead-in rendered ahead of time, which
+        // plays while the data is fetched and its sentence synthesized.
+        let lead = self.lead_in(text, lang);
+        let mut spoken = Spoken::default();
+        if let Some(lead) = &lead {
+            self.emit(AssistantEvent::Answer { text: lead.clone() });
+            self.speak(lead, lang, &mut spoken);
+        }
         let Some(answer) = self.compose(text, lang) else {
             info!(request = text, "conversation ended");
-            self.emit(AssistantEvent::Done);
-            self.woken_at = None;
             self.follow_up_until = None;
             self.pending_lights = None;
             self.timers.clear_pending();
-            self.busy.store(false, Relaxed);
+            if lead.is_some() {
+                self.finish(spoken, start);
+            } else {
+                self.emit(AssistantEvent::Done);
+                self.woken_at = None;
+                self.busy.store(false, Relaxed);
+            }
             return;
         };
         info!(request = text, answer, ?lang, after = ?start.elapsed(), "answering");
@@ -696,23 +750,37 @@ impl Worker {
         while self.history.len() > HISTORY_TURNS {
             self.history.pop_front();
         }
-        self.say(answer, lang, start);
+        let answer = match &mut self.persona {
+            Some(persona) if lang == Lang::English && lead.is_some() => persona.after_lead(&answer),
+            Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
+            _ => answer,
+        };
+        if lead.is_none() {
+            self.emit(AssistantEvent::Answer { text: answer.clone() });
+        }
+        self.speak(&answer, lang, &mut spoken);
+        self.finish(spoken, start);
     }
 
     /// Speaks an answer and opens the follow-up window.
     fn say(&mut self, answer: String, lang: Lang, start: Instant) {
-        self.woken_at = None;
         let answer = match &mut self.persona {
             Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
             _ => answer,
         };
         self.emit(AssistantEvent::Answer { text: answer.clone() });
-        // Audio goes to the speaker as it is synthesized; `say` hands over whole sentences.
-        let (reply, events, mut samples, mut first) = (&mut self.reply, &self.events, 0usize, None::<Instant>);
-        for sentence in answer.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {
-            let result = self.tts.speak(sentence, lang, &mut |pcm| {
-                first.get_or_insert_with(Instant::now);
-                samples += pcm.len();
+        let mut spoken = Spoken::default();
+        self.speak(&answer, lang, &mut spoken);
+        self.finish(spoken, start);
+    }
+
+    /// Audio goes to the speaker as it is synthesized, a sentence at a time.
+    fn speak(&mut self, text: &str, lang: Lang, spoken: &mut Spoken) {
+        let (reply, events, tts) = (&mut self.reply, &self.events, &mut self.tts);
+        for sentence in text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {
+            let result = tts.speak(sentence, lang, &mut |pcm| {
+                spoken.first.get_or_insert_with(Instant::now);
+                spoken.samples += pcm.len();
                 push(reply, pcm);
                 let _ = events.send(AssistantEvent::Speech(pcm.into()));
             });
@@ -720,15 +788,75 @@ impl Worker {
                 warn!(%error, "speech synthesis failed");
             }
         }
-        let seconds = samples as f32 / SAMPLE_RATE as f32;
+    }
+
+    fn finish(&mut self, spoken: Spoken, start: Instant) {
+        self.woken_at = None;
+        let seconds = spoken.samples as f32 / SAMPLE_RATE as f32;
         // `after_speech`: from the end of the speaker's words to the first audio of the answer.
-        let after_speech = self.speech_ended.take().zip(first).map(|(ended, first)| first - ended);
-        let first_audio_after = first.map(|first| first - start);
+        let after_speech = self.speech_ended.take().zip(spoken.first).map(|(ended, first)| first - ended);
+        let first_audio_after = spoken.first.map(|first| first - start);
         info!(?first_audio_after, ?after_speech, done_after = ?start.elapsed(), seconds, "spoken");
         self.emit(AssistantEvent::Spoken);
         // The reply is queued faster than it plays; the window opens when it has been heard.
         self.follow_up_until = Some(Instant::now() + Duration::from_secs_f32(seconds) + FOLLOW_UP);
         self.busy.store(false, Relaxed);
+    }
+
+    /// The lead-in for a request whose answer is slow to get or to say, when speech is rendered
+    /// ahead of time. Not when a pending question takes the words ("Which room?" "The kitchen.").
+    fn lead_in(&mut self, text: &str, lang: Lang) -> Option<String> {
+        let pending = self.pending_lights.is_some()
+            || self.pending_list_add
+            || self.pending_scene.is_some()
+            || self.timers.awaiting_duration();
+        if lang != Lang::English || !self.config.prerender || pending {
+            return None;
+        }
+        let leads = match intent::parse(text) {
+            Intent::Weather { .. } => LEADS_WEATHER,
+            Intent::Transit(_) => LEADS_TRANSIT,
+            Intent::Power(_) => LEADS_POWER,
+            Intent::LightsStatus { .. } => LEADS_LIGHTS,
+            Intent::WhosHome(_) => LEADS_HOME,
+            Intent::Unknown if self.config.llm.is_some() => LEADS_THINK,
+            _ => return None,
+        };
+        self.lead_turn = self.lead_turn.wrapping_add(1);
+        Some(lead_sentence(leads[self.lead_turn % leads.len()], self.config.honorific.as_deref()))
+    }
+
+    /// Every fixed English sentence the assistant says, as spoken (a sentence at a time).
+    fn fixed_sentences(&self) -> Vec<String> {
+        let honorific = self.config.honorific.as_deref();
+        let mut texts: Vec<String> =
+            LEADS.iter().flat_map(|leads| leads.iter().map(|l| lead_sentence(l, honorific))).collect();
+        texts.extend(self.persona.as_ref().map(Persona::phrases).unwrap_or_default());
+        texts.extend(Jokes::english().iter().map(|j| j.to_string()));
+        texts.push("Sorry, I didn't catch that.".to_owned());
+        let mut sentences: Vec<String> = texts
+            .iter()
+            .flat_map(|t| {
+                t.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+            })
+            .filter(|s| voice_assistant::speech_cache::CachedTts::cacheable(s))
+            .collect();
+        sentences.sort();
+        sentences.dedup();
+        sentences
+    }
+
+    /// Renders one sentence ahead of time while nothing else is going on.
+    fn render_ahead(&mut self) {
+        let Some(sentence) = self.prerender.pop_front() else {
+            return;
+        };
+        if let Err(error) = self.tts.speak(&sentence, Lang::English, &mut |_| {}) {
+            warn!(%error, sentence, "could not render ahead");
+        }
+        if self.prerender.is_empty() {
+            info!("speech rendered ahead");
+        }
     }
 
     /// The spoken answer, or `None` to end the conversation quietly.
