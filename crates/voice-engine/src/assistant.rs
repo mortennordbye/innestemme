@@ -41,6 +41,7 @@ use voice_rt::noalloc::permit_alloc;
 
 use crate::engine::{FrameProcessor, ProcessError};
 use crate::metrics::Metrics;
+use crate::unhandled::{Reason, UnhandledLog};
 
 /// Covers the STT's 0.5 s delay plus the room's echo tail.
 const DEAF_AFTER_REPLY_FRAMES: u64 = 13;
@@ -60,6 +61,8 @@ const FOLLOW_UP: Duration = Duration::from_secs(8);
 /// word ("Oh", "What?"), not the request. A longer one is the name and the request in one breath.
 const WAKE_TAIL: Duration = Duration::from_millis(500);
 const WAKE_TAIL_LONGEST: Duration = Duration::from_millis(1600);
+/// Unrecognised speech after a wake longer than this many words gets no "didn't catch that".
+const LONGEST_REQUEST_WORDS: usize = 12;
 
 pub struct AssistantConfig {
     /// Place used when a weather question names none; also the home's name in answers.
@@ -90,6 +93,8 @@ pub struct AssistantConfig {
     pub prerender: bool,
     /// Directory for a wav of every utterance (debugging recognition).
     pub dump_utterances: Option<std::path::PathBuf>,
+    /// Where requests that no skill handled are logged.
+    pub unhandled: Option<Arc<UnhandledLog>>,
 }
 
 pub enum Listener {
@@ -138,6 +143,12 @@ impl AssistantHandle {
     pub fn woke(&self) {
         self.hear_now.store(true, Relaxed);
         let _ = self.jobs.send(Job::Woken(Instant::now()));
+    }
+
+    /// A satellite listens for a follow-up after an answer has played: hear the microphone at once,
+    /// without the wake word's "not understood" reply to whatever is said.
+    pub fn listen(&self) {
+        self.hear_now.store(true, Relaxed);
     }
 
     /// The spoken answer to `text`, for the web page, when answering it changes nothing in the
@@ -287,6 +298,8 @@ impl AssistantProcessor {
             persona: None,
             prerender: VecDeque::new(),
             lead_turn: 0,
+            chat_turn: 0,
+            last_audio: None,
             room: None,
             warmed_prompt: String::new(),
         };
@@ -449,6 +462,11 @@ const LEADS_THINK: &[&str] = &["Let me think"];
 const LEADS: &[&[&str]] = &[LEADS_WEATHER, LEADS_TRANSIT, LEADS_POWER, LEADS_LIGHTS, LEADS_HOME, LEADS_THINK];
 
 /// "Checking the forecast, sir." or "Checking the forecast."
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
 fn lead_sentence(lead: &str, honorific: Option<&str>) -> String {
     match honorific {
         Some(h) => format!("{lead}, {h}."),
@@ -500,6 +518,10 @@ struct Worker {
     /// Sentences still to render ahead of time.
     prerender: VecDeque<String>,
     lead_turn: usize,
+    /// Small talk answers take turns.
+    chat_turn: usize,
+    /// The current utterance's recording, for the unhandled log.
+    last_audio: Option<String>,
     /// Where the microphone is: the `room` setting, else the satellite's area.
     room: Option<String>,
     /// The system prompt the language model last saw. It holds the date and the room; a new one
@@ -575,9 +597,11 @@ impl Worker {
         // The utterance ends after a stretch of silence; the speaker stopped before it.
         let silence = Duration::from_secs_f32((vad::END_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
         self.speech_ended = ended.checked_sub(silence);
+        self.last_audio = None;
         if let Some(dir) = &self.config.dump_utterances {
-            if let Err(error) = save_wav(dir, "utterance", audio, SAMPLE_RATE) {
-                warn!(%error, "could not save utterance");
+            match save_wav(dir, "utterance", audio, SAMPLE_RATE) {
+                Ok(path) => self.last_audio = path.file_name().map(|n| n.to_string_lossy().into_owned()),
+                Err(error) => warn!(%error, "could not save utterance"),
             }
         }
         let Some(transcriber) = &mut self.transcriber else {
@@ -658,6 +682,7 @@ impl Worker {
                 | Intent::WhosHome(_)
                 | Intent::Briefing
                 | Intent::Thanks
+                | Intent::SmallTalk(_)
                 | Intent::Cancel
                 | Intent::ShoppingList(ListCommand::Read)
         );
@@ -690,11 +715,21 @@ impl Worker {
     /// than end the run in silence, which sounds as if the device never woke.
     fn not_understood(&mut self, text: &str, audio: &[i16], ended: Instant, lang: Lang, start: Instant) {
         let Some(woken) = self.woken_at else {
+            if self.follow_up_until.is_some_and(|until| Instant::now() < until) {
+                self.unhandled(Reason::FollowUpIgnored, text, None);
+            }
             return;
         };
         let length = Duration::from_secs_f32(audio.len() as f32 / SAMPLE_RATE as f32);
         let began = ended.checked_sub(length);
         if length < WAKE_TAIL_LONGEST && began.is_none_or(|began| began < woken + WAKE_TAIL) {
+            return;
+        }
+        // A long stretch of words after a wake is the TV or a conversation, not a request: no reply
+        // over it.
+        if text.split_whitespace().count() > LONGEST_REQUEST_WORDS {
+            info!(text, "too long for a request; no reply");
+            self.unhandled(Reason::NotUnderstood, text, None);
             return;
         }
         info!(text, "not understood after the wake word");
@@ -703,6 +738,7 @@ impl Worker {
         } else {
             "Sorry, I didn't catch that."
         };
+        self.unhandled(Reason::NotUnderstood, text, Some(answer));
         self.busy.store(true, Relaxed);
         self.emit(AssistantEvent::Heard { text: text.to_owned() });
         self.say(answer.to_owned(), lang, start);
@@ -746,6 +782,13 @@ impl Worker {
             return;
         };
         info!(request = text, answer, ?lang, after = ?start.elapsed(), "answering");
+        // The rules' own fallback, or a skill that could not do it ("Sorry, I couldn't find ...").
+        let fallback = ["Sorry, so far I can only", "Beklager, foreløpig kan jeg bare"];
+        if fallback.iter().any(|f| answer.starts_with(f)) {
+            self.unhandled(Reason::Unknown, text, Some(&answer));
+        } else if ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s) || answer.contains(&format!(". {s}"))) {
+            self.unhandled(Reason::Apologised, text, Some(&answer));
+        }
         self.history.push_back((Instant::now(), Turn { user: text.to_owned(), assistant: answer.clone() }));
         while self.history.len() > HISTORY_TURNS {
             self.history.pop_front();
@@ -813,7 +856,9 @@ impl Worker {
         if lang != Lang::English || !self.config.prerender || pending {
             return None;
         }
-        let leads = match intent::parse(text) {
+        // Several requests: the first one's lead-in.
+        let first = intent::split_commands(text).and_then(|parts| parts.into_iter().next());
+        let leads = match intent::parse(first.as_deref().unwrap_or(text)) {
             Intent::Weather { .. } => LEADS_WEATHER,
             Intent::Transit(_) => LEADS_TRANSIT,
             Intent::Power(_) => LEADS_POWER,
@@ -833,6 +878,7 @@ impl Worker {
             LEADS.iter().flat_map(|leads| leads.iter().map(|l| lead_sentence(l, honorific))).collect();
         texts.extend(self.persona.as_ref().map(Persona::phrases).unwrap_or_default());
         texts.extend(Jokes::english().iter().map(|j| j.to_string()));
+        texts.extend(voice_assistant::smalltalk::all_english(self.config.wake.name()));
         texts.push("Sorry, I didn't catch that.".to_owned());
         let mut sentences: Vec<String> = texts
             .iter()
@@ -887,6 +933,9 @@ impl Worker {
                 return Some(self.scene(&format!("{scene} in {text}"), lang));
             }
         }
+        if let Some(parts) = intent::split_commands(text) {
+            return self.several(&parts, lang);
+        }
         if intent == Intent::Unknown {
             // A script or scene said by its name alone: "movie time".
             if let Some(answer) = self.by_exact_name(text, lang) {
@@ -910,10 +959,12 @@ impl Worker {
                     }
                     Ok(Decision::Say(answer)) => {
                         info!(took = ?start.elapsed(), "language model answered");
+                        self.unhandled(Reason::LanguageModel, text, Some(&answer));
                         return Some(answer);
                     }
                     Ok(Decision::Ignore) => {
                         info!(request = text, took = ?start.elapsed(), "language model: not meant for me");
+                        self.unhandled(Reason::LanguageModelIgnored, text, None);
                         return None;
                     }
                     Err(error) => warn!(%error, "language model failed; falling back to the rules"),
@@ -921,6 +972,34 @@ impl Worker {
             }
         }
         self.act(intent, lang)
+    }
+
+    fn unhandled(&self, reason: Reason, heard: &str, answer: Option<&str>) {
+        if let Some(log) = &self.config.unhandled {
+            log.record(reason, heard, answer, self.last_audio.as_deref());
+        }
+    }
+
+    /// Several requests in one sentence, run in order; their answers one after another. A question
+    /// ("Which room?") stops there, since the reply to it is the next thing said.
+    fn several(&mut self, parts: &[String], lang: Lang) -> Option<String> {
+        info!(?parts, "several requests");
+        let mut answers = Vec::new();
+        for part in parts {
+            if let Some(answer) = self.act(intent::parse(part), lang) {
+                let question = answer.trim_end().ends_with('?');
+                // One "Okay," is enough: "Okay, the lights are on. Playing ..."
+                let answer = match answer.strip_prefix("Okay, ") {
+                    Some(rest) if !answers.is_empty() => capitalize(rest),
+                    _ => answer,
+                };
+                answers.push(answer);
+                if question {
+                    break;
+                }
+            }
+        }
+        (!answers.is_empty()).then(|| answers.join(" "))
     }
 
     /// Runs a recognised request; the spoken answer, or `None` to end quietly.
@@ -975,6 +1054,11 @@ impl Worker {
             Intent::Undo => self.undo(lang),
             Intent::Thanks if no => "Bare hyggelig.".into(),
             Intent::Thanks => "You're welcome.".into(),
+            Intent::SmallTalk(chat) => {
+                let answers = voice_assistant::smalltalk::answers(chat, lang, self.config.wake.name());
+                self.chat_turn = self.chat_turn.wrapping_add(1);
+                answers[self.chat_turn % answers.len()].clone()
+            }
             Intent::Cancel => return None,
             Intent::Unknown if no => {
                 "Beklager, foreløpig kan jeg bare været, vitser, lyset, scener, musikk, timere, handlelista og avganger."
@@ -1510,7 +1594,12 @@ fn unreachable(error: &anyhow::Error, no: bool) -> String {
         .into()
 }
 
-pub(crate) fn save_wav(dir: &std::path::Path, kind: &str, audio: &[i16], rate: u32) -> anyhow::Result<()> {
+pub(crate) fn save_wav(
+    dir: &std::path::Path,
+    kind: &str,
+    audio: &[i16],
+    rate: u32,
+) -> anyhow::Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir)?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
     let path = dir.join(format!("{kind}-{stamp}.wav"));
@@ -1520,7 +1609,7 @@ pub(crate) fn save_wav(dir: &std::path::Path, kind: &str, audio: &[i16], rate: u
     audio.iter().try_for_each(|&s| writer.write_sample(s))?;
     writer.finalize()?;
     info!(path = %path.display(), "{kind} saved");
-    Ok(())
+    Ok(path)
 }
 
 fn push(reply: &mut rtrb::Producer<i16>, pcm: &[i16]) {

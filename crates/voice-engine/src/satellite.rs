@@ -58,6 +58,11 @@ const HELLO_WINDOW: Duration = Duration::from_secs(10);
 const NEAR_MISS: f32 = 0.2;
 /// Audio kept from before the wake word, so a run's recording holds the wake word itself.
 const WAKE_PREROLL: usize = 2 * DEVICE_RATE as usize;
+/// From announcing an answer on the player to its first sound (fetch and start), a little over
+/// what the Sonos takes, so the follow-up does not hear the end of the answer.
+const PLAYER_START: Duration = Duration::from_millis(1200);
+/// After an answer has played, listen this long for a follow-up without the wake word.
+const FOLLOW_UP: Duration = Duration::from_secs(6);
 
 pub struct SatelliteConfig {
     /// The device's ESPHome API address, host:port (port 6053).
@@ -138,6 +143,8 @@ enum Run {
     WakeWord,
     /// The wake word was heard; waiting for the request.
     Listening(Instant),
+    /// An answer has just played: listening for a follow-up without the wake word, since then.
+    FollowUp(Instant),
     /// The device ended the run before an answer (its own end of speech). With an answer player
     /// the request is still answered there, until the listening timeout.
     Stopped(Instant),
@@ -178,6 +185,10 @@ struct Bridge<'a> {
     near_miss: f32,
     /// The last `WAKE_PREROLL` of audio while waiting for the wake word, when dumping.
     preroll: VecDeque<i16>,
+    /// The answer on the player: when it was announced, and its length so far (24 kHz samples).
+    announced: Option<(Instant, usize)>,
+    /// When the last answer will have played, to listen for a follow-up from then on.
+    follow_up_at: Option<Instant>,
 }
 
 async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &SpeechClips) -> Result<()> {
@@ -238,6 +249,8 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         wake: cfg.server_wake.as_ref().map(|w| (WakeDetector::new(w.models.clone()), w.threshold)),
         near_miss: 0.0,
         preroll: VecDeque::new(),
+        announced: None,
+        follow_up_at: None,
     };
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -255,7 +268,7 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
                 seq = seq.wrapping_add(1);
                 // The engine's own audio output is not used: answers come as events.
                 while udp.try_recv(&mut rx).is_ok() {}
-                if let Err(error) = b.tick().await {
+                if let Err(error) = b.tick(assistant).await {
                     break Err(error);
                 }
             }
@@ -337,7 +350,7 @@ impl Bridge<'_> {
                 if self.dump.is_some() && self.run != Run::Idle {
                     self.recording.extend_from_slice(&pcm);
                 }
-                if matches!(self.run, Run::WakeWord | Run::Listening(_)) {
+                if matches!(self.run, Run::WakeWord | Run::Listening(_) | Run::FollowUp(_)) {
                     let mut up = Vec::with_capacity(pcm.len() * 3 / 2 + 2);
                     self.up.push(&pcm, &mut up);
                     self.mic.extend(up);
@@ -364,7 +377,7 @@ impl Bridge<'_> {
                     self.run = Run::Answering;
                     return Ok(());
                 }
-                if !matches!(self.run, Run::WakeWord | Run::Listening(_)) {
+                if !matches!(self.run, Run::WakeWord | Run::Listening(_) | Run::FollowUp(_)) {
                     return Ok(());
                 }
                 // Name and request in one breath: the wake word stage ends here.
@@ -402,6 +415,7 @@ impl Bridge<'_> {
                         }
                     });
                     self.clip = Some((url, clip));
+                    self.announced = Some((Instant::now(), 0));
                     return Ok(());
                 }
                 self.device.event(Event::TtsStart, &[("text", &text)]).await?;
@@ -419,6 +433,9 @@ impl Bridge<'_> {
                 if self.player.is_some() {
                     if let Some((_, clip)) = &self.clip {
                         clip.push(&pcm);
+                    }
+                    if let Some((_, samples)) = &mut self.announced {
+                        *samples += pcm.len();
                     }
                 } else if self.speaker {
                     let mut down = Vec::with_capacity(pcm.len() * 2 / 3 + 2);
@@ -440,6 +457,12 @@ impl Bridge<'_> {
                     return Ok(());
                 }
                 if self.player.is_some() {
+                    // With the stream scored here, the device can listen for a follow-up once the
+                    // player has finished; the stream is not heard before then, so not the answer.
+                    if let (Some((at, samples)), Some(_)) = (self.announced.take(), &self.wake) {
+                        let length = Duration::from_secs_f64(samples as f64 / SAMPLE_RATE as f64);
+                        self.follow_up_at = Some(at + PLAYER_START + length);
+                    }
                     // Ends the player's stream.
                     self.end_run().await?;
                 } else if self.speaker {
@@ -535,8 +558,21 @@ impl Bridge<'_> {
     }
 
     /// Paces streamed answer audio and times out a wake word with no request.
-    async fn tick(&mut self) -> Result<()> {
+    async fn tick(&mut self, assistant: &AssistantHandle) -> Result<()> {
         match self.run {
+            Run::WakeWord if self.follow_up_at.is_some_and(|at| Instant::now() >= at) => {
+                self.follow_up_at = None;
+                info!("listening for a follow-up");
+                // The listening lights, without the wake sound.
+                self.device.event(Event::SttStart, &[]).await?;
+                self.recording = self.preroll.drain(..).collect();
+                self.run = Run::FollowUp(Instant::now());
+                assistant.listen();
+            }
+            Run::FollowUp(since) if since.elapsed() > FOLLOW_UP => {
+                info!("no follow-up");
+                return self.end_run().await;
+            }
             Run::Listening(since) if since.elapsed() > LISTEN_TIMEOUT => {
                 info!("no request after the wake word");
                 return self.end_run().await;

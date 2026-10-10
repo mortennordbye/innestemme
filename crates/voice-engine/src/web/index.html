@@ -97,6 +97,14 @@ h2 { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: v
 .hear svg { width: 14px; height: 14px; fill: var(--accent); }
 .answer { border-left: 3px solid var(--accent); padding: 6px 12px; font-size: 16px; }
 .answer.playing { animation: pulse 1.6s ease-in-out infinite; }
+.unhandled { margin-top: 36px; }
+.unhandled h2 { font-size: 13px; color: var(--dim); letter-spacing: .06em; text-transform: uppercase; font-weight: 600; margin: 0 0 4px; }
+.unhandled .sub { margin-bottom: 12px; }
+.miss { display: grid; grid-template-columns: 9.5em 1fr; gap: 2px 14px; padding: 10px 0; border-top: 1px solid var(--line); }
+.miss .when { color: var(--dim); font-size: 13px; font-family: var(--mono); }
+.miss .heard { font-size: 16px; overflow-wrap: anywhere; }
+.miss .why { grid-column: 2; color: var(--dim); font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 560px) { .miss { grid-template-columns: 1fr; } .miss .why { grid-column: 1; } }
 footer { margin-top: 40px; color: var(--dim); font-size: 13px; }
 </style>
 </head>
@@ -130,6 +138,12 @@ footer { margin-top: 40px; color: var(--dim); font-size: 13px; }
     <div id="tabs" role="group" aria-label="Groups"></div>
   </div>
   <div id="map"></div>
+
+  <section class="unhandled" id="unhandled" hidden>
+    <h2>Not understood yet</h2>
+    <p class="sub">What was said that no skill handled, newest first: ideas for what to build next.</p>
+    <div id="misses"></div>
+  </section>
 
   <footer id="footer"></footer>
 </main>
@@ -276,10 +290,38 @@ async function hearAnswer(text, button) {
   button.lastChild.textContent = "Hear again";
 }
 
+const WHY = {
+  not_understood: "Not understood after the wake word",
+  unknown: "No skill for it",
+  apologised: "A skill could not do it",
+  follow_up_ignored: "Ignored in a follow-up",
+  language_model: "Answered by the language model",
+  language_model_ignored: "The language model ignored it",
+};
+
+async function loadMisses() {
+  const res = await fetch("api/unhandled");
+  const { enabled, entries } = await res.json();
+  if (!enabled) return;
+  $("#unhandled").hidden = false;
+  const list = $("#misses");
+  if (!entries.length) { list.replaceChildren(el("div", "muted", "Nothing yet.")); return; }
+  list.replaceChildren(...entries.map((e) => {
+    const row = el("div", "miss");
+    row.append(el("div", "when", e.time), el("div", "heard", `“${e.heard}”`));
+    const why = [WHY[e.reason] || e.reason];
+    if (e.answer) why.push(`answered “${e.answer}”`);
+    if (e.audio) why.push(e.audio);
+    row.append(el("div", "why", why.join(" · ")));
+    return row;
+  }));
+}
+
 let timer;
 $("#phrase").addEventListener("input", (e) => { clearTimeout(timer); timer = setTimeout(() => tryPhrase(e.target.value), 150); });
 $("#filter").addEventListener("input", render);
 load().catch(() => { $("#map").replaceChildren(el("div", "empty", "Could not load the skills.")); });
+loadMisses().catch(() => {});
 </script>
 </body>
 </html>

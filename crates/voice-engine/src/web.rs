@@ -14,11 +14,14 @@ use voice_proto::SAMPLE_RATE;
 
 use crate::assistant::{AssistantHandle, Preview};
 use crate::metrics::SpeechClips;
+use crate::unhandled::UnhandledLog;
 
 /// Weather or departures over a slow network, then speech on a slow CPU.
 const HEAR_TIMEOUT: Duration = Duration::from_secs(30);
 
 const PAGE: &str = include_str!("web/index.html");
+/// Entries the page lists from the unhandled log.
+const UNHANDLED_SHOWN: usize = 200;
 
 pub struct Web {
     wake: WakeWord,
@@ -27,6 +30,7 @@ pub struct Web {
     /// For "hear the answer"; without it the page only parses.
     assistant: Option<AssistantHandle>,
     speech: Arc<SpeechClips>,
+    unhandled: Option<Arc<UnhandledLog>>,
 }
 
 /// Status, content type and body.
@@ -38,8 +42,9 @@ impl Web {
         about: serde_json::Value,
         assistant: Option<AssistantHandle>,
         speech: Arc<SpeechClips>,
+        unhandled: Option<Arc<UnhandledLog>>,
     ) -> Self {
-        Self { wake, about, assistant, speech }
+        Self { wake, about, assistant, speech, unhandled }
     }
 
     /// `/api/hear?q=...`: the spoken answer as a URL under `/speech/`, when the request only reads.
@@ -66,6 +71,10 @@ impl Web {
         match path {
             "/" => Some(("200 OK", "text/html; charset=utf-8", PAGE.as_bytes().to_vec())),
             "/api/skills" => Some(json_response(&json!({ "about": self.about, "skills": SKILLS }))),
+            "/api/unhandled" => {
+                let entries = self.unhandled.as_ref().map(|log| log.recent(UNHANDLED_SHOWN));
+                Some(json_response(&json!({ "enabled": entries.is_some(), "entries": entries.unwrap_or_default() })))
+            }
             "/api/parse" => {
                 let text = query.split('&').find_map(|pair| pair.strip_prefix("q=")).map(decode).unwrap_or_default();
                 Some(json_response(&self.parse(&text)))
@@ -121,7 +130,7 @@ mod tests {
     use super::*;
 
     fn web() -> Web {
-        Web::new(WakeWord::new("Jarvis"), json!({ "name": "Jarvis" }), None, Arc::default())
+        Web::new(WakeWord::new("Jarvis"), json!({ "name": "Jarvis" }), None, Arc::default(), None)
     }
 
     #[test]
@@ -147,5 +156,12 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["skills"].as_array().unwrap().len(), SKILLS.len());
         assert!(web().route("/nothing").is_none());
+    }
+
+    #[test]
+    fn lists_unhandled_requests_only_when_logged() {
+        let body = web().route("/api/unhandled").unwrap().2;
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["enabled"], false);
     }
 }

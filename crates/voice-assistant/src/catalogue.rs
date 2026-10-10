@@ -216,6 +216,17 @@ pub const SKILLS: &[Skill] = &[
         examples: &["Thank you", "Never mind"],
         norwegian: &["Takk", "Glem det"],
     },
+    Skill {
+        id: "smalltalk",
+        name: "Small talk",
+        group: "Everyday",
+        icon: "💬",
+        does: "Answers how are you, who are you, hello and good night at once, without the language model.",
+        source: "Built in",
+        calls: &[],
+        examples: &["How are you doing today?", "Who are you?", "Good night"],
+        norwegian: &["Hvordan går det?", "Hvem er du?", "God natt"],
+    },
 ];
 
 /// The skill a parsed request belongs to; `None` for requests the rules do not take.
@@ -238,6 +249,7 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
         Intent::Time => "time",
         Intent::Joke => "joke",
         Intent::Thanks | Intent::Cancel => "manners",
+        Intent::SmallTalk(_) => "smalltalk",
         Intent::Unknown => return None,
     };
     SKILLS.iter().find(|s| s.id == id)

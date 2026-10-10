@@ -7,6 +7,7 @@ pub mod pipeline;
 pub mod satellite;
 pub mod settings;
 pub mod transport;
+pub mod unhandled;
 pub mod web;
 
 pub use engine::{Engine, FrameProcessor, LoopbackEngine, MimiProcessor, Passthrough, ProcessError, StepOutcome};

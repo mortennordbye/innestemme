@@ -4,6 +4,7 @@
 use crate::dialog::normalize;
 use crate::power::{self, PowerQuery};
 use crate::shopping::{self, ListCommand};
+use crate::smalltalk::Chat;
 use crate::timer::{self, TimerCommand};
 use crate::transit::{self, TransitQuery};
 
@@ -59,6 +60,8 @@ pub enum Intent {
     /// Reverse the last action: "reverse that", "undo", "switch it back".
     Undo,
     Thanks,
+    /// "How are you?", "who are you?", "good night".
+    SmallTalk(Chat),
     /// "Never mind", "cancel": end the conversation without an answer.
     Cancel,
     Unknown,
@@ -483,6 +486,10 @@ const LIGHT_WORDS: &[&str] =
 
 pub fn parse(text: &str) -> Intent {
     let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    // Whole short phrases only, so it takes nothing from the skills ("how are the lights" is not it).
+    if let Some(chat) = crate::smalltalk::parse(&words) {
+        return Intent::SmallTalk(chat);
+    }
     // Timers before music ("pause the timer"), except for a song called "Timer".
     let play = words.iter().find(|w| !POLITE.contains(&w.as_str())).is_some_and(|w| PLAY_WORDS.contains(&w.as_str()));
     if !play {
@@ -587,6 +594,46 @@ pub fn parse(text: &str) -> Intent {
             (!name.is_empty()).then(|| name.join(" "))
         });
     Intent::Weather { place, day }
+}
+
+/// Words a second request in one sentence starts with ("... and play Careless Whisper"). Anything
+/// else after "and" belongs to the first request ("add milk and eggs", "the kitchen and hall lights").
+const COMMAND_STARTS: &[&str] = &[
+    "turn", "switch", "play", "pause", "resume", "stop", "skip", "set", "start", "dim", "make", "add", "remind",
+    "tell", "what", "what's", "whats", "when", "when's", "how", "how's", "is", "are", "who", "who's", "cancel", "run",
+    "activate", "put", "lower", "raise", "skru", "slå", "spill", "sett", "legg", "hva", "når", "hvordan", "fortell",
+];
+
+/// Two or more requests in one sentence: "turn on the living room lights and play Careless Whisper",
+/// "what's the weather, then when's the next bus". Split only where the next part starts with a
+/// command word and every part is a request on its own; otherwise `None`.
+pub fn split_commands(text: &str) -> Option<Vec<String>> {
+    let mut parts: Vec<Vec<&str>> = vec![Vec::new()];
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut i = 0;
+    while i < words.len() {
+        let word = normalize(words[i]);
+        // "and", "and then", "then", "og", "og så": a new part when a command word follows.
+        let joiner = match word.as_str() {
+            "and" | "og" if words.get(i + 1).is_some_and(|w| ["then", "så"].contains(&normalize(w).as_str())) => 2,
+            "and" | "then" | "og" => 1,
+            _ => 0,
+        };
+        let next = words.get(i + joiner).map(|w| normalize(w)).unwrap_or_default();
+        if joiner > 0 && !parts.last().is_some_and(Vec::is_empty) && COMMAND_STARTS.contains(&next.as_str()) {
+            parts.push(Vec::new());
+            i += joiner;
+            continue;
+        }
+        parts.last_mut().unwrap().push(words[i]);
+        i += 1;
+    }
+    if parts.len() < 2 {
+        return None;
+    }
+    let parts: Vec<String> = parts.iter().map(|p| p.join(" ").trim_end_matches([',', ';']).trim().to_owned()).collect();
+    let requests = parts.iter().all(|p| !matches!(parse(p), Intent::Unknown | Intent::Thanks | Intent::Cancel));
+    requests.then_some(parts)
 }
 
 #[cfg(test)]
@@ -801,5 +848,31 @@ mod tests {
     fn other_requests_are_unknown() {
         assert_eq!(parse("what's the capital of France"), Intent::Unknown);
         assert_eq!(parse(""), Intent::Unknown);
+    }
+
+    #[test]
+    fn splits_several_requests() {
+        let split = |t: &str| split_commands(t);
+        assert_eq!(
+            split("Turn on the light in the living room and play Careless Whisper").unwrap(),
+            ["Turn on the light in the living room", "play Careless Whisper"]
+        );
+        assert_eq!(
+            split("what's the weather, and then when's the next bus?").unwrap(),
+            ["what's the weather", "when's the next bus?"]
+        );
+        assert_eq!(split("turn off the kitchen lights then set a timer for 10 minutes").unwrap().len(), 2);
+        assert_eq!(split("skru på lyset i stua og spill Beatles").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn keeps_one_request_whole() {
+        assert_eq!(split_commands("add milk and eggs to the shopping list"), None);
+        assert_eq!(split_commands("turn on the kitchen and hallway lights"), None);
+        assert_eq!(split_commands("play Simon and Garfunkel"), None);
+        assert_eq!(split_commands("play rock and roll"), None);
+        assert_eq!(split_commands("what's the weather"), None);
+        // The second part is no request on its own.
+        assert_eq!(split_commands("turn on the lights and what"), None);
     }
 }

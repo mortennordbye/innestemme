@@ -269,6 +269,19 @@ and the threshold are logged as `wake word missed`, and with `dump-utterances` e
 seconds before the wake word. To pick a threshold from real recordings:
 `cargo run --release -p voice-assistant --example wake_score -- hey_jarvis target/utterances/run-*.wav`.
 
+Follow-ups: with `wake-model` and an answer player, the device listens for six seconds after an answer has
+played, without the wake word ("And turn off the kitchen."). Only requests a skill recognises are acted on
+then, unless a language model decides.
+
+Several requests in one sentence are run in order: "turn on the living room lights and play Careless
+Whisper", "what's the weather, then when's the next bus". A sentence is split only where the next part starts
+with a command word and every part is a request on its own, so "add milk and eggs" stays one request.
+
+What it could not do: `unhandled-log: unhandled.jsonl` appends one JSON object per request no skill handled
+(not understood, no skill for it, a skill that apologised, ignored in a follow-up, or left to the language
+model), with what was heard, the answer and the recording's file name. The web page lists the latest under
+"Not understood yet".
+
 Wake words on the device: `satellite-wake-words: [Okay Nabu, Hey Jarvis]` turns on those of the device's own
 wake words each time the engine connects. Home Assistant's wake word selects go through its Assist satellite
 entity, which is disabled while the engine holds the device, so they no longer reach it.

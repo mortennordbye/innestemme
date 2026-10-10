@@ -156,6 +156,10 @@ struct Args {
     /// Write every detected utterance here as a wav, for tuning recognition on real voices.
     #[arg(long, env = "VOICE_DUMP_UTTERANCES")]
     dump_utterances: Option<PathBuf>,
+    /// Log requests no skill handled here, one JSON object per line, to see what to build next.
+    /// The web page lists the latest.
+    #[arg(long, env = "VOICE_UNHANDLED_LOG")]
+    unhandled_log: Option<PathBuf>,
     /// Whisper size: base (290 MB) or small (970 MB, more accurate).
     #[arg(long, env = "VOICE_WHISPER_SIZE", default_value = "base")]
     whisper_size: String,
@@ -323,6 +327,7 @@ fn main() -> Result<()> {
         None => MimiCodec::fetch_weights(),
     };
     let mut handle = None;
+    let unhandled = args.unhandled_log.clone().map(|path| Arc::new(voice_engine::unhandled::UnhandledLog::new(path)));
     let processor: Box<dyn FrameProcessor> = match args.processor {
         Processor::Passthrough => Box::new(Passthrough),
         Processor::Mimi => {
@@ -439,6 +444,7 @@ fn main() -> Result<()> {
                     price_area: args.price_area.clone(),
                     home_assistant: args.ha_url.clone().zip(args.ha_token.clone()),
                     dump_utterances: args.dump_utterances.clone(),
+                    unhandled: unhandled.clone(),
                     speaker: args.speaker.clone(),
                     room: args.room.clone(),
                     honorific: args.honorific.clone(),
@@ -510,7 +516,7 @@ fn main() -> Result<()> {
             });
             info!(url = format!("http://{}/", args.metrics_bind), "web page");
             let wake = WakeWord::new(&args.wake_name).with_spellings(&args.wake_spellings);
-            Arc::new(Web::new(wake, about, handle.clone(), speech.clone()))
+            Arc::new(Web::new(wake, about, handle.clone(), speech.clone(), unhandled.clone()))
         });
         tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));
         if let Some(address) = args.satellite.clone() {
