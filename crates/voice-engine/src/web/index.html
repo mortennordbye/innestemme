@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>innestemme</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='22' fill='none' stroke='%2336d6ff' stroke-width='6' stroke-dasharray='10 6'/%3E%3Ccircle cx='32' cy='32' r='10' fill='%2336d6ff'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #070b10; --panel: #0d141c; --panel-2: #111b26; --line: #1c2a38; --text: #dce7f0; --dim: #7f93a6;
+  --accent: #36d6ff; --accent-dim: rgba(54, 214, 255, .14); --good: #4ee49a; --warn: #ffb547;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f3f6f9; --panel: #ffffff; --panel-2: #f6f9fc; --line: #dbe3ea; --text: #13202c; --dim: #5d6f80;
+    --accent: #0a8fc2; --accent-dim: rgba(10, 143, 194, .1); --good: #128a52; --warn: #a86400;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background-image: radial-gradient(circle at 50% -20%, var(--accent-dim), transparent 55%);
+  min-height: 100vh;
+}
+main { max-width: 1120px; margin: 0 auto; padding: 32px 16px 64px; }
+header { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.reactor { width: 64px; height: 64px; flex: none; }
+.reactor circle { fill: none; stroke: var(--accent); }
+.reactor .spin { transform-origin: 32px 32px; animation: spin 9s linear infinite; }
+.reactor .pulse { animation: pulse 2.4s ease-in-out infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .reactor * { animation: none !important; } }
+h1 { margin: 0; font-size: 28px; letter-spacing: .18em; font-weight: 700; }
+.sub { color: var(--dim); margin: 2px 0 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--dim); font-size: 13px;
+}
+.chip b { color: var(--text); font-weight: 600; }
+.try {
+  margin: 28px 0 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px;
+  box-shadow: 0 0 0 1px transparent, 0 10px 40px rgba(0, 0, 0, .25);
+}
+.try label { display: block; color: var(--dim); font-size: 13px; margin-bottom: 8px; letter-spacing: .06em; text-transform: uppercase; }
+.field { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 12px; padding: 4px 4px 4px 14px; background: var(--panel-2); }
+.field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.field input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 17px; padding: 10px 0; }
+.result { margin-top: 14px; min-height: 64px; display: grid; gap: 8px; }
+.result .head { display: flex; align-items: center; gap: 10px; font-size: 17px; }
+.result .icon { font-size: 24px; }
+.result .muted { color: var(--dim); }
+.ok { color: var(--good); font-weight: 600; }
+.no { color: var(--warn); font-weight: 600; }
+code, .mono { font-family: var(--mono); font-size: 13px; }
+.intent { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; overflow-wrap: anywhere; }
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 28px 0 6px; }
+.toolbar input {
+  flex: 1; min-width: 180px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+  color: var(--text); font: inherit; padding: 8px 12px; outline: 0;
+}
+.toolbar input:focus { border-color: var(--accent); }
+.tab { border: 1px solid var(--line); background: var(--panel); color: var(--dim); border-radius: 10px; padding: 8px 12px; font: inherit; cursor: pointer; }
+.tab[aria-pressed="true"] { color: var(--text); border-color: var(--accent); background: var(--accent-dim); }
+h2 { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); margin: 28px 0 12px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 10px;
+  transition: border-color .15s, transform .15s;
+}
+.card:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.card.hit { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+.card .title { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; }
+.card .title span:first-child { font-size: 22px; }
+.card p { margin: 0; color: var(--dim); }
+.meta { display: grid; gap: 4px; font-size: 13px; }
+.meta .k { color: var(--dim); }
+.calls { display: flex; flex-wrap: wrap; gap: 4px; }
+.call { font-family: var(--mono); font-size: 12px; padding: 2px 7px; border-radius: 6px; background: var(--accent-dim); color: var(--accent); overflow-wrap: anywhere; }
+.says { display: flex; flex-wrap: wrap; gap: 6px; }
+.say {
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text); border-radius: 999px; padding: 4px 11px;
+  font: inherit; font-size: 13px; cursor: pointer; text-align: left;
+}
+.say:hover, .say:focus-visible { border-color: var(--accent); outline: 0; }
+.say.no-lang { color: var(--dim); }
+.say.no-lang::before { content: "NO "; font-size: 10px; letter-spacing: .08em; color: var(--dim); }
+.empty { color: var(--dim); padding: 20px 0; }
+.hear {
+  justify-self: start; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--accent);
+  background: var(--accent-dim); color: var(--text); border-radius: 999px; padding: 7px 16px; font: inherit; cursor: pointer;
+}
+.hear:disabled { opacity: .6; cursor: progress; }
+.hear svg { width: 14px; height: 14px; fill: var(--accent); }
+.answer { border-left: 3px solid var(--accent); padding: 6px 12px; font-size: 16px; }
+.answer.playing { animation: pulse 1.6s ease-in-out infinite; }
+footer { margin-top: 40px; color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <svg class="reactor" viewBox="0 0 64 64" aria-hidden="true">
+      <circle cx="32" cy="32" r="29" stroke-width="1.5" opacity=".35"/>
+      <g class="spin"><circle cx="32" cy="32" r="23" stroke-width="3" stroke-dasharray="10 6"/></g>
+      <circle class="pulse" cx="32" cy="32" r="12" stroke-width="5"/>
+    </svg>
+    <div>
+      <h1 id="name">ASSISTANT</h1>
+      <p class="sub">Everything you can say, and what happens when you do.</p>
+      <div class="chips" id="about"></div>
+    </div>
+  </header>
+
+  <section class="try">
+    <label for="phrase">Try a phrase</label>
+    <div class="field">
+      <input id="phrase" autocomplete="off" spellcheck="false" placeholder="Turn off the living room lights">
+    </div>
+    <div class="result" id="result" aria-live="polite">
+      <div class="muted">Type what you would say. It is only parsed here; nothing is switched or played.</div>
+    </div>
+  </section>
+
+  <div class="toolbar">
+    <input id="filter" type="search" placeholder="Filter skills, phrases or calls">
+    <div id="tabs" role="group" aria-label="Groups"></div>
+  </div>
+  <div id="map"></div>
+
+  <footer id="footer"></footer>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+let skills = [], about = {}, group = "All";
+
+async function load() {
+  const res = await fetch("api/skills");
+  ({ skills, about } = await res.json());
+  $("#name").textContent = (about.name || "Assistant").toUpperCase();
+  document.title = `${about.name || "Assistant"} · what you can say`;
+  const chips = $("#about");
+  const chip = (k, v) => { const c = el("span", "chip"); c.append(k + " "); c.append(el("b", null, v)); chips.append(c); };
+  if (about.wake_words?.length) chip("Wake word", about.wake_words.join(", "));
+  chip("Name", about.name);
+  if (about.voice) chip("Voice", about.voice);
+  if (about.honorific) chip("Calls you", about.honorific);
+  chip("Understanding", about.language_model ? "rules + language model" : "rules only");
+  chip("Norwegian", about.norwegian ? "on" : "off");
+  const groups = ["All", ...new Set(skills.map((s) => s.group))];
+  for (const g of groups) {
+    const b = el("button", "tab", g);
+    b.setAttribute("aria-pressed", g === group);
+    b.onclick = () => { group = g; document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-pressed", t === b)); render(); };
+    $("#tabs").append(b);
+  }
+  const phrases = skills.reduce((n, s) => n + s.examples.length + s.norwegian.length, 0);
+  $("#footer").textContent = `${skills.length} skills, ${phrases} example phrases. Each example is checked against the rules in the tests.`;
+  render();
+}
+
+function matches(s, q) {
+  if (!q) return true;
+  return [s.name, s.does, s.source, ...s.calls, ...s.examples, ...s.norwegian].join(" ").toLowerCase().includes(q);
+}
+
+function card(s) {
+  const c = el("article", "card");
+  c.id = "skill-" + s.id;
+  const t = el("div", "title");
+  t.append(el("span", null, s.icon), el("span", null, s.name));
+  c.append(t, el("p", null, s.does));
+  const meta = el("div", "meta");
+  const src = el("div"); src.append(el("span", "k", "Data "), document.createTextNode(s.source)); meta.append(src);
+  if (s.calls.length) {
+    const calls = el("div", "calls");
+    for (const k of s.calls) calls.append(el("span", "call", k));
+    meta.append(calls);
+  }
+  c.append(meta);
+  const says = el("div", "says");
+  const say = (p, cls) => { const b = el("button", cls, p); b.onclick = () => tryPhrase(p, true); says.append(b); };
+  s.examples.forEach((p) => say(p, "say"));
+  if (about.norwegian) s.norwegian.forEach((p) => say(p, "say no-lang"));
+  c.append(says);
+  return c;
+}
+
+function render() {
+  const q = $("#filter").value.trim().toLowerCase();
+  const map = $("#map");
+  map.replaceChildren();
+  const shown = skills.filter((s) => (group === "All" || s.group === group) && matches(s, q));
+  if (!shown.length) { map.append(el("div", "empty", "Nothing matches.")); return; }
+  for (const g of [...new Set(shown.map((s) => s.group))]) {
+    map.append(el("h2", null, g));
+    const grid = el("div", "grid");
+    shown.filter((s) => s.group === g).forEach((s) => grid.append(card(s)));
+    map.append(grid);
+  }
+}
+
+let pending = 0;
+async function tryPhrase(text, fill) {
+  if (fill) { $("#phrase").value = text; window.scrollTo({ top: 0, behavior: "smooth" }); }
+  const out = $("#result");
+  document.querySelectorAll(".card.hit").forEach((c) => c.classList.remove("hit"));
+  if (!text.trim()) { out.replaceChildren(el("div", "muted", "Type what you would say.")); return; }
+  const ticket = ++pending;
+  const res = await fetch("api/parse?q=" + encodeURIComponent(text));
+  const r = await res.json();
+  if (ticket !== pending) return;
+  const head = el("div", "head");
+  if (r.skill) {
+    head.append(el("span", "icon", r.skill.icon), el("span", "ok", "Understood"), el("span", null, "→ " + r.skill.name));
+    document.getElementById("skill-" + r.skill.id)?.classList.add("hit");
+  } else {
+    head.append(el("span", "icon", "🤷"), el("span", "no", "Not understood by the rules"));
+  }
+  const parts = [head];
+  if (r.request !== r.text) parts.push(el("div", "muted", `Name removed; the request is “${r.request}”.`));
+  parts.push(el("div", "intent mono", r.intent));
+  if (r.skill) {
+    parts.push(el("div", "muted", r.skill.does));
+    if (r.skill.calls.length) {
+      const calls = el("div", "calls");
+      r.skill.calls.forEach((k) => calls.append(el("span", "call", k)));
+      parts.push(calls);
+    }
+  } else {
+    parts.push(el("div", "muted", about.language_model
+      ? "The language model decides what to do with it."
+      : "After a wake word the assistant says it didn't catch that."));
+  }
+  const hear = el("button", "hear");
+  hear.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2l11 6-11 6z"/></svg>';
+  hear.append("Hear response");
+  hear.onclick = () => hearAnswer(r.text, hear);
+  parts.push(hear);
+  out.replaceChildren(...parts);
+}
+
+let playing;
+async function hearAnswer(text, button) {
+  button.parentElement.querySelectorAll(".answer").forEach((e) => e.remove());
+  button.disabled = true;
+  button.lastChild.textContent = "Thinking…";
+  const shown = el("div", "answer muted");
+  try {
+    const res = await fetch("api/hear?q=" + encodeURIComponent(text));
+    const r = await res.json();
+    if (r.audio) {
+      shown.className = "answer playing";
+      shown.textContent = "“" + r.answer + "”";
+      playing?.pause();
+      playing = new Audio(r.audio);
+      playing.onended = () => shown.classList.remove("playing");
+      await playing.play();
+    } else {
+      shown.textContent = r.reason;
+    }
+  } catch {
+    shown.textContent = "Could not reach the assistant.";
+  }
+  button.before(shown);
+  button.disabled = false;
+  button.lastChild.textContent = "Hear again";
+}
+
+let timer;
+$("#phrase").addEventListener("input", (e) => { clearTimeout(timer); timer = setTimeout(() => tryPhrase(e.target.value), 150); });
+$("#filter").addEventListener("input", render);
+load().catch(() => { $("#map").replaceChildren(el("div", "empty", "Could not load the skills.")); });
+</script>
+</body>
+</html>

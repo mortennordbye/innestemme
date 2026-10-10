@@ -1,0 +1,130 @@
+diff --git a/home-assistant-voice.factory.yaml b/home-assistant-voice.factory.yaml
+index 73add02..98497f5 100644
+--- a/home-assistant-voice.factory.yaml
++++ b/home-assistant-voice.factory.yaml
+@@ -16,7 +16,8 @@ packages:
+ esphome:
+   project:
+     name: Nabu Casa.Home Assistant Voice PE
+-    version: dev
++    # Official release plus firmware/voice-pe.patch from innestemme.
++    version: 26.9.0-innestemme.1
+ 
+ ota:
+   - platform: http_request
+@@ -24,11 +25,6 @@ ota:
+ 
+ http_request:
+ 
+-update:
+-  - platform: http_request
+-    name: None
+-    id: update_http_request
+-    source: https://firmware.esphome.io/home-assistant-voice-pe/home-assistant-voice/manifest.json
+ 
+ dashboard_import:
+   package_import_url: github://esphome/home-assistant-voice-pe/home-assistant-voice.yaml
+@@ -56,20 +52,3 @@ esp32_improv:
+     - lambda: id(improv_ble_in_progress) = false;
+     - script.execute: control_leds
+ 
+-switch:
+-  - platform: template
+-    id: beta_firmware
+-    name: Beta firmware
+-    icon: "mdi:test-tube"
+-    disabled_by_default: true
+-    entity_category: config
+-    optimistic: true
+-    restore_mode: RESTORE_DEFAULT_OFF
+-    on_turn_on:
+-      - logger.log: "OTA updates set to use Beta firmware"
+-      - lambda: id(update_http_request).set_source_url("https://firmware.esphome.io/home-assistant-voice-pe/home-assistant-voice/manifest-beta.json");
+-      - component.update: update_http_request
+-    on_turn_off:
+-      - logger.log: "OTA updates set to use Production firmware"
+-      - lambda: id(update_http_request).set_source_url("https://firmware.esphome.io/home-assistant-voice-pe/home-assistant-voice/manifest.json");
+-      - component.update: update_http_request
+diff --git a/home-assistant-voice.yaml b/home-assistant-voice.yaml
+index dbf258e..698c70c 100644
+--- a/home-assistant-voice.yaml
++++ b/home-assistant-voice.yaml
+@@ -129,6 +129,11 @@ psram:
+   ignore_not_found: false  # The VPE has PSRAM, so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
+ 
+ globals:
++  # When the voice assistant was last started by a wake word, to ignore a second detection of the same one.
++  - id: last_wake_ms
++    type: uint32_t
++    restore_value: no
++    initial_value: '0'
+   # Global index for our LEDs. So that switching between different animation does not lead to unwanted effects.
+   - id: global_led_animation_index
+     type: int
+@@ -1748,13 +1753,20 @@ micro_wake_word:
+                 switch.is_on: timer_ringing
+               then:
+                 - switch.turn_off: timer_ringing
+-              # Stop voice assistant if running
++              # Stop voice assistant if running, unless it started moments ago: then the detector fired
++              # twice on the same wake word, and stopping would end the request being spoken.
+               else:
+                 - if:
+                     condition:
+                       voice_assistant.is_running:
+                     then:
+-                      voice_assistant.stop:
++                      - if:
++                          condition:
++                            lambda: return millis() - id(last_wake_ms) < 3000;
++                          then:
++                            - logger.log: "Wake word again within 3 s of the last one: ignored"
++                          else:
++                            - voice_assistant.stop:
+                     # Stop any other media player announcement
+                     else:
+                       - if:
+@@ -1776,6 +1788,7 @@ micro_wake_word:
+                                       priority: true
+                                       sound_file: "wake_word_triggered_sound"
+                                   - delay: 300ms
++                            - lambda: id(last_wake_ms) = millis();
+                             - voice_assistant.start:
+                                 wake_word: !lambda return wake_word;
+ 
+@@ -1811,6 +1824,26 @@ select:
+           id(hey_mycroft).set_probability_cutoff(237);  // 0.93 -> 1.878 FAPH on DipCo
+         }
+ 
++number:
++  - platform: template
++    name: "Hey Jarvis threshold"
++    id: hey_jarvis_threshold
++    icon: "mdi:tune-vertical"
++    entity_category: config
++    optimistic: true
++    restore_value: true
++    initial_value: 0.83
++    min_value: 0.50
++    max_value: 0.99
++    step: 0.01
++    # Lower wakes more easily and falsely more often. Applied after the sensitivity select at boot,
++    # and whenever it changes.
++    on_value:
++      - lambda: id(hey_jarvis).set_probability_cutoff((uint8_t) (x * 255.0f));
++      - logger.log:
++          format: "Hey Jarvis threshold %.2f"
++          args: [x]
++
+ voice_assistant:
+   id: va
+   microphone:
+@@ -1929,7 +1962,7 @@ button:
+     id: restart_button
+     name: "Restart"
+     entity_category: config
+-    disabled_by_default: true
++    disabled_by_default: false
+     icon: "mdi:restart"
+ 
+ debug:
