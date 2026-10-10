@@ -12,6 +12,8 @@ Guidance for coding agents (Claude Code and others) working in this repository.
 | Lint | `make lint` (`cargo clippy --workspace --all-targets -- -D warnings`) |
 | Format | `rustfmt --edition 2021 <changed files>`; a plain `cargo fmt` also rewrites a few hand-formatted spots |
 | Run the assistant locally | `make ollama`, then `make assistant` (settings in `config.local.yaml`) |
+| Work against the real Voice PE | scale the cluster engine to zero, `make piper`, then `make satellite` (settings in `config.satellite.yaml`, log in `target/satellite.log`, wavs in `target/utterances`); scale it back to one afterwards |
+| Voice PE firmware | `make firmware`, then `DEVICE=<ip> make firmware-flash` (official release plus `firmware/voice-pe.patch`) |
 | One home request without audio | `cargo run -p voice-assistant --example home -- "what's on the shopping list"` |
 | Language model accuracy and latency | `cargo run --release -p voice-assistant --example llm_eval -- http://127.0.0.1:11434/v1 qwen3-voice:4b-instruct` |
 | Container image | `docker build .` |
@@ -55,6 +57,13 @@ wording such as "AI-generated", and code, docs and PR bodies, are only guarded b
 - New skills get rules in English and Norwegian (`intent.rs` or their own module), a language model tool in
   `llm.rs` when phrasing varies, and a case in `examples/llm_eval.rs`. Keep tool descriptions short: every token
   is in every request and slows answers on a CPU.
+- Every skill also gets an entry in `voice-assistant/src/catalogue.rs` (what it does, its data source, the
+  services it calls, example phrases) and a line in `catalogue::skill_of`. The `web: true` page shows that
+  catalogue, and its tests parse every example, so a phrase listed there must reach the skill.
+- English answers are written plainly ("Okay, the kitchen lights are off."). `persona.rs` turns them into the
+  JARVIS style ("sir", openers, remarks) when `honorific` is set, so do not put "sir" or butler wording in a
+  skill's own answers. Openers it rewrites: "Okay, ...", "Sorry, ...". New remarks go in its `QUIPS` table.
+- Focus is English for now; Norwegian comes later.
 - Personal values (addresses, Home Assistant URL and token, names) belong in `config.local.yaml` or `.env`, both
   git-ignored, never in code, tests or docs.
 - Comments state constraints and reasons, not what the next line does.

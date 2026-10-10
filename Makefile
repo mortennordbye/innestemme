@@ -1,4 +1,4 @@
-.PHONY: help tools setup build piper piper-stop ollama assistant log test lint
+.PHONY: help tools setup build piper piper-stop kokoro ollama firmware firmware-flash assistant satellite log test lint
 
 # The assistant target runs STT on the Mac GPU; see README "Local voice assistant".
 FEATURES := voice-engine/metal,voice-bench/metal
@@ -14,6 +14,10 @@ help:
 	@echo "                         POCKET_PRECISION=f32|q8 THREADS=3 ENGLISH_TTS=pocket|say"
 	@echo "                         SPEAKER="Living Room" (Music Assistant player, for music)"
 	@echo "                         SECONDS_LIVE=600 HOME_PLACE=Oslo SAY_VOICE=Samantha SAY_VOICE_NO=Nora"
+	@echo "make satellite  be the voice assistant for a Voice PE from this Mac (config.satellite.yaml)"
+	@echo "make firmware  build the Voice PE firmware with firmware/voice-pe.patch (Docker)"
+	@echo "                DEVICE=<ip> make firmware-flash  flashes it over Wi-Fi"
+	@echo "make kokoro     run Kokoro (natural English speech) in Docker on 127.0.0.1:8880"
 	@echo "make piper      run Piper (Norwegian speech) in Docker on 127.0.0.1:10200; set piper: in config"
 	@echo "make ollama     run Ollama in Docker with the language model (qwen3:4b-instruct, 2.5 GB)"
 	@echo "make log        follow the assistant's server log (what it heard, what it answered)"
@@ -42,6 +46,12 @@ piper:
 piper-stop:
 	docker stop innestemme-piper
 
+# Kokoro (82M) behind Kokoro-FastAPI: natural English voices on the CPU, for `english-tts: kokoro`.
+KOKORO_IMAGE := ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4
+kokoro:
+	@docker inspect -f '{{.State.Running}}' innestemme-kokoro 2>/dev/null | grep -q true && echo "kokoro already running" || \
+	  docker run -d --rm --name innestemme-kokoro -p 127.0.0.1:8880:8880 $(KOKORO_IMAGE)
+
 # The language model behind the rules. llama.cpp sizes its thread pool from the physical cores it
 # sees, which oversubscribes a Docker VM (0.5 instead of ~100 tokens/s on an M4 Pro), so the model
 # is wrapped with a fixed thread count. KEEP_ALIVE=-1 keeps it loaded: after Ollama's default five
@@ -60,6 +70,15 @@ ollama:
 
 assistant: build
 	./scripts/assistant.sh
+
+satellite: build
+	./scripts/satellite.sh
+
+firmware:
+	./scripts/firmware.sh build
+
+firmware-flash:
+	./scripts/firmware.sh flash
 
 log:
 	tail -f target/assistant.log

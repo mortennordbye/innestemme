@@ -276,6 +276,30 @@ pretends to be a device, for testing without hardware (`--speaker` for streamed 
 timer display, `--stay 15` to stay connected after the answer and see timers end, `--then reply.wav` for
 the reply when the conversation stays open).
 
+A page with everything the assistant understands: `web: true` serves it on the metrics port (`/`). Each
+skill shows what it does, where its data comes from, the Home Assistant services or APIs it calls and phrases
+that reach it; a box shows how a typed phrase is understood (`/api/parse?q=...`), without acting on it.
+
+The JARVIS style: `honorific: sir` makes English answers sound like a butler ("As you wish, sir. The living
+room lights are off."), with varied openers, a greeting after a quiet spell and now and then a remark that
+fits the answer. With `english-tts: piper` and `piper-voice-en: jarvis-high`, the voice is the community
+Piper model [jgkawell/jarvis](https://huggingface.co/jgkawell/jarvis): put `jarvis-high.onnx` and
+`jarvis-high.onnx.json` in Piper's data directory (`~/Library/Caches/innestemme/piper` for `make piper`).
+
+A more natural English voice: `english-tts: kokoro` speaks through [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M)
+behind Kokoro-FastAPI (`make kokoro` runs it on 127.0.0.1:8880; `kokoro-url` points elsewhere). `kokoro-voice` picks
+the voice, default `am_onyx` (American, deep); `bm_george` is British. Audio streams as it is synthesized.
+
+On the web page, "Hear response" answers a typed request aloud in the browser, with the assistant's voice and
+style, when answering changes nothing (weather, departures, prices, what's on, who's home, the shopping list);
+requests that switch or play something are not run from the page.
+
+Running a deployed device's engine from the Mac while working on it: stop the deployed engine (a device takes
+one engine), put the deployed settings in `config.satellite.yaml` (git-ignored, same keys as above, plus
+`metrics-bind: 0.0.0.0:9090` so the device or player reaches the Mac and `dump-utterances` to keep each
+run as a wav), and run `make satellite`. The key is read from `VOICE_SATELLITE_KEY`, or from
+`~/.config/innestemme/satellite.key` when that exists. The log is in `target/satellite.log`.
+
 Timers on a device: devices with a timer display (the Voice PE's LED ring) get the ESPHome timer events
 (started, updated, cancelled, finished) and count down and ring themselves, like with Home Assistant.
 Reminders, and timers on devices without a display, are announced instead: the device fetches the chime and

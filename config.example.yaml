@@ -9,6 +9,8 @@
 # --- You ---------------------------------------------------------------------------------------
 # The name that wakes the assistant.
 wake-name: Homie
+# English answers like a butler, addressing you this way: "As you wish, sir."
+# honorific: sir
 # Extra ways the transcriber writes the name on your voice (record some with `--dump-utterances`).
 wake-spellings: []
 # Place for weather questions that name none. Without it the assistant asks which place.
