@@ -26,6 +26,7 @@ use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::llm::{self, Decision, Llm, Turn};
 use voice_assistant::music::Player;
+use voice_assistant::persona::Persona;
 use voice_assistant::power::{self, Power};
 use voice_assistant::shopping::{Change, ListCommand, ShoppingList};
 use voice_assistant::stt::SpeechToText;
@@ -55,9 +56,10 @@ const HISTORY_TURNS: usize = 4;
 const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// After a bare name or an answer, speech within this time needs no name.
 const FOLLOW_UP: Duration = Duration::from_secs(8);
-/// An utterance that starts this soon after a device's wake word holds the end of the wake word
-/// ("Oh", "What?"), not the request.
+/// A short utterance that starts this soon after a device's wake word holds the end of the wake
+/// word ("Oh", "What?"), not the request. A longer one is the name and the request in one breath.
 const WAKE_TAIL: Duration = Duration::from_millis(500);
+const WAKE_TAIL_LONGEST: Duration = Duration::from_millis(1600);
 
 pub struct AssistantConfig {
     /// Place used when a weather question names none; also the home's name in answers.
@@ -81,6 +83,8 @@ pub struct AssistantConfig {
     /// The room the microphone is in, for "turn off the lights" without a room. Default for a
     /// satellite: its area in Home Assistant.
     pub room: Option<String>,
+    /// English answers in a butler's words, addressing the user this way ("sir").
+    pub honorific: Option<String>,
     /// Directory for a wav of every utterance (debugging recognition).
     pub dump_utterances: Option<std::path::PathBuf>,
 }
@@ -133,6 +137,14 @@ impl AssistantHandle {
         let _ = self.jobs.send(Job::Woken(Instant::now()));
     }
 
+    /// The spoken answer to `text`, for the web page, when answering it changes nothing in the
+    /// house. Nothing is played or sent to a satellite.
+    pub fn preview(&self, text: String) -> tokio::sync::oneshot::Receiver<Preview> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let _ = self.jobs.send(Job::Preview(text, reply));
+        answer
+    }
+
     /// A satellite connected: its names, to look up its room in Home Assistant.
     pub fn satellite(&self, names: Vec<String>) {
         let _ = self.jobs.send(Job::Satellite(names));
@@ -141,6 +153,16 @@ impl AssistantHandle {
     pub fn subscribe(&self) -> broadcast::Receiver<AssistantEvent> {
         self.events.subscribe()
     }
+}
+
+/// What the assistant would say to a phrase typed on the web page.
+pub enum Preview {
+    /// The answer, styled, and its audio at 24 kHz.
+    Spoken { text: String, audio: Vec<i16> },
+    /// The request was understood but ends without an answer ("never mind").
+    Silent,
+    /// Answering would act on the house (lights, music, timers), or needs the language model.
+    NotRun(&'static str),
 }
 
 enum Job {
@@ -156,6 +178,8 @@ enum Job {
     Draft(Vec<i16>),
     /// A satellite connected, by its names.
     Satellite(Vec<String>),
+    /// The web page's "hear the answer".
+    Preview(String, tokio::sync::oneshot::Sender<Preview>),
 }
 
 pub struct AssistantProcessor {
@@ -248,6 +272,7 @@ impl AssistantProcessor {
             draft: None,
             follow_up_until: None,
             woken_at: None,
+            speech_ended: None,
             history: VecDeque::new(),
             last_lights: None,
             pending_lights: None,
@@ -256,10 +281,12 @@ impl AssistantProcessor {
             pending_list_add: false,
             pending_scene: None,
             timers: Timers::default(),
+            persona: None,
             room: None,
             warmed_prompt: String::new(),
         };
         worker.room = worker.config.room.clone();
+        worker.persona = worker.config.honorific.as_deref().map(Persona::new);
         if let Some((url, token)) = &worker.config.home_assistant {
             let mut ha = HomeAssistant::new(url, token);
             match ha.check() {
@@ -419,6 +446,8 @@ struct Worker {
     follow_up_until: Option<Instant>,
     /// A satellite woke on its own wake word and nothing has been answered since.
     woken_at: Option<Instant>,
+    /// When the speaker stopped talking, for how long the answer took to start.
+    speech_ended: Option<Instant>,
     /// Recent exchanges, oldest first, for the language model.
     history: VecDeque<(Instant, Turn)>,
     /// The lights switched last, how, and when, for "turn them back on" and "reverse that".
@@ -434,6 +463,7 @@ struct Worker {
     /// A scene request that exists in several rooms: the next answer is the room.
     pending_scene: Option<String>,
     timers: Timers,
+    persona: Option<Persona>,
     /// Where the microphone is: the `room` setting, else the satellite's area.
     room: Option<String>,
     /// The system prompt the language model last saw. It holds the date and the room; a new one
@@ -476,6 +506,9 @@ impl Worker {
                     self.emit(AssistantEvent::Listening);
                 }
                 Job::Satellite(names) => self.satellite(&names),
+                Job::Preview(text, reply) => {
+                    let _ = reply.send(self.preview(&text));
+                }
                 Job::Action(Action::Request(text)) => self.answer(&text, Lang::English, Instant::now()),
                 Job::Utterance(audio, ended) => self.utterance(&audio, ended),
                 Job::Draft(audio) => {
@@ -497,6 +530,9 @@ impl Worker {
     }
 
     fn utterance(&mut self, audio: &[i16], ended: Instant) {
+        // The utterance ends after a stretch of silence; the speaker stopped before it.
+        let silence = Duration::from_secs_f32((vad::END_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
+        self.speech_ended = ended.checked_sub(silence);
         if let Some(dir) = &self.config.dump_utterances {
             if let Err(error) = save_wav(dir, "utterance", audio, SAMPLE_RATE) {
                 warn!(%error, "could not save utterance");
@@ -564,14 +600,59 @@ impl Worker {
         self.answer(&request, heard.lang, start);
     }
 
+    /// The answer to a typed request, for requests that only read: they are answered for real
+    /// (weather, departures, what is on), the rest are not run.
+    fn preview(&mut self, text: &str) -> Preview {
+        let request = self.config.wake.strip(text).unwrap_or_else(|| text.to_owned());
+        let intent = intent::parse(&request);
+        let reads = matches!(
+            intent,
+            Intent::Weather { .. }
+                | Intent::Time
+                | Intent::Joke
+                | Intent::Transit(_)
+                | Intent::Power(_)
+                | Intent::LightsStatus { .. }
+                | Intent::WhosHome(_)
+                | Intent::Briefing
+                | Intent::Thanks
+                | Intent::Cancel
+                | Intent::ShoppingList(ListCommand::Read)
+        );
+        let answer = match intent {
+            _ if reads => match self.compose(&request, Lang::English) {
+                Some(answer) => answer,
+                None => return Preview::Silent,
+            },
+            Intent::Unknown if self.config.llm.is_none() => "Sorry, I didn't catch that.".to_owned(),
+            Intent::Unknown => {
+                return Preview::NotRun("The language model would decide; it is not asked from the page.")
+            }
+            _ => return Preview::NotRun("Answering this switches or plays something, so the page does not run it."),
+        };
+        let answer = match &mut self.persona {
+            Some(persona) => persona.style(&answer, jiff::Zoned::now().hour() as u8),
+            None => answer,
+        };
+        let mut audio = Vec::new();
+        for sentence in answer.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {
+            if let Err(error) = self.tts.speak(sentence, Lang::English, &mut |pcm| audio.extend_from_slice(pcm)) {
+                warn!(%error, "speech synthesis failed");
+            }
+        }
+        info!(request, answer, "preview for the web page");
+        Preview::Spoken { text: answer, audio }
+    }
+
     /// A device woke on its wake word and the request was not understood: say so, once, rather
     /// than end the run in silence, which sounds as if the device never woke.
     fn not_understood(&mut self, text: &str, audio: &[i16], ended: Instant, lang: Lang, start: Instant) {
         let Some(woken) = self.woken_at else {
             return;
         };
-        let began = ended.checked_sub(Duration::from_secs_f32(audio.len() as f32 / SAMPLE_RATE as f32));
-        if began.is_none_or(|began| began < woken + WAKE_TAIL) {
+        let length = Duration::from_secs_f32(audio.len() as f32 / SAMPLE_RATE as f32);
+        let began = ended.checked_sub(length);
+        if length < WAKE_TAIL_LONGEST && began.is_none_or(|began| began < woken + WAKE_TAIL) {
             return;
         }
         info!(text, "not understood after the wake word");
@@ -621,12 +702,16 @@ impl Worker {
     /// Speaks an answer and opens the follow-up window.
     fn say(&mut self, answer: String, lang: Lang, start: Instant) {
         self.woken_at = None;
+        let answer = match &mut self.persona {
+            Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
+            _ => answer,
+        };
         self.emit(AssistantEvent::Answer { text: answer.clone() });
         // Audio goes to the speaker as it is synthesized; `say` hands over whole sentences.
-        let (reply, events, mut samples, mut first) = (&mut self.reply, &self.events, 0usize, None);
+        let (reply, events, mut samples, mut first) = (&mut self.reply, &self.events, 0usize, None::<Instant>);
         for sentence in answer.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {
             let result = self.tts.speak(sentence, lang, &mut |pcm| {
-                first.get_or_insert_with(|| start.elapsed());
+                first.get_or_insert_with(Instant::now);
                 samples += pcm.len();
                 push(reply, pcm);
                 let _ = events.send(AssistantEvent::Speech(pcm.into()));
@@ -636,7 +721,10 @@ impl Worker {
             }
         }
         let seconds = samples as f32 / SAMPLE_RATE as f32;
-        info!(first_audio_after = ?first, done_after = ?start.elapsed(), seconds, "spoken");
+        // `after_speech`: from the end of the speaker's words to the first audio of the answer.
+        let after_speech = self.speech_ended.take().zip(first).map(|(ended, first)| first - ended);
+        let first_audio_after = first.map(|first| first - start);
+        info!(?first_audio_after, ?after_speech, done_after = ?start.elapsed(), seconds, "spoken");
         self.emit(AssistantEvent::Spoken);
         // The reply is queued faster than it plays; the window opens when it has been heard.
         self.follow_up_until = Some(Instant::now() + Duration::from_secs_f32(seconds) + FOLLOW_UP);

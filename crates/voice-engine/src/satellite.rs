@@ -122,6 +122,9 @@ enum Run {
     WakeWord,
     /// The wake word was heard; waiting for the request.
     Listening(Instant),
+    /// The device ended the run before an answer (its own end of speech). With an answer player
+    /// the request is still answered there, until the listening timeout.
+    Stopped(Instant),
     /// A request is being answered.
     Answering,
 }
@@ -285,8 +288,16 @@ impl Bridge<'_> {
                 }
             }
             Incoming::Stop => {
-                if self.run != Run::Answering {
-                    self.end_run().await?;
+                info!(run = ?self.run, "device ended the run");
+                match self.run {
+                    Run::Listening(since) if self.player.is_some() => {
+                        // The microphone audio still queued holds the end of the request.
+                        self.save_recording();
+                        self.device.event(Event::RunEnd, &[]).await?;
+                        self.run = Run::Stopped(since);
+                    }
+                    Run::Answering => {}
+                    _ => self.end_run().await?,
                 }
             }
             Incoming::Audio(pcm) => {
@@ -316,6 +327,10 @@ impl Bridge<'_> {
                 }
             }
             AssistantEvent::Heard { text } => {
+                if let Run::Stopped(_) = self.run {
+                    self.run = Run::Answering;
+                    return Ok(());
+                }
                 if !matches!(self.run, Run::WakeWord | Run::Listening(_)) {
                     return Ok(());
                 }
@@ -416,11 +431,12 @@ impl Bridge<'_> {
                     self.end_run().await?;
                 }
             }
-            AssistantEvent::Done => {
-                if self.run != Run::Idle {
-                    self.end_run().await?;
-                }
-            }
+            AssistantEvent::Done => match self.run {
+                Run::Idle => {}
+                // The device already ended its run.
+                Run::Stopped(_) => self.run = Run::Idle,
+                _ => self.end_run().await?,
+            },
             AssistantEvent::Timer(notice) => {
                 // Reminders end in speech (an announcement), not in the device's alarm.
                 if !self.device.info.has(feature::TIMERS) || notice.reminder {
@@ -458,11 +474,17 @@ impl Bridge<'_> {
 
     /// Paces streamed answer audio and times out a wake word with no request.
     async fn tick(&mut self) -> Result<()> {
-        if let Run::Listening(since) = self.run {
-            if since.elapsed() > LISTEN_TIMEOUT {
+        match self.run {
+            Run::Listening(since) if since.elapsed() > LISTEN_TIMEOUT => {
                 info!("no request after the wake word");
                 return self.end_run().await;
             }
+            Run::Stopped(since) if since.elapsed() > LISTEN_TIMEOUT => {
+                info!("no request after the wake word");
+                self.run = Run::Idle;
+                self.mic.clear();
+            }
+            _ => {}
         }
         if let Some(start) = self.stream_start {
             let allowed = ((start.elapsed() + STREAM_LEAD).as_secs_f64() * DEVICE_RATE as f64) as usize;
@@ -481,6 +503,15 @@ impl Bridge<'_> {
         Ok(())
     }
 
+    fn save_recording(&mut self) {
+        let audio = std::mem::take(&mut self.recording);
+        if let (Some(dir), false) = (&self.dump, audio.is_empty()) {
+            if let Err(error) = crate::assistant::save_wav(dir, "run", &audio, DEVICE_RATE) {
+                warn!(%error, "could not save the run");
+            }
+        }
+    }
+
     /// Ends a streamed answer, or drops a run's URL nobody will play.
     fn finish_clip(&mut self) {
         if let Some((_, clip)) = self.clip.take() {
@@ -490,12 +521,7 @@ impl Bridge<'_> {
 
     async fn end_run(&mut self) -> Result<()> {
         self.finish_clip();
-        if let Some(dir) = &self.dump {
-            let audio = std::mem::take(&mut self.recording);
-            if let Err(error) = crate::assistant::save_wav(dir, "run", &audio, DEVICE_RATE) {
-                warn!(%error, "could not save the run");
-            }
-        }
+        self.save_recording();
         self.run = Run::Idle;
         self.mic.clear();
         self.device.event(Event::RunEnd, &[]).await

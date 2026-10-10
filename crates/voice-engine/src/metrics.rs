@@ -92,6 +92,8 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(20);
 pub struct Clip {
     state: Mutex<ClipState>,
     grew: Notify,
+    /// When the answer was ready to be fetched, to log how long a player took to ask for it.
+    opened: std::time::Instant,
 }
 
 struct ClipState {
@@ -159,8 +161,11 @@ impl SpeechClips {
     pub fn open(&self, rate: u32) -> (String, Arc<Clip>) {
         let n = self.next.fetch_add(1, Relaxed);
         let id = format!("{n:x}-{}", std::process::id());
-        let clip =
-            Arc::new(Clip { state: Mutex::new(ClipState { wav: wav_header(rate), done: false }), grew: Notify::new() });
+        let clip = Arc::new(Clip {
+            state: Mutex::new(ClipState { wav: wav_header(rate), done: false }),
+            grew: Notify::new(),
+            opened: std::time::Instant::now(),
+        });
         let mut clips = self.clips.lock().unwrap();
         clips.push_back((id.clone(), clip.clone()));
         while clips.len() > KEEP_CLIPS {
@@ -222,13 +227,19 @@ async fn send_clip(stream: &mut TcpStream, clip: &Clip) -> std::io::Result<()> {
     }
 }
 
-/// Serves `/metrics`, `/healthz` and the answers under `/speech/`. Anything else gets a 404.
-pub async fn serve_http(listener: TcpListener, metrics: Arc<Metrics>, speech: Arc<SpeechClips>) {
+/// Serves `/metrics`, `/healthz`, the answers under `/speech/` and, when enabled, the web page.
+/// Anything else gets a 404.
+pub async fn serve_http(
+    listener: TcpListener,
+    metrics: Arc<Metrics>,
+    speech: Arc<SpeechClips>,
+    web: Option<Arc<crate::web::Web>>,
+) {
     loop {
-        let Ok((mut stream, _)) = listener.accept().await else {
+        let Ok((mut stream, peer)) = listener.accept().await else {
             continue;
         };
-        let (metrics, speech) = (metrics.clone(), speech.clone());
+        let (metrics, speech, web) = (metrics.clone(), speech.clone(), web.clone());
         tokio::spawn(async move {
             // The whole request head, which clients may send in pieces; closing with unread
             // input would reset the connection under the response.
@@ -245,13 +256,20 @@ pub async fn serve_http(listener: TcpListener, metrics: Arc<Metrics>, speech: Ar
                 .and_then(|p| p.strip_prefix("/speech/")?.strip_suffix(".wav"))
                 .and_then(|id| speech.get(id));
             if let Some(clip) = clip {
+                tracing::info!(%peer, after = ?clip.opened.elapsed(), "answer fetched");
                 let _ = send_clip(&mut stream, &clip).await;
                 return;
             }
+            let target = std::str::from_utf8(path).unwrap_or_default();
+            let page = match &web {
+                Some(web) if target.starts_with("/api/hear?") => web.hear(target).await,
+                Some(web) => web.route(target),
+                None => None,
+            };
             let (status, kind, body): (&str, &str, Vec<u8>) = match path {
                 b"/metrics" => ("200 OK", "text/plain; version=0.0.4", metrics.render().into_bytes()),
                 b"/healthz" => ("200 OK", "text/plain", b"ok\n".to_vec()),
-                _ => ("404 Not Found", "text/plain", b"not found\n".to_vec()),
+                _ => page.unwrap_or(("404 Not Found", "text/plain", b"not found\n".to_vec())),
             };
             let head = format!(
                 "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
@@ -273,7 +291,7 @@ mod tests {
         let path = speech.put(&[1, -1, 2], 24_000);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(serve_http(listener, Arc::new(Metrics::default()), speech));
+        tokio::spawn(serve_http(listener, Arc::new(Metrics::default()), speech, None));
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
         // In pieces, like a client that writes unbuffered.
         for piece in ["GET ", &path, " HTTP/1.1\r\n", "Host: x\r\n\r\n"] {
@@ -294,7 +312,7 @@ mod tests {
         let (path, clip) = speech.open(24_000);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(serve_http(listener, Arc::new(Metrics::default()), speech));
+        tokio::spawn(serve_http(listener, Arc::new(Metrics::default()), speech, None));
         let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
         stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes()).await.unwrap();
         // The header arrives before any audio exists.

@@ -20,7 +20,9 @@ use voice_engine::settings;
 use voice_engine::{
     metrics::{serve_http, SpeechClips},
     satellite::{AnswerPlayer, SatelliteConfig},
-    serve, Config, FrameProcessor, LoopbackEngine, Metrics, MimiProcessor, Passthrough, UdpTransport,
+    serve,
+    web::Web,
+    Config, FrameProcessor, LoopbackEngine, Metrics, MimiProcessor, Passthrough, UdpTransport,
 };
 
 // Debug builds abort on any allocation inside a `no_alloc` section. Release builds use mimalloc
@@ -58,6 +60,8 @@ enum EnglishTts {
     Say,
     /// Piper over Wyoming (`--piper`).
     Piper,
+    /// Kokoro through Kokoro-FastAPI (`--kokoro-url`).
+    Kokoro,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -130,6 +134,13 @@ struct Args {
     /// The assistant's name: saying it wakes the assistant.
     #[arg(long, env = "VOICE_WAKE_NAME", default_value = "Homie")]
     wake_name: String,
+    /// Serve a page on the metrics port with everything the assistant understands, and a box that
+    /// shows how a phrase is understood (nothing is acted on).
+    #[arg(long, env = "VOICE_WEB", default_value_t = false, action = clap::ArgAction::Set)]
+    web: bool,
+    /// Speak English answers like a butler and address the user this way, e.g. "sir".
+    #[arg(long, env = "VOICE_HONORIFIC")]
+    honorific: Option<String>,
     /// Other ways the transcriber writes the name, comma-separated (see DUMP / `--dump-utterances`).
     #[arg(long, env = "VOICE_WAKE_SPELLINGS", value_delimiter = ',')]
     wake_spellings: Vec<String>,
@@ -144,8 +155,9 @@ struct Args {
     #[arg(long, env = "VOICE_WHISPER_SIZE", default_value = "base")]
     whisper_size: String,
     /// Encode Whisper's full 30 s window, the way it was trained, instead of the utterance and a
-    /// few seconds of silence. About three times slower on a short request.
-    #[arg(long, env = "VOICE_WHISPER_FULL_WINDOW", default_value_t = false, action = clap::ArgAction::Set)]
+    /// few seconds of silence. The short window is about three times faster on a short request, but
+    /// on real satellite recordings it loops ("What are you doing?" ten times) or invents words.
+    #[arg(long, env = "VOICE_WHISPER_FULL_WINDOW", default_value_t = true, action = clap::ArgAction::Set)]
     whisper_full_window: bool,
     /// Hugging Face repo of the Whisper model, overriding the size-based default (openai/whisper-*,
     /// or NbAiLab/nb-whisper-* with Norwegian on).
@@ -202,6 +214,12 @@ struct Args {
     /// Piper voice for English replies with `--english-tts piper`; the server's default when omitted.
     #[arg(long, env = "VOICE_PIPER_VOICE_EN")]
     piper_voice_en: Option<String>,
+    /// Kokoro-FastAPI server for `--english-tts kokoro`, e.g. http://127.0.0.1:8880.
+    #[arg(long, env = "VOICE_KOKORO_URL", default_value = "http://127.0.0.1:8880")]
+    kokoro_url: String,
+    /// Kokoro voice, e.g. am_onyx (American, deep) or bm_george (British).
+    #[arg(long, env = "VOICE_KOKORO_VOICE", default_value = "am_onyx")]
+    kokoro_voice: String,
     /// macOS `say` voice for Norwegian replies.
     #[arg(long, env = "VOICE_SAY_VOICE_NO", default_value = "Nora")]
     say_voice_no: String,
@@ -366,6 +384,15 @@ fn main() -> Result<()> {
                 }
                 EnglishTts::Say => Box::new(say()),
                 EnglishTts::Piper => Box::new(piper()?),
+                EnglishTts::Kokoro => {
+                    let kokoro = voice_assistant::kokoro::KokoroTts::new(&args.kokoro_url, &args.kokoro_voice);
+                    let voices = kokoro.voices().context("asking the Kokoro server for its voices")?;
+                    if !voices.iter().any(|v| v == kokoro.voice()) {
+                        anyhow::bail!("Kokoro at {} has no voice {}", args.kokoro_url, kokoro.voice());
+                    }
+                    info!(url = args.kokoro_url, voice = kokoro.voice(), "kokoro connected");
+                    Box::new(kokoro)
+                }
             };
             let norwegian: Box<dyn voice_assistant::tts::Tts> = match args.norwegian_tts {
                 Some(NorwegianTts::Piper) => Box::new(piper()?),
@@ -386,6 +413,7 @@ fn main() -> Result<()> {
                     dump_utterances: args.dump_utterances.clone(),
                     speaker: args.speaker.clone(),
                     room: args.room.clone(),
+                    honorific: args.honorific.clone(),
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");
                         voice_assistant::llm::Llm::new(
@@ -420,7 +448,30 @@ fn main() -> Result<()> {
         let metrics = Arc::new(Metrics::default());
         let http = tokio::net::TcpListener::bind(args.metrics_bind).await.context("binding metrics listener")?;
         let speech = Arc::new(SpeechClips::default());
-        tokio::spawn(serve_http(http, metrics.clone(), speech.clone()));
+        let web = args.web.then(|| {
+            let voice = match args.english_tts {
+                EnglishTts::Pocket => format!("Pocket TTS, {}", args.pocket_voice),
+                EnglishTts::Say => {
+                    format!("macOS say{}", args.say_voice.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
+                }
+                EnglishTts::Piper => {
+                    format!("Piper{}", args.piper_voice_en.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
+                }
+                EnglishTts::Kokoro => format!("Kokoro, {}", args.kokoro_voice),
+            };
+            let about = serde_json::json!({
+                "name": args.wake_name,
+                "wake_words": args.satellite_wake_words,
+                "voice": voice,
+                "honorific": args.honorific,
+                "norwegian": args.norwegian,
+                "language_model": args.llm_url.is_some(),
+            });
+            info!(url = format!("http://{}/", args.metrics_bind), "web page");
+            let wake = WakeWord::new(&args.wake_name).with_spellings(&args.wake_spellings);
+            Arc::new(Web::new(wake, about, handle.clone(), speech.clone()))
+        });
+        tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));
         if let Some(address) = args.satellite.clone() {
             let assistant = handle.context("`--satellite` needs `--processor assistant`")?;
             let key = args.satellite_key.as_deref().map(voice_esphome::frame::parse_key).transpose()?;
