@@ -146,3 +146,24 @@ English and Norwegian.
 | plain | 15/44 | 704 ms |
 | vocabulary prompt, 79 / 149 / 222 tokens | 21 / 23 / 25 | 931 / 1155 / 1351 ms |
 | plain + sound-alike matching against known names | 33/44, 0 wrong | 691 ms |
+
+## Kokoro TTS (English voice `am_onyx`), 2026-10-10
+
+Kokoro-FastAPI CPU v0.2.4, a sentence synthesized whole (raw PCM, streamed but delivered at the end):
+
+| Where | Threads / CPUs | "It's 4 degrees and rain in Oslo, sir." | departures sentence (4.6 s of audio) |
+| --- | --- | --- | --- |
+| M4 Pro, Docker | default / 6 | ~0.4 s | ~0.6 s |
+| i7-8700T node, Kubernetes | 8 (PyTorch default) / 2 | 18 to 26 s for short whole answers | - |
+| i7-8700T node, Kubernetes | 4 / 4 | 2.6 s | 3.6 s |
+
+PyTorch starts one thread per node core; set `OMP_NUM_THREADS` to the CPU limit. With `speech-cache`, fixed
+sentences cost nothing after the first time and a lead-in plays while the data sentence is synthesized:
+on the Mac, first audio 0.2 to 0.4 ms after transcription for weather, a joke and departures.
+
+## Whisper window on real satellite recordings, 2026-10-10
+
+`whisper_window` on five Voice PE recordings (whisper-base, Metal): the full window took 378 to 498 ms and gave
+sane text; `3/10` took 160 to 607 ms and turned one request into "What are you doing?" repeated, another into
+"BELL", and "today" into "tonight"; `2/0` changed four of five. The full window is the default since then.
+
