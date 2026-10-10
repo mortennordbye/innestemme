@@ -542,6 +542,9 @@ pub fn parse(text: &str) -> Intent {
         Some(false)
     } else if has("on") || has("på") {
         Some(true)
+    } else if words.windows(2).any(|p| ["turn", "switch"].contains(&p[0].as_str()) && p[1] == "all") {
+        // Whisper often hears "turn off" as "turn all".
+        Some(false)
     } else {
         None
     };
@@ -628,6 +631,8 @@ mod tests {
         assert_eq!(lights("slå på lyset på kjøkkenet"), Some(true));
         assert_eq!(lights("skru av lyset på kjøkkenet"), Some(false));
         assert_eq!(lights("how bright are the lights"), None);
+        assert_eq!(lights("Turn all the living room lights."), Some(false));
+        assert_eq!(lights("turn all the lights on"), Some(true));
     }
 
     #[test]
