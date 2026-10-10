@@ -51,6 +51,8 @@ pub enum Intent {
     WhosHome(Option<String>),
     /// "Good morning": the time, the weather at home and the shopping list in a few sentences.
     Briefing,
+    /// "What's the news?": the latest headlines.
+    News,
     /// The shopping list (a Home Assistant to-do list).
     ShoppingList(ListCommand),
     /// A Home Assistant scene; the request text, resolved later ("set the bedroom to relax").
@@ -242,6 +244,12 @@ fn whos_home(words: &[String]) -> Option<Option<String>> {
 }
 
 /// "Good morning" on its own, or asking for the briefing.
+/// "What's the news?", "latest headlines", "hva er nyhetene?"; not "good news" in passing.
+fn is_news(words: &[String]) -> bool {
+    let news = ["news", "headlines", "nyheter", "nyhetene", "nyhetsoppdatering"];
+    words.iter().any(|w| news.contains(&w.as_str())) && !words.windows(2).any(|p| p[0] == "good" && p[1] == "news")
+}
+
 fn is_briefing(words: &[String]) -> bool {
     let phrase: Vec<&str> = words
         .iter()
@@ -510,6 +518,9 @@ pub fn parse(text: &str) -> Intent {
         if is_briefing(&words) {
             return Intent::Briefing;
         }
+        if is_news(&words) {
+            return Intent::News;
+        }
     }
     // Then music: song titles contain every other kind of word ("Here Comes the Rain Again").
     if let Some(command) = music(&words) {
@@ -691,6 +702,9 @@ mod tests {
         assert_eq!(parse("undo"), Intent::Undo);
         assert_eq!(parse("switch it back"), Intent::Undo);
         assert_eq!(parse("Thank you."), Intent::Thanks);
+        assert_eq!(parse("What's the latest news?"), Intent::News);
+        assert_eq!(parse("read me the headlines"), Intent::News);
+        assert_eq!(parse("Hva er nyhetene?"), Intent::News);
         assert_eq!(parse("thanks a lot"), Intent::Thanks);
         assert_eq!(parse("Never mind."), Intent::Cancel);
         assert_eq!(parse("cancel"), Intent::Cancel);

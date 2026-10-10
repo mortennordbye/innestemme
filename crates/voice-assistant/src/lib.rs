@@ -12,6 +12,7 @@ pub mod lang;
 pub mod llm;
 pub mod music;
 pub mod names;
+pub mod news;
 pub mod persona;
 pub mod pocket;
 pub mod power;

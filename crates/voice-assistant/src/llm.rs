@@ -197,6 +197,7 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             }
         }
         "joke" => Decision::Act(Intent::Joke),
+        "news" => Decision::Act(Intent::News),
         "shopping_list" => {
             // Items as a list, or one string ("milk, eggs") from models that ignore the schema.
             let items: Vec<String> = match &args["items"] {
@@ -396,6 +397,7 @@ pub fn tools() -> Value {
         } })
         ),
         tool("joke", "Tell a joke.", none.clone()),
+        tool("news", "Latest news headlines.", none.clone()),
         tool("ignore", "Words not meant for the assistant (people talking to each other, TV).", none),
     ])
 }

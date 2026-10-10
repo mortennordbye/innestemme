@@ -9,6 +9,12 @@ use crate::lang::Lang;
 pub trait Tts: Send {
     /// Streams 24 kHz mono audio for `text` into `sink` as it is produced.
     fn speak(&mut self, text: &str, lang: Lang, sink: &mut dyn FnMut(&[i16])) -> Result<()>;
+
+    /// Like `speak`, for text that changes from day to day without numbers (headlines): never
+    /// kept by a speech cache.
+    fn speak_live(&mut self, text: &str, lang: Lang, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
+        self.speak(text, lang, sink)
+    }
 }
 
 /// One engine per language.
@@ -22,6 +28,13 @@ impl Tts for ByLanguage {
         match lang {
             Lang::English => self.english.speak(text, lang, sink),
             Lang::Norwegian => self.norwegian.speak(text, lang, sink),
+        }
+    }
+
+    fn speak_live(&mut self, text: &str, lang: Lang, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
+        match lang {
+            Lang::English => self.english.speak_live(text, lang, sink),
+            Lang::Norwegian => self.norwegian.speak_live(text, lang, sink),
         }
     }
 }

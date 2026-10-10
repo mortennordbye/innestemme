@@ -10,7 +10,7 @@
 //! Half duplex: while a request is being handled or its reply plays, and for a second after, the
 //! microphone is ignored so the assistant does not answer itself through a laptop speaker.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -26,6 +26,7 @@ use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::llm::{self, Decision, Llm, Turn};
 use voice_assistant::music::Player;
+use voice_assistant::news::News;
 use voice_assistant::persona::Persona;
 use voice_assistant::power::{self, Power};
 use voice_assistant::shopping::{Change, ListCommand, ShoppingList};
@@ -73,6 +74,8 @@ pub struct AssistantConfig {
     pub transit_stops: Vec<String>,
     /// Contact (email or URL) for the User-Agent that MET Norway asks for.
     pub contact: Option<String>,
+    /// RSS feeds for headlines: English, Norwegian.
+    pub news_feeds: (String, String),
     /// Norwegian electricity price area (NO1-NO5); guessed from the address when unset.
     pub price_area: Option<String>,
     /// Home Assistant base URL and long-lived access token, for lights.
@@ -269,6 +272,7 @@ impl AssistantProcessor {
             info!(area, "electricity price area");
         }
         let power = price_area.map(|area| Power::new(&user_agent, &area));
+        let news = News::new(&user_agent, &config.news_feeds.0, &config.news_feeds.1);
         let mut worker = Worker {
             events: events.clone(),
             reply: reply_tx,
@@ -276,6 +280,8 @@ impl AssistantProcessor {
             tts,
             config,
             weather: Weather::new(&user_agent),
+            news,
+            live: HashSet::new(),
             transit,
             power,
             home_location,
@@ -459,7 +465,9 @@ const LEADS_POWER: &[&str] = &["Checking the electricity prices"];
 const LEADS_LIGHTS: &[&str] = &["Let me check the lights"];
 const LEADS_HOME: &[&str] = &["Let me see who's in"];
 const LEADS_THINK: &[&str] = &["Let me think"];
-const LEADS: &[&[&str]] = &[LEADS_WEATHER, LEADS_TRANSIT, LEADS_POWER, LEADS_LIGHTS, LEADS_HOME, LEADS_THINK];
+const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news"];
+const LEADS: &[&[&str]] =
+    &[LEADS_WEATHER, LEADS_TRANSIT, LEADS_POWER, LEADS_LIGHTS, LEADS_HOME, LEADS_THINK, LEADS_NEWS];
 
 /// "Checking the forecast, sir." or "Checking the forecast."
 fn capitalize(text: &str) -> String {
@@ -484,6 +492,10 @@ struct Worker {
     transit: Transit,
     /// Electricity prices; `None` outside Norway or without a price area.
     power: Option<Power>,
+    news: News,
+    /// Sentences of the answer being spoken that change daily without numbers (headlines): not
+    /// kept by the speech cache.
+    live: HashSet<String>,
     /// The home from the `address` setting.
     home_location: Option<Location>,
     jokes: Jokes,
@@ -681,6 +693,7 @@ impl Worker {
                 | Intent::LightsStatus { .. }
                 | Intent::WhosHome(_)
                 | Intent::Briefing
+                | Intent::News
                 | Intent::Thanks
                 | Intent::SmallTalk(_)
                 | Intent::Cancel
@@ -819,14 +832,19 @@ impl Worker {
 
     /// Audio goes to the speaker as it is synthesized, a sentence at a time.
     fn speak(&mut self, text: &str, lang: Lang, spoken: &mut Spoken) {
-        let (reply, events, tts) = (&mut self.reply, &self.events, &mut self.tts);
+        let (reply, events, tts, live) = (&mut self.reply, &self.events, &mut self.tts, &self.live);
         for sentence in text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {
-            let result = tts.speak(sentence, lang, &mut |pcm| {
+            let mut sink = |pcm: &[i16]| {
                 spoken.first.get_or_insert_with(Instant::now);
                 spoken.samples += pcm.len();
                 push(reply, pcm);
                 let _ = events.send(AssistantEvent::Speech(pcm.into()));
-            });
+            };
+            let result = if live.contains(sentence) {
+                tts.speak_live(sentence, lang, &mut sink)
+            } else {
+                tts.speak(sentence, lang, &mut sink)
+            };
             if let Err(error) = result {
                 warn!(%error, "speech synthesis failed");
             }
@@ -835,6 +853,7 @@ impl Worker {
 
     fn finish(&mut self, spoken: Spoken, start: Instant) {
         self.woken_at = None;
+        self.live.clear();
         let seconds = spoken.samples as f32 / SAMPLE_RATE as f32;
         // `after_speech`: from the end of the speaker's words to the first audio of the answer.
         let after_speech = self.speech_ended.take().zip(spoken.first).map(|(ended, first)| first - ended);
@@ -862,6 +881,7 @@ impl Worker {
             Intent::Weather { .. } => LEADS_WEATHER,
             Intent::Transit(_) => LEADS_TRANSIT,
             Intent::Power(_) => LEADS_POWER,
+            Intent::News => LEADS_NEWS,
             Intent::LightsStatus { .. } => LEADS_LIGHTS,
             Intent::WhosHome(_) => LEADS_HOME,
             Intent::Unknown if self.config.llm.is_some() => LEADS_THINK,
@@ -1048,6 +1068,16 @@ impl Worker {
             },
             Intent::WhosHome(name) => self.whos_home(name.as_deref(), lang),
             Intent::Briefing => self.briefing(lang),
+            Intent::News => match self.news.answer(lang) {
+                Ok(headlines) => {
+                    self.live.extend(headlines.live);
+                    headlines.text
+                }
+                Err(error) => {
+                    warn!(error = format!("{error:#}"), "news failed");
+                    if no { "Beklager, jeg får ikke hentet nyhetene nå." } else { "Sorry, I couldn't get the news right now." }.into()
+                }
+            },
             Intent::ShoppingList(command) => self.shopping_list(command, lang),
             Intent::Scene(request) => self.scene(&request, lang),
             Intent::Script(request) => self.script(&request, lang),
@@ -1270,6 +1300,13 @@ impl Worker {
             if let Ok(answer) = power.answer(power::PowerQuery::Now, lang) {
                 parts.push(answer);
             }
+        }
+        match self.news.briefing(lang) {
+            Ok(headlines) => {
+                self.live.extend(headlines.live);
+                parts.push(headlines.text);
+            }
+            Err(error) => warn!(error = format!("{error:#}"), "no news for the briefing"),
         }
         parts.join(" ")
     }

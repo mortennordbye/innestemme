@@ -199,6 +199,12 @@ struct Args {
     /// Your email or website, sent in the User-Agent to MET Norway (Yr), which asks for a contact.
     #[arg(long, env = "VOICE_CONTACT")]
     contact: Option<String>,
+    /// RSS feed for English headlines ("what's the news?", the morning briefing).
+    #[arg(long, env = "VOICE_NEWS_FEED", default_value = voice_assistant::news::ENGLISH_FEED)]
+    news_feed: String,
+    /// RSS feed for Norwegian headlines.
+    #[arg(long, env = "VOICE_NEWS_FEED_NO", default_value = voice_assistant::news::NORWEGIAN_FEED)]
+    news_feed_no: String,
     /// Speech engine for English replies.
     #[arg(long, env = "VOICE_ENGLISH_TTS", value_enum, default_value = "pocket")]
     english_tts: EnglishTts,
@@ -441,6 +447,7 @@ fn main() -> Result<()> {
                     address: args.address.clone(),
                     transit_stops: args.transit_stops.clone(),
                     contact: args.contact.clone(),
+                    news_feeds: (args.news_feed.clone(), args.news_feed_no.clone()),
                     price_area: args.price_area.clone(),
                     home_assistant: args.ha_url.clone().zip(args.ha_token.clone()),
                     dump_utterances: args.dump_utterances.clone(),
