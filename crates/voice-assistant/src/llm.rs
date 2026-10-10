@@ -197,6 +197,15 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             }
         }
         "joke" => Decision::Act(Intent::Joke),
+        "news" => Decision::Act(Intent::News),
+        "distance" => match text("to") {
+            Some(to) => Decision::Act(Intent::Distance(crate::distance::Query { from: text("from"), to })),
+            None => return Err(anyhow!("distance without a place")),
+        },
+        "lookup" => match text("topic") {
+            Some(topic) => Decision::Act(Intent::Lookup(topic)),
+            None => return Err(anyhow!("lookup without a topic")),
+        },
         "shopping_list" => {
             // Items as a list, or one string ("milk, eggs") from models that ignore the schema.
             let items: Vec<String> = match &args["items"] {
@@ -396,6 +405,20 @@ pub fn tools() -> Value {
         } })
         ),
         tool("joke", "Tell a joke.", none.clone()),
+        tool("news", "Latest news headlines.", none.clone()),
+        tool(
+            "distance",
+            "Distance between places.",
+            json!({ "type": "object", "properties": {
+            "from": { "type": "string", "description": "Omit for home" },
+            "to": { "type": "string" }
+        }, "required": ["to"] })
+        ),
+        tool(
+            "lookup",
+            "Who or what something is, from Wikipedia.",
+            json!({ "type": "object", "properties": { "topic": { "type": "string" } }, "required": ["topic"] })
+        ),
         tool("ignore", "Words not meant for the assistant (people talking to each other, TV).", none),
     ])
 }

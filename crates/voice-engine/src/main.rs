@@ -19,7 +19,7 @@ use voice_engine::assistant::{AssistantConfig, AssistantProcessor, Listener};
 use voice_engine::settings;
 use voice_engine::{
     metrics::{serve_http, SpeechClips},
-    satellite::{AnswerPlayer, SatelliteConfig},
+    satellite::{AnswerPlayer, SatelliteConfig, ServerWake},
     serve,
     web::Web,
     Config, FrameProcessor, LoopbackEngine, Metrics, MimiProcessor, Passthrough, UdpTransport,
@@ -156,6 +156,10 @@ struct Args {
     /// Write every detected utterance here as a wav, for tuning recognition on real voices.
     #[arg(long, env = "VOICE_DUMP_UTTERANCES")]
     dump_utterances: Option<PathBuf>,
+    /// Log requests no skill handled here, one JSON object per line, to see what to build next.
+    /// The web page lists the latest.
+    #[arg(long, env = "VOICE_UNHANDLED_LOG")]
+    unhandled_log: Option<PathBuf>,
     /// Whisper size: base (290 MB) or small (970 MB, more accurate).
     #[arg(long, env = "VOICE_WHISPER_SIZE", default_value = "base")]
     whisper_size: String,
@@ -195,6 +199,14 @@ struct Args {
     /// Your email or website, sent in the User-Agent to MET Norway (Yr), which asks for a contact.
     #[arg(long, env = "VOICE_CONTACT")]
     contact: Option<String>,
+    /// RSS feeds for English headlines ("what's the news?", the morning briefing), comma-separated,
+    /// each `Name=URL` (the name introduces its headlines) or a URL. Default: BBC News and Norway
+    /// (newsinenglish.no).
+    #[arg(long, env = "VOICE_NEWS_FEEDS", value_delimiter = ',', default_values = voice_assistant::news::ENGLISH_FEEDS)]
+    news_feeds: Vec<String>,
+    /// RSS feeds for Norwegian headlines, the same way. Default: NRK.
+    #[arg(long, env = "VOICE_NEWS_FEEDS_NO", value_delimiter = ',', default_values = voice_assistant::news::NORWEGIAN_FEEDS)]
+    news_feeds_no: Vec<String>,
     /// Speech engine for English replies.
     #[arg(long, env = "VOICE_ENGLISH_TTS", value_enum, default_value = "pocket")]
     english_tts: EnglishTts,
@@ -275,6 +287,15 @@ struct Args {
     /// Home Assistant's wake word selects do not reach the device while the engine holds it.
     #[arg(long, env = "VOICE_SATELLITE_WAKE_WORDS", value_delimiter = ',')]
     satellite_wake_words: Vec<String>,
+    /// Detect the wake word in the engine instead of on the satellite: an openWakeWord model by
+    /// name (hey_jarvis) or the path to a `.onnx` model of your own. The satellite must stream
+    /// continuously (its wake word processing "in Home Assistant").
+    #[arg(long, env = "VOICE_WAKE_MODEL")]
+    wake_model: Option<String>,
+    /// Score from 0 to 1 at which `--wake-model` wakes. Lower wakes more easily, and falsely more
+    /// often; misses above 0.2 are logged with their score.
+    #[arg(long, env = "VOICE_WAKE_THRESHOLD", default_value_t = 0.5)]
+    wake_threshold: f32,
     /// Announcement volume on `--answer-player`, 0 to 1. Default: the player's own volume.
     #[arg(long, env = "VOICE_ANSWER_VOLUME")]
     answer_volume: Option<f32>,
@@ -314,6 +335,7 @@ fn main() -> Result<()> {
         None => MimiCodec::fetch_weights(),
     };
     let mut handle = None;
+    let unhandled = args.unhandled_log.clone().map(|path| Arc::new(voice_engine::unhandled::UnhandledLog::new(path)));
     let processor: Box<dyn FrameProcessor> = match args.processor {
         Processor::Passthrough => Box::new(Passthrough),
         Processor::Mimi => {
@@ -427,9 +449,11 @@ fn main() -> Result<()> {
                     address: args.address.clone(),
                     transit_stops: args.transit_stops.clone(),
                     contact: args.contact.clone(),
+                    news_feeds: (args.news_feeds.clone(), args.news_feeds_no.clone()),
                     price_area: args.price_area.clone(),
                     home_assistant: args.ha_url.clone().zip(args.ha_token.clone()),
                     dump_utterances: args.dump_utterances.clone(),
+                    unhandled: unhandled.clone(),
                     speaker: args.speaker.clone(),
                     room: args.room.clone(),
                     honorific: args.honorific.clone(),
@@ -449,6 +473,18 @@ fn main() -> Result<()> {
             handle = Some(assistant.handle());
             Box::new(assistant)
         }
+    };
+
+    let server_wake = match &args.wake_model {
+        Some(model) => {
+            if !(0.0..1.0).contains(&args.wake_threshold) {
+                anyhow::bail!("`--wake-threshold` is 0 to 1");
+            }
+            let models = voice_assistant::wakeword::WakeModels::load(model)?;
+            info!(model = models.name, threshold = args.wake_threshold, "wake word model");
+            Some(ServerWake { models: Arc::new(models), threshold: args.wake_threshold })
+        }
+        None => None,
     };
 
     if args.download_only {
@@ -489,7 +525,7 @@ fn main() -> Result<()> {
             });
             info!(url = format!("http://{}/", args.metrics_bind), "web page");
             let wake = WakeWord::new(&args.wake_name).with_spellings(&args.wake_spellings);
-            Arc::new(Web::new(wake, about, handle.clone(), speech.clone()))
+            Arc::new(Web::new(wake, about, handle.clone(), speech.clone(), unhandled.clone()))
         });
         tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));
         if let Some(address) = args.satellite.clone() {
@@ -526,6 +562,7 @@ fn main() -> Result<()> {
                 stream_answers: args.satellite_stream,
                 answer_player,
                 wake_words: args.satellite_wake_words.clone(),
+                server_wake,
                 dump: args.dump_utterances.clone(),
             };
             tokio::spawn(voice_engine::satellite::run(cfg, assistant, speech));

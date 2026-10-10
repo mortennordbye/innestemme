@@ -10,7 +10,7 @@
 //! Half duplex: while a request is being handled or its reply plays, and for a second after, the
 //! microphone is ignored so the assistant does not answer itself through a laptop speaker.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Arc;
@@ -25,7 +25,9 @@ use voice_assistant::intent::{self, Day, Intent, LightLevel};
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::llm::{self, Decision, Llm, Turn};
+use voice_assistant::lookup::Lookup;
 use voice_assistant::music::Player;
+use voice_assistant::news::News;
 use voice_assistant::persona::Persona;
 use voice_assistant::power::{self, Power};
 use voice_assistant::shopping::{Change, ListCommand, ShoppingList};
@@ -41,6 +43,7 @@ use voice_rt::noalloc::permit_alloc;
 
 use crate::engine::{FrameProcessor, ProcessError};
 use crate::metrics::Metrics;
+use crate::unhandled::{Reason, UnhandledLog};
 
 /// Covers the STT's 0.5 s delay plus the room's echo tail.
 const DEAF_AFTER_REPLY_FRAMES: u64 = 13;
@@ -60,6 +63,8 @@ const FOLLOW_UP: Duration = Duration::from_secs(8);
 /// word ("Oh", "What?"), not the request. A longer one is the name and the request in one breath.
 const WAKE_TAIL: Duration = Duration::from_millis(500);
 const WAKE_TAIL_LONGEST: Duration = Duration::from_millis(1600);
+/// Unrecognised speech after a wake longer than this many words gets no "didn't catch that".
+const LONGEST_REQUEST_WORDS: usize = 12;
 
 pub struct AssistantConfig {
     /// Place used when a weather question names none; also the home's name in answers.
@@ -70,6 +75,8 @@ pub struct AssistantConfig {
     pub transit_stops: Vec<String>,
     /// Contact (email or URL) for the User-Agent that MET Norway asks for.
     pub contact: Option<String>,
+    /// RSS feeds for headlines, `Name=URL` or a URL: English, Norwegian.
+    pub news_feeds: (Vec<String>, Vec<String>),
     /// Norwegian electricity price area (NO1-NO5); guessed from the address when unset.
     pub price_area: Option<String>,
     /// Home Assistant base URL and long-lived access token, for lights.
@@ -90,6 +97,8 @@ pub struct AssistantConfig {
     pub prerender: bool,
     /// Directory for a wav of every utterance (debugging recognition).
     pub dump_utterances: Option<std::path::PathBuf>,
+    /// Where requests that no skill handled are logged.
+    pub unhandled: Option<Arc<UnhandledLog>>,
 }
 
 pub enum Listener {
@@ -130,6 +139,7 @@ pub struct AssistantHandle {
     jobs: mpsc::Sender<Job>,
     events: broadcast::Sender<AssistantEvent>,
     hear_now: Arc<AtomicBool>,
+    interrupted: Arc<AtomicBool>,
 }
 
 impl AssistantHandle {
@@ -138,6 +148,18 @@ impl AssistantHandle {
     pub fn woke(&self) {
         self.hear_now.store(true, Relaxed);
         let _ = self.jobs.send(Job::Woken(Instant::now()));
+    }
+
+    /// The wake word was said over the answer: stop speaking it after the sentence being
+    /// synthesized.
+    pub fn interrupt(&self) {
+        self.interrupted.store(true, Relaxed);
+    }
+
+    /// A satellite listens for a follow-up after an answer has played: hear the microphone at once,
+    /// without the wake word's "not understood" reply to whatever is said.
+    pub fn listen(&self) {
+        self.hear_now.store(true, Relaxed);
     }
 
     /// The spoken answer to `text`, for the web page, when answering it changes nothing in the
@@ -194,6 +216,7 @@ pub struct AssistantProcessor {
     busy: Arc<AtomicBool>,
     /// A satellite started listening: stop ignoring the microphone at once.
     hear_now: Arc<AtomicBool>,
+    interrupted: Arc<AtomicBool>,
     was_busy: bool,
     frame: u64,
     deaf_until: u64,
@@ -217,6 +240,7 @@ impl AssistantProcessor {
         let (jobs, rx) = mpsc::channel();
         let (reply_tx, reply) = rtrb::RingBuffer::new(SAMPLE_RATE as usize * 60);
         let busy = Arc::new(AtomicBool::new(false));
+        let interrupted = Arc::new(AtomicBool::new(false));
         let speaker = config.speaker.clone();
         let (events, _) = broadcast::channel(256);
         // MET Norway asks for an application name and a contact.
@@ -258,13 +282,18 @@ impl AssistantProcessor {
             info!(area, "electricity price area");
         }
         let power = price_area.map(|area| Power::new(&user_agent, &area));
+        let news = News::new(&user_agent, &config.news_feeds.0, &config.news_feeds.1);
         let mut worker = Worker {
             events: events.clone(),
             reply: reply_tx,
             busy: busy.clone(),
+            interrupted: interrupted.clone(),
             tts,
             config,
             weather: Weather::new(&user_agent),
+            news,
+            lookup: Lookup::new(&user_agent),
+            live: HashSet::new(),
             transit,
             power,
             home_location,
@@ -287,6 +316,8 @@ impl AssistantProcessor {
             persona: None,
             prerender: VecDeque::new(),
             lead_turn: 0,
+            chat_turn: 0,
+            last_audio: None,
             room: None,
             warmed_prompt: String::new(),
         };
@@ -331,11 +362,16 @@ impl AssistantProcessor {
         }
         std::thread::Builder::new().name("assistant".into()).spawn(move || worker.run(rx))?;
         let hear_now = Arc::new(AtomicBool::new(false));
-        Ok(Self { ear, jobs, events, reply, busy, hear_now, was_busy: false, frame: 0, deaf_until: 0 })
+        Ok(Self { ear, jobs, events, reply, busy, hear_now, interrupted, was_busy: false, frame: 0, deaf_until: 0 })
     }
 
     pub fn handle(&self) -> AssistantHandle {
-        AssistantHandle { jobs: self.jobs.clone(), events: self.events.clone(), hear_now: self.hear_now.clone() }
+        AssistantHandle {
+            jobs: self.jobs.clone(),
+            events: self.events.clone(),
+            hear_now: self.hear_now.clone(),
+            interrupted: self.interrupted.clone(),
+        }
     }
 }
 
@@ -351,7 +387,17 @@ impl FrameProcessor for AssistantProcessor {
                 chunk.commit_all();
             }
         }
-        let busy = self.busy.load(Relaxed);
+        // Interrupted by a satellite's wake word: what is still being synthesized is dropped, and the
+        // request said over it must be heard.
+        let interrupted = self.interrupted.load(Relaxed);
+        if interrupted {
+            self.deaf_until = 0;
+            let queued = self.reply.slots();
+            if let Ok(chunk) = self.reply.read_chunk(queued) {
+                chunk.commit_all();
+            }
+        }
+        let busy = self.busy.load(Relaxed) && !interrupted;
         if busy || self.was_busy {
             let queued = (self.reply.slots() / FRAME_SAMPLES) as u64;
             self.deaf_until = self.deaf_until.max(self.frame + queued + DEAF_AFTER_REPLY_FRAMES);
@@ -446,9 +492,17 @@ const LEADS_POWER: &[&str] = &["Checking the electricity prices"];
 const LEADS_LIGHTS: &[&str] = &["Let me check the lights"];
 const LEADS_HOME: &[&str] = &["Let me see who's in"];
 const LEADS_THINK: &[&str] = &["Let me think"];
-const LEADS: &[&[&str]] = &[LEADS_WEATHER, LEADS_TRANSIT, LEADS_POWER, LEADS_LIGHTS, LEADS_HOME, LEADS_THINK];
+const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news"];
+const LEADS_LOOKUP: &[&str] = &["Let me look that up", "One moment"];
+const LEADS: &[&[&str]] =
+    &[LEADS_WEATHER, LEADS_TRANSIT, LEADS_POWER, LEADS_LIGHTS, LEADS_HOME, LEADS_THINK, LEADS_NEWS, LEADS_LOOKUP];
 
 /// "Checking the forecast, sir." or "Checking the forecast."
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
 fn lead_sentence(lead: &str, honorific: Option<&str>) -> String {
     match honorific {
         Some(h) => format!("{lead}, {h}."),
@@ -460,12 +514,19 @@ struct Worker {
     events: broadcast::Sender<AssistantEvent>,
     reply: rtrb::Producer<i16>,
     busy: Arc<AtomicBool>,
+    /// Set by a satellite when the wake word is said over an answer.
+    interrupted: Arc<AtomicBool>,
     tts: Box<dyn Tts>,
     config: AssistantConfig,
     weather: Weather,
     transit: Transit,
     /// Electricity prices; `None` outside Norway or without a price area.
     power: Option<Power>,
+    news: News,
+    lookup: Lookup,
+    /// Sentences of the answer being spoken that change daily without numbers (headlines): not
+    /// kept by the speech cache.
+    live: HashSet<String>,
     /// The home from the `address` setting.
     home_location: Option<Location>,
     jokes: Jokes,
@@ -500,6 +561,10 @@ struct Worker {
     /// Sentences still to render ahead of time.
     prerender: VecDeque<String>,
     lead_turn: usize,
+    /// Small talk answers take turns.
+    chat_turn: usize,
+    /// The current utterance's recording, for the unhandled log.
+    last_audio: Option<String>,
     /// Where the microphone is: the `room` setting, else the satellite's area.
     room: Option<String>,
     /// The system prompt the language model last saw. It holds the date and the room; a new one
@@ -575,9 +640,11 @@ impl Worker {
         // The utterance ends after a stretch of silence; the speaker stopped before it.
         let silence = Duration::from_secs_f32((vad::END_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
         self.speech_ended = ended.checked_sub(silence);
+        self.last_audio = None;
         if let Some(dir) = &self.config.dump_utterances {
-            if let Err(error) = save_wav(dir, "utterance", audio, SAMPLE_RATE) {
-                warn!(%error, "could not save utterance");
+            match save_wav(dir, "utterance", audio, SAMPLE_RATE) {
+                Ok(path) => self.last_audio = path.file_name().map(|n| n.to_string_lossy().into_owned()),
+                Err(error) => warn!(%error, "could not save utterance"),
             }
         }
         let Some(transcriber) = &mut self.transcriber else {
@@ -657,7 +724,12 @@ impl Worker {
                 | Intent::LightsStatus { .. }
                 | Intent::WhosHome(_)
                 | Intent::Briefing
+                | Intent::News
+                | Intent::Lookup(_)
+                | Intent::Calculate(_)
+                | Intent::Distance(_)
                 | Intent::Thanks
+                | Intent::SmallTalk(_)
                 | Intent::Cancel
                 | Intent::ShoppingList(ListCommand::Read)
         );
@@ -690,11 +762,21 @@ impl Worker {
     /// than end the run in silence, which sounds as if the device never woke.
     fn not_understood(&mut self, text: &str, audio: &[i16], ended: Instant, lang: Lang, start: Instant) {
         let Some(woken) = self.woken_at else {
+            if self.follow_up_until.is_some_and(|until| Instant::now() < until) {
+                self.unhandled(Reason::FollowUpIgnored, text, None);
+            }
             return;
         };
         let length = Duration::from_secs_f32(audio.len() as f32 / SAMPLE_RATE as f32);
         let began = ended.checked_sub(length);
         if length < WAKE_TAIL_LONGEST && began.is_none_or(|began| began < woken + WAKE_TAIL) {
+            return;
+        }
+        // A long stretch of words after a wake is the TV or a conversation, not a request: no reply
+        // over it.
+        if text.split_whitespace().count() > LONGEST_REQUEST_WORDS {
+            info!(text, "too long for a request; no reply");
+            self.unhandled(Reason::NotUnderstood, text, None);
             return;
         }
         info!(text, "not understood after the wake word");
@@ -703,6 +785,7 @@ impl Worker {
         } else {
             "Sorry, I didn't catch that."
         };
+        self.unhandled(Reason::NotUnderstood, text, Some(answer));
         self.busy.store(true, Relaxed);
         self.emit(AssistantEvent::Heard { text: text.to_owned() });
         self.say(answer.to_owned(), lang, start);
@@ -722,6 +805,7 @@ impl Worker {
     }
 
     fn answer(&mut self, text: &str, lang: Lang, start: Instant) {
+        self.interrupted.store(false, Relaxed);
         self.emit(AssistantEvent::Heard { text: text.to_owned() });
         // A slow answer (weather, departures) opens with a lead-in rendered ahead of time, which
         // plays while the data is fetched and its sentence synthesized.
@@ -746,6 +830,13 @@ impl Worker {
             return;
         };
         info!(request = text, answer, ?lang, after = ?start.elapsed(), "answering");
+        // The rules' own fallback, or a skill that could not do it ("Sorry, I couldn't find ...").
+        let fallback = ["Sorry, I can't help with that yet.", "Beklager, det kan jeg ikke hjelpe med ennå."];
+        if fallback.iter().any(|f| answer.starts_with(f)) {
+            self.unhandled(Reason::Unknown, text, Some(&answer));
+        } else if ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s) || answer.contains(&format!(". {s}"))) {
+            self.unhandled(Reason::Apologised, text, Some(&answer));
+        }
         self.history.push_back((Instant::now(), Turn { user: text.to_owned(), assistant: answer.clone() }));
         while self.history.len() > HISTORY_TURNS {
             self.history.pop_front();
@@ -764,6 +855,7 @@ impl Worker {
 
     /// Speaks an answer and opens the follow-up window.
     fn say(&mut self, answer: String, lang: Lang, start: Instant) {
+        self.interrupted.store(false, Relaxed);
         let answer = match &mut self.persona {
             Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
             _ => answer,
@@ -776,14 +868,28 @@ impl Worker {
 
     /// Audio goes to the speaker as it is synthesized, a sentence at a time.
     fn speak(&mut self, text: &str, lang: Lang, spoken: &mut Spoken) {
-        let (reply, events, tts) = (&mut self.reply, &self.events, &mut self.tts);
+        let (reply, events, tts, live, interrupted) =
+            (&mut self.reply, &self.events, &mut self.tts, &self.live, &self.interrupted);
         for sentence in text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {
-            let result = tts.speak(sentence, lang, &mut |pcm| {
+            if interrupted.load(Relaxed) {
+                info!("answer interrupted");
+                break;
+            }
+            let mut sink = |pcm: &[i16]| {
+                // The rest of the sentence being synthesized when the answer was interrupted.
+                if interrupted.load(Relaxed) {
+                    return;
+                }
                 spoken.first.get_or_insert_with(Instant::now);
                 spoken.samples += pcm.len();
                 push(reply, pcm);
                 let _ = events.send(AssistantEvent::Speech(pcm.into()));
-            });
+            };
+            let result = if live.contains(sentence) {
+                tts.speak_live(sentence, lang, &mut sink)
+            } else {
+                tts.speak(sentence, lang, &mut sink)
+            };
             if let Err(error) = result {
                 warn!(%error, "speech synthesis failed");
             }
@@ -792,6 +898,7 @@ impl Worker {
 
     fn finish(&mut self, spoken: Spoken, start: Instant) {
         self.woken_at = None;
+        self.live.clear();
         let seconds = spoken.samples as f32 / SAMPLE_RATE as f32;
         // `after_speech`: from the end of the speaker's words to the first audio of the answer.
         let after_speech = self.speech_ended.take().zip(spoken.first).map(|(ended, first)| first - ended);
@@ -813,10 +920,14 @@ impl Worker {
         if lang != Lang::English || !self.config.prerender || pending {
             return None;
         }
-        let leads = match intent::parse(text) {
+        // Several requests: the first one's lead-in.
+        let first = intent::split_commands(text).and_then(|parts| parts.into_iter().next());
+        let leads = match intent::parse(first.as_deref().unwrap_or(text)) {
             Intent::Weather { .. } => LEADS_WEATHER,
             Intent::Transit(_) => LEADS_TRANSIT,
             Intent::Power(_) => LEADS_POWER,
+            Intent::News => LEADS_NEWS,
+            Intent::Lookup(_) => LEADS_LOOKUP,
             Intent::LightsStatus { .. } => LEADS_LIGHTS,
             Intent::WhosHome(_) => LEADS_HOME,
             Intent::Unknown if self.config.llm.is_some() => LEADS_THINK,
@@ -833,6 +944,7 @@ impl Worker {
             LEADS.iter().flat_map(|leads| leads.iter().map(|l| lead_sentence(l, honorific))).collect();
         texts.extend(self.persona.as_ref().map(Persona::phrases).unwrap_or_default());
         texts.extend(Jokes::english().iter().map(|j| j.to_string()));
+        texts.extend(voice_assistant::smalltalk::all_english(self.config.wake.name()));
         texts.push("Sorry, I didn't catch that.".to_owned());
         let mut sentences: Vec<String> = texts
             .iter()
@@ -861,7 +973,12 @@ impl Worker {
 
     /// The spoken answer, or `None` to end the conversation quietly.
     fn compose(&mut self, text: &str, lang: Lang) -> Option<String> {
-        let intent = intent::parse(text);
+        let intent = match intent::parse(text) {
+            // A language model knows facts the opening of an article leaves out; it can still look
+            // things up with its tool.
+            Intent::Lookup(_) if self.config.llm.is_some() => Intent::Unknown,
+            intent => intent,
+        };
         // "Set a timer." "For how long?" "Ten minutes."
         if self.timers.awaiting_duration() {
             if let Some((answer, notices)) = self.timers.answer_pending(text, lang, Instant::now()) {
@@ -887,6 +1004,9 @@ impl Worker {
                 return Some(self.scene(&format!("{scene} in {text}"), lang));
             }
         }
+        if let Some(parts) = intent::split_commands(text) {
+            return self.several(&parts, lang);
+        }
         if intent == Intent::Unknown {
             // A script or scene said by its name alone: "movie time".
             if let Some(answer) = self.by_exact_name(text, lang) {
@@ -910,10 +1030,12 @@ impl Worker {
                     }
                     Ok(Decision::Say(answer)) => {
                         info!(took = ?start.elapsed(), "language model answered");
+                        self.unhandled(Reason::LanguageModel, text, Some(&answer));
                         return Some(answer);
                     }
                     Ok(Decision::Ignore) => {
                         info!(request = text, took = ?start.elapsed(), "language model: not meant for me");
+                        self.unhandled(Reason::LanguageModelIgnored, text, None);
                         return None;
                     }
                     Err(error) => warn!(%error, "language model failed; falling back to the rules"),
@@ -921,6 +1043,34 @@ impl Worker {
             }
         }
         self.act(intent, lang)
+    }
+
+    fn unhandled(&self, reason: Reason, heard: &str, answer: Option<&str>) {
+        if let Some(log) = &self.config.unhandled {
+            log.record(reason, heard, answer, self.last_audio.as_deref());
+        }
+    }
+
+    /// Several requests in one sentence, run in order; their answers one after another. A question
+    /// ("Which room?") stops there, since the reply to it is the next thing said.
+    fn several(&mut self, parts: &[String], lang: Lang) -> Option<String> {
+        info!(?parts, "several requests");
+        let mut answers = Vec::new();
+        for part in parts {
+            if let Some(answer) = self.act(intent::parse(part), lang) {
+                let question = answer.trim_end().ends_with('?');
+                // One "Okay," is enough: "Okay, the lights are on. Playing ..."
+                let answer = match answer.strip_prefix("Okay, ") {
+                    Some(rest) if !answers.is_empty() => capitalize(rest),
+                    _ => answer,
+                };
+                answers.push(answer);
+                if question {
+                    break;
+                }
+            }
+        }
+        (!answers.is_empty()).then(|| answers.join(" "))
     }
 
     /// Runs a recognised request; the spoken answer, or `None` to end quietly.
@@ -963,28 +1113,71 @@ impl Worker {
                     Ok(answer) => answer,
                     Err(error) => {
                         warn!(error = format!("{error:#}"), "electricity prices failed");
-                        if no { "Beklager, jeg får ikke hentet strømprisene." } else { "Sorry, I couldn't get the electricity prices." }.into()
+                        if no {
+                            "Beklager, jeg får ikke hentet strømprisene."
+                        } else {
+                            "Sorry, I couldn't get the electricity prices."
+                        }
+                        .into()
                     }
                 },
             },
             Intent::WhosHome(name) => self.whos_home(name.as_deref(), lang),
             Intent::Briefing => self.briefing(lang),
+            Intent::Lookup(topic) => match self.lookup.answer(&topic, lang) {
+                Ok(Some(answer)) => {
+                    // An article's sentences change rarely but are endless: not for the speech cache.
+                    let sentences = answer.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty());
+                    self.live.extend(sentences.map(str::to_owned));
+                    answer
+                }
+                Ok(None) if no => format!("Beklager, jeg fant ingenting om {topic}."),
+                Ok(None) => format!("Sorry, I couldn't find anything about {topic}."),
+                Err(error) => {
+                    warn!(error = format!("{error:#}"), "lookup failed");
+                    if no {
+                        "Beklager, jeg får ikke slått det opp nå."
+                    } else {
+                        "Sorry, I couldn't look that up right now."
+                    }
+                    .into()
+                }
+            },
+            Intent::News => match self.news.answer(lang) {
+                Ok(headlines) => {
+                    self.live.extend(headlines.live);
+                    headlines.text
+                }
+                Err(error) => {
+                    warn!(error = format!("{error:#}"), "news failed");
+                    if no {
+                        "Beklager, jeg får ikke hentet nyhetene nå."
+                    } else {
+                        "Sorry, I couldn't get the news right now."
+                    }
+                    .into()
+                }
+            },
             Intent::ShoppingList(command) => self.shopping_list(command, lang),
             Intent::Scene(request) => self.scene(&request, lang),
             Intent::Script(request) => self.script(&request, lang),
             Intent::Undo => self.undo(lang),
             Intent::Thanks if no => "Bare hyggelig.".into(),
             Intent::Thanks => "You're welcome.".into(),
+            Intent::SmallTalk(chat) => {
+                let answers = voice_assistant::smalltalk::answers(chat, lang, self.config.wake.name());
+                self.chat_turn = self.chat_turn.wrapping_add(1);
+                answers[self.chat_turn % answers.len()].clone()
+            }
             Intent::Cancel => return None,
-            Intent::Unknown if no => {
-                "Beklager, foreløpig kan jeg bare været, vitser, lyset, scener, musikk, timere, handlelista og avganger."
-                    .into()
-            }
-            Intent::Unknown => {
-                "Sorry, so far I can only do the weather, jokes, lights, scenes, music, timers, the shopping list and \
-                 departures."
-                    .into()
-            }
+            // Not a list of skills: it keeps growing, and the web page shows it.
+            Intent::Unknown if no => "Beklager, det kan jeg ikke hjelpe med ennå.".into(),
+            Intent::Unknown => "Sorry, I can't help with that yet.".into(),
+            Intent::Calculate(said) => match voice_assistant::calc::parse(&said) {
+                Some((said, value)) => voice_assistant::calc::answer(&said, value, lang),
+                None => return None,
+            },
+            Intent::Distance(query) => self.distance(&query, lang),
         })
     }
 
@@ -1182,12 +1375,39 @@ impl Worker {
                 }
             }
         }
-        if let Some(power) = &mut self.power {
-            if let Ok(answer) = power.answer(power::PowerQuery::Now, lang) {
-                parts.push(answer);
+        match self.news.briefing(lang) {
+            Ok(headlines) => {
+                self.live.extend(headlines.live);
+                parts.push(headlines.text);
             }
+            Err(error) => warn!(error = format!("{error:#}"), "no news for the briefing"),
         }
         parts.join(" ")
+    }
+
+    fn distance(&mut self, query: &voice_assistant::distance::Query, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let from = match &query.from {
+            Some(name) => self.weather.find(name),
+            None => Ok(self.home_location.clone()),
+        };
+        let places = from.and_then(|from| Ok((from, self.weather.find(&query.to)?)));
+        match places {
+            Ok((Some(from), Some(to))) => voice_assistant::distance::answer(&from, &to, lang),
+            Ok((None, _)) if query.from.is_none() && no => "Hvor fra? Si for eksempel fra Oslo til Bergen.".into(),
+            Ok((None, _)) if query.from.is_none() => "From where? Say, for example, from Oslo to Bergen.".into(),
+            Ok(_) if no => "Beklager, jeg fant ikke det stedet.".into(),
+            Ok(_) => "Sorry, I couldn't find that place.".into(),
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "place lookup failed");
+                if no {
+                    "Beklager, jeg får ikke slått opp stedet nå."
+                } else {
+                    "Sorry, I couldn't look up the place right now."
+                }
+                .into()
+            }
+        }
     }
 
     fn system_prompt(&self) -> String {
@@ -1510,7 +1730,12 @@ fn unreachable(error: &anyhow::Error, no: bool) -> String {
         .into()
 }
 
-pub(crate) fn save_wav(dir: &std::path::Path, kind: &str, audio: &[i16], rate: u32) -> anyhow::Result<()> {
+pub(crate) fn save_wav(
+    dir: &std::path::Path,
+    kind: &str,
+    audio: &[i16],
+    rate: u32,
+) -> anyhow::Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir)?;
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
     let path = dir.join(format!("{kind}-{stamp}.wav"));
@@ -1520,7 +1745,7 @@ pub(crate) fn save_wav(dir: &std::path::Path, kind: &str, audio: &[i16], rate: u
     audio.iter().try_for_each(|&s| writer.write_sample(s))?;
     writer.finalize()?;
     info!(path = %path.display(), "{kind} saved");
-    Ok(())
+    Ok(path)
 }
 
 fn push(reply: &mut rtrb::Producer<i16>, pcm: &[i16]) {

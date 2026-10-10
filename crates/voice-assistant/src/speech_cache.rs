@@ -84,6 +84,10 @@ impl Tts for CachedTts {
         }
         Ok(())
     }
+
+    fn speak_live(&mut self, text: &str, lang: Lang, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
+        self.inner.speak(text, lang, sink)
+    }
 }
 
 /// A stable hash for file names: the standard library's may change between Rust versions.

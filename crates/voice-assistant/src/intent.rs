@@ -4,6 +4,7 @@
 use crate::dialog::normalize;
 use crate::power::{self, PowerQuery};
 use crate::shopping::{self, ListCommand};
+use crate::smalltalk::Chat;
 use crate::timer::{self, TimerCommand};
 use crate::transit::{self, TransitQuery};
 
@@ -50,6 +51,14 @@ pub enum Intent {
     WhosHome(Option<String>),
     /// "Good morning": the time, the weather at home and the shopping list in a few sentences.
     Briefing,
+    /// "What's the news?": the latest headlines.
+    News,
+    /// "Who is ...", "what is ...", "tell me about ...": a topic to look up on Wikipedia.
+    Lookup(String),
+    /// "What's 5 plus 5": the sum as said, worked out when answering.
+    Calculate(String),
+    /// "How far is it from Oslo to Shanghai?"
+    Distance(crate::distance::Query),
     /// The shopping list (a Home Assistant to-do list).
     ShoppingList(ListCommand),
     /// A Home Assistant scene; the request text, resolved later ("set the bedroom to relax").
@@ -59,6 +68,8 @@ pub enum Intent {
     /// Reverse the last action: "reverse that", "undo", "switch it back".
     Undo,
     Thanks,
+    /// "How are you?", "who are you?", "good night".
+    SmallTalk(Chat),
     /// "Never mind", "cancel": end the conversation without an answer.
     Cancel,
     Unknown,
@@ -239,14 +250,25 @@ fn whos_home(words: &[String]) -> Option<Option<String>> {
 }
 
 /// "Good morning" on its own, or asking for the briefing.
+/// "What's the news?", "latest headlines", "hva er nyhetene?"; not "good news" in passing.
+fn is_news(words: &[String]) -> bool {
+    let news = ["news", "headlines", "nyheter", "nyhetene", "nyhetsoppdatering"];
+    words.iter().any(|w| news.contains(&w.as_str())) && !words.windows(2).any(|p| p[0] == "good" && p[1] == "news")
+}
+
 fn is_briefing(words: &[String]) -> bool {
     let phrase: Vec<&str> = words
         .iter()
         .map(String::as_str)
         .filter(|w| !["and", "hey", "hi", "ok", "og", "hei", "to", "you", "deg"].contains(w))
         .collect();
-    matches!(phrase.as_slice(), ["good", "morning"] | ["god", "morgen"] | ["morning"] | ["morn"])
-        || words.iter().any(|w| w == "briefing")
+    matches!(
+        phrase.as_slice(),
+        ["good", "morning" | "afternoon" | "evening"]
+            | ["god", "morgen" | "kveld" | "ettermiddag"]
+            | ["morning"]
+            | ["morn"]
+    ) || words.iter().any(|w| w == "briefing")
         || words.windows(2).any(|p| (p[0] == "brief" && p[1] == "me") || (p[0] == "dagens" && p[1] == "oversikt"))
 }
 
@@ -401,13 +423,18 @@ fn music(words: &[String]) -> Option<MusicCommand> {
 /// "What time is it (now)?", "what's the time", "hva/hvor mye er klokka (nå)?"; the local time
 /// only: anything more ("in Tokyo", "does the shop close") is left to the language model.
 fn is_time_question(words: &[String]) -> bool {
-    let phrase = words.iter().map(String::as_str).filter(|w| !["now", "please", "right", "nå", "da"].contains(w));
-    let phrase: Vec<&str> = phrase.collect();
+    // Words around the question that do not change it: "what's the time today", "tell me the time please".
+    let filler = ["now", "please", "right", "today", "currently", "exactly", "again", "here", "nå", "da", "egentlig"];
+    let phrase: Vec<&str> = words.iter().map(String::as_str).filter(|w| !filler.contains(w)).collect();
     matches!(
         phrase.as_slice(),
         ["what", "time", "is", "it"]
-            | ["what's", "the", "time"]
+            | ["what's" | "whats", "the", "time"]
             | ["what", "is", "the", "time"]
+            | ["tell", "me", "the", "time"]
+            | ["do", "you", "know", "what", "time", "it", "is"]
+            | ["the", "time"]
+            | ["time"]
             | ["hva", "er", "klokka" | "klokken"]
             | ["hvor", "mye", "er", "klokka" | "klokken"]
     )
@@ -482,7 +509,22 @@ const LIGHT_WORDS: &[&str] =
     &["light", "lights", "lamp", "lamps", "lys", "lyset", "lysene", "lampe", "lampen", "lampene"];
 
 pub fn parse(text: &str) -> Intent {
+    // A lookup only when no skill takes the words: "what is the weather" stays the weather.
+    match rules(text) {
+        Intent::Unknown => crate::lookup::topic(text).map_or(Intent::Unknown, Intent::Lookup),
+        intent => intent,
+    }
+}
+
+fn rules(text: &str) -> Intent {
     let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    // Whole short phrases only, so it takes nothing from the skills ("how are the lights" is not it).
+    if let Some(chat) = crate::smalltalk::parse(&words) {
+        return Intent::SmallTalk(chat);
+    }
+    if let Some((said, _)) = crate::calc::parse(text) {
+        return Intent::Calculate(said);
+    }
     // Timers before music ("pause the timer"), except for a song called "Timer".
     let play = words.iter().find(|w| !POLITE.contains(&w.as_str())).is_some_and(|w| PLAY_WORDS.contains(&w.as_str()));
     if !play {
@@ -502,6 +544,12 @@ pub fn parse(text: &str) -> Intent {
         }
         if is_briefing(&words) {
             return Intent::Briefing;
+        }
+        if is_news(&words) {
+            return Intent::News;
+        }
+        if let Some(query) = crate::distance::parse(text) {
+            return Intent::Distance(query);
         }
     }
     // Then music: song titles contain every other kind of word ("Here Comes the Rain Again").
@@ -589,6 +637,46 @@ pub fn parse(text: &str) -> Intent {
     Intent::Weather { place, day }
 }
 
+/// Words a second request in one sentence starts with ("... and play Careless Whisper"). Anything
+/// else after "and" belongs to the first request ("add milk and eggs", "the kitchen and hall lights").
+const COMMAND_STARTS: &[&str] = &[
+    "turn", "switch", "play", "pause", "resume", "stop", "skip", "set", "start", "dim", "make", "add", "remind",
+    "tell", "what", "what's", "whats", "when", "when's", "how", "how's", "is", "are", "who", "who's", "cancel", "run",
+    "activate", "put", "lower", "raise", "skru", "slå", "spill", "sett", "legg", "hva", "når", "hvordan", "fortell",
+];
+
+/// Two or more requests in one sentence: "turn on the living room lights and play Careless Whisper",
+/// "what's the weather, then when's the next bus". Split only where the next part starts with a
+/// command word and every part is a request on its own; otherwise `None`.
+pub fn split_commands(text: &str) -> Option<Vec<String>> {
+    let mut parts: Vec<Vec<&str>> = vec![Vec::new()];
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut i = 0;
+    while i < words.len() {
+        let word = normalize(words[i]);
+        // "and", "and then", "then", "og", "og så": a new part when a command word follows.
+        let joiner = match word.as_str() {
+            "and" | "og" if words.get(i + 1).is_some_and(|w| ["then", "så"].contains(&normalize(w).as_str())) => 2,
+            "and" | "then" | "og" => 1,
+            _ => 0,
+        };
+        let next = words.get(i + joiner).map(|w| normalize(w)).unwrap_or_default();
+        if joiner > 0 && !parts.last().is_some_and(Vec::is_empty) && COMMAND_STARTS.contains(&next.as_str()) {
+            parts.push(Vec::new());
+            i += joiner;
+            continue;
+        }
+        parts.last_mut().unwrap().push(words[i]);
+        i += 1;
+    }
+    if parts.len() < 2 {
+        return None;
+    }
+    let parts: Vec<String> = parts.iter().map(|p| p.join(" ").trim_end_matches([',', ';']).trim().to_owned()).collect();
+    let requests = parts.iter().all(|p| !matches!(parse(p), Intent::Unknown | Intent::Thanks | Intent::Cancel));
+    requests.then_some(parts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,6 +732,19 @@ mod tests {
         assert_eq!(parse("undo"), Intent::Undo);
         assert_eq!(parse("switch it back"), Intent::Undo);
         assert_eq!(parse("Thank you."), Intent::Thanks);
+        assert_eq!(parse("Good evening."), Intent::Briefing);
+        assert_eq!(parse("God kveld"), Intent::Briefing);
+        assert_eq!(parse("What's the latest news?"), Intent::News);
+        assert_eq!(parse("Who is Jonas Gahr Støre?"), Intent::Lookup("Jonas Gahr Støre".into()));
+        assert_eq!(parse("What is the weather tomorrow?"), Intent::Weather { place: None, day: Day::Tomorrow });
+        assert_eq!(parse("what's the time"), Intent::Time);
+        assert_eq!(parse("What's the time today?"), Intent::Time);
+        assert_eq!(parse("tell me the time please"), Intent::Time);
+        assert_eq!(parse("What's 5 plus 5?"), Intent::Calculate("5 plus 5".into()));
+        assert!(matches!(parse("How long is it from Oslo to Shanghai?"), Intent::Distance(_)));
+        assert_eq!(parse("Can you look up Edvard Munch?"), Intent::Lookup("Edvard Munch".into()));
+        assert_eq!(parse("read me the headlines"), Intent::News);
+        assert_eq!(parse("Hva er nyhetene?"), Intent::News);
         assert_eq!(parse("thanks a lot"), Intent::Thanks);
         assert_eq!(parse("Never mind."), Intent::Cancel);
         assert_eq!(parse("cancel"), Intent::Cancel);
@@ -801,5 +902,31 @@ mod tests {
     fn other_requests_are_unknown() {
         assert_eq!(parse("what's the capital of France"), Intent::Unknown);
         assert_eq!(parse(""), Intent::Unknown);
+    }
+
+    #[test]
+    fn splits_several_requests() {
+        let split = |t: &str| split_commands(t);
+        assert_eq!(
+            split("Turn on the light in the living room and play Careless Whisper").unwrap(),
+            ["Turn on the light in the living room", "play Careless Whisper"]
+        );
+        assert_eq!(
+            split("what's the weather, and then when's the next bus?").unwrap(),
+            ["what's the weather", "when's the next bus?"]
+        );
+        assert_eq!(split("turn off the kitchen lights then set a timer for 10 minutes").unwrap().len(), 2);
+        assert_eq!(split("skru på lyset i stua og spill Beatles").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn keeps_one_request_whole() {
+        assert_eq!(split_commands("add milk and eggs to the shopping list"), None);
+        assert_eq!(split_commands("turn on the kitchen and hallway lights"), None);
+        assert_eq!(split_commands("play Simon and Garfunkel"), None);
+        assert_eq!(split_commands("play rock and roll"), None);
+        assert_eq!(split_commands("what's the weather"), None);
+        // The second part is no request on its own.
+        assert_eq!(split_commands("turn on the lights and what"), None);
     }
 }
