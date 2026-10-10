@@ -10,6 +10,7 @@ pub mod jokes;
 pub mod kokoro;
 pub mod lang;
 pub mod llm;
+pub mod lookup;
 pub mod music;
 pub mod names;
 pub mod news;

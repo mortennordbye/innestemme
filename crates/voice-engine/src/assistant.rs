@@ -25,6 +25,7 @@ use voice_assistant::intent::{self, Day, Intent, LightLevel};
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::llm::{self, Decision, Llm, Turn};
+use voice_assistant::lookup::Lookup;
 use voice_assistant::music::Player;
 use voice_assistant::news::News;
 use voice_assistant::persona::Persona;
@@ -281,6 +282,7 @@ impl AssistantProcessor {
             config,
             weather: Weather::new(&user_agent),
             news,
+            lookup: Lookup::new(&user_agent),
             live: HashSet::new(),
             transit,
             power,
@@ -466,8 +468,9 @@ const LEADS_LIGHTS: &[&str] = &["Let me check the lights"];
 const LEADS_HOME: &[&str] = &["Let me see who's in"];
 const LEADS_THINK: &[&str] = &["Let me think"];
 const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news"];
+const LEADS_LOOKUP: &[&str] = &["Let me look that up", "One moment"];
 const LEADS: &[&[&str]] =
-    &[LEADS_WEATHER, LEADS_TRANSIT, LEADS_POWER, LEADS_LIGHTS, LEADS_HOME, LEADS_THINK, LEADS_NEWS];
+    &[LEADS_WEATHER, LEADS_TRANSIT, LEADS_POWER, LEADS_LIGHTS, LEADS_HOME, LEADS_THINK, LEADS_NEWS, LEADS_LOOKUP];
 
 /// "Checking the forecast, sir." or "Checking the forecast."
 fn capitalize(text: &str) -> String {
@@ -493,6 +496,7 @@ struct Worker {
     /// Electricity prices; `None` outside Norway or without a price area.
     power: Option<Power>,
     news: News,
+    lookup: Lookup,
     /// Sentences of the answer being spoken that change daily without numbers (headlines): not
     /// kept by the speech cache.
     live: HashSet<String>,
@@ -694,6 +698,7 @@ impl Worker {
                 | Intent::WhosHome(_)
                 | Intent::Briefing
                 | Intent::News
+                | Intent::Lookup(_)
                 | Intent::Thanks
                 | Intent::SmallTalk(_)
                 | Intent::Cancel
@@ -882,6 +887,7 @@ impl Worker {
             Intent::Transit(_) => LEADS_TRANSIT,
             Intent::Power(_) => LEADS_POWER,
             Intent::News => LEADS_NEWS,
+            Intent::Lookup(_) => LEADS_LOOKUP,
             Intent::LightsStatus { .. } => LEADS_LIGHTS,
             Intent::WhosHome(_) => LEADS_HOME,
             Intent::Unknown if self.config.llm.is_some() => LEADS_THINK,
@@ -927,7 +933,12 @@ impl Worker {
 
     /// The spoken answer, or `None` to end the conversation quietly.
     fn compose(&mut self, text: &str, lang: Lang) -> Option<String> {
-        let intent = intent::parse(text);
+        let intent = match intent::parse(text) {
+            // A language model knows facts the opening of an article leaves out; it can still look
+            // things up with its tool.
+            Intent::Lookup(_) if self.config.llm.is_some() => Intent::Unknown,
+            intent => intent,
+        };
         // "Set a timer." "For how long?" "Ten minutes."
         if self.timers.awaiting_duration() {
             if let Some((answer, notices)) = self.timers.answer_pending(text, lang, Instant::now()) {
@@ -1068,6 +1079,20 @@ impl Worker {
             },
             Intent::WhosHome(name) => self.whos_home(name.as_deref(), lang),
             Intent::Briefing => self.briefing(lang),
+            Intent::Lookup(topic) => match self.lookup.answer(&topic, lang) {
+                Ok(Some(answer)) => {
+                    // An article's sentences change rarely but are endless: not for the speech cache.
+                    let sentences = answer.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty());
+                    self.live.extend(sentences.map(str::to_owned));
+                    answer
+                }
+                Ok(None) if no => format!("Beklager, jeg fant ingenting om {topic}."),
+                Ok(None) => format!("Sorry, I couldn't find anything about {topic}."),
+                Err(error) => {
+                    warn!(error = format!("{error:#}"), "lookup failed");
+                    if no { "Beklager, jeg får ikke slått det opp nå." } else { "Sorry, I couldn't look that up right now." }.into()
+                }
+            },
             Intent::News => match self.news.answer(lang) {
                 Ok(headlines) => {
                     self.live.extend(headlines.live);

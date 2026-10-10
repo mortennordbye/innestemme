@@ -53,6 +53,8 @@ pub enum Intent {
     Briefing,
     /// "What's the news?": the latest headlines.
     News,
+    /// "Who is ...", "what is ...", "tell me about ...": a topic to look up on Wikipedia.
+    Lookup(String),
     /// The shopping list (a Home Assistant to-do list).
     ShoppingList(ListCommand),
     /// A Home Assistant scene; the request text, resolved later ("set the bedroom to relax").
@@ -256,8 +258,13 @@ fn is_briefing(words: &[String]) -> bool {
         .map(String::as_str)
         .filter(|w| !["and", "hey", "hi", "ok", "og", "hei", "to", "you", "deg"].contains(w))
         .collect();
-    matches!(phrase.as_slice(), ["good", "morning"] | ["god", "morgen"] | ["morning"] | ["morn"])
-        || words.iter().any(|w| w == "briefing")
+    matches!(
+        phrase.as_slice(),
+        ["good", "morning" | "afternoon" | "evening"]
+            | ["god", "morgen" | "kveld" | "ettermiddag"]
+            | ["morning"]
+            | ["morn"]
+    ) || words.iter().any(|w| w == "briefing")
         || words.windows(2).any(|p| (p[0] == "brief" && p[1] == "me") || (p[0] == "dagens" && p[1] == "oversikt"))
 }
 
@@ -493,6 +500,14 @@ const LIGHT_WORDS: &[&str] =
     &["light", "lights", "lamp", "lamps", "lys", "lyset", "lysene", "lampe", "lampen", "lampene"];
 
 pub fn parse(text: &str) -> Intent {
+    // A lookup only when no skill takes the words: "what is the weather" stays the weather.
+    match rules(text) {
+        Intent::Unknown => crate::lookup::topic(text).map_or(Intent::Unknown, Intent::Lookup),
+        intent => intent,
+    }
+}
+
+fn rules(text: &str) -> Intent {
     let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
     // Whole short phrases only, so it takes nothing from the skills ("how are the lights" is not it).
     if let Some(chat) = crate::smalltalk::parse(&words) {
@@ -702,7 +717,12 @@ mod tests {
         assert_eq!(parse("undo"), Intent::Undo);
         assert_eq!(parse("switch it back"), Intent::Undo);
         assert_eq!(parse("Thank you."), Intent::Thanks);
+        assert_eq!(parse("Good evening."), Intent::Briefing);
+        assert_eq!(parse("God kveld"), Intent::Briefing);
         assert_eq!(parse("What's the latest news?"), Intent::News);
+        assert_eq!(parse("Who is Jonas Gahr Støre?"), Intent::Lookup("Jonas Gahr Støre".into()));
+        assert_eq!(parse("What is the weather tomorrow?"), Intent::Weather { place: None, day: Day::Tomorrow });
+        assert_eq!(parse("what's the time"), Intent::Time);
         assert_eq!(parse("read me the headlines"), Intent::News);
         assert_eq!(parse("Hva er nyhetene?"), Intent::News);
         assert_eq!(parse("thanks a lot"), Intent::Thanks);
