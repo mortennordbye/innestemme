@@ -74,8 +74,8 @@ pub struct AssistantConfig {
     pub transit_stops: Vec<String>,
     /// Contact (email or URL) for the User-Agent that MET Norway asks for.
     pub contact: Option<String>,
-    /// RSS feeds for headlines: English, Norwegian.
-    pub news_feeds: (String, String),
+    /// RSS feeds for headlines, `Name=URL` or a URL: English, Norwegian.
+    pub news_feeds: (Vec<String>, Vec<String>),
     /// Norwegian electricity price area (NO1-NO5); guessed from the address when unset.
     pub price_area: Option<String>,
     /// Home Assistant base URL and long-lived access token, for lights.
@@ -1294,11 +1294,6 @@ impl Worker {
                 if !answer.contains("empty") && !answer.contains("tom") {
                     parts.push(answer);
                 }
-            }
-        }
-        if let Some(power) = &mut self.power {
-            if let Ok(answer) = power.answer(power::PowerQuery::Now, lang) {
-                parts.push(answer);
             }
         }
         match self.news.briefing(lang) {

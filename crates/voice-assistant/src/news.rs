@@ -1,26 +1,37 @@
-//! The latest headlines from an RSS feed (BBC News in English, NRK in Norwegian by default), for
-//! "what's the news?" and the morning briefing. Headlines are live data: they are synthesized every
-//! time and never kept by the speech cache.
+//! The latest headlines from RSS feeds, for "what's the news?" and the morning briefing: by default
+//! BBC News for the world and News in English for Norway (an English voice cannot read NRK's
+//! Norwegian), NRK in Norwegian. Headlines are live data: synthesized every time, never kept by the
+//! speech cache.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use tracing::warn;
 
 use crate::lang::Lang;
 
-pub const ENGLISH_FEED: &str = "https://feeds.bbci.co.uk/news/rss.xml";
-pub const NORWEGIAN_FEED: &str = "https://www.nrk.no/toppsaker.rss";
-/// Headlines read out; more is a news broadcast, not an answer.
-const HEADLINES: usize = 3;
+/// Feeds as `Name=URL`; the name is how the source is introduced ("From Norway: ...").
+pub const ENGLISH_FEEDS: &[&str] =
+    &["BBC News=https://feeds.bbci.co.uk/news/rss.xml", "Norway=https://www.newsinenglish.no/feed/"];
+pub const NORWEGIAN_FEEDS: &[&str] = &["NRK=https://www.nrk.no/toppsaker.rss"];
+/// Headlines read out in all; more is a news broadcast, not an answer.
+const HEADLINES: usize = 4;
 /// Feeds change every few minutes at most; a briefing and a question soon after reuse one fetch.
 const CACHE: Duration = Duration::from_secs(600);
 
 pub struct News {
     agent: ureq::Agent,
-    english: String,
-    norwegian: String,
+    english: Vec<Source>,
+    norwegian: Vec<Source>,
     cache: HashMap<String, (Instant, Feed)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Source {
+    /// From the setting; the feed's own title when it gives none.
+    name: Option<String>,
+    url: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,64 +48,100 @@ pub struct Headlines {
 }
 
 impl News {
-    pub fn new(user_agent: &str, english: &str, norwegian: &str) -> Self {
+    /// Feeds as `Name=URL` or a bare URL.
+    pub fn new(user_agent: &str, english: &[String], norwegian: &[String]) -> Self {
         Self {
             agent: crate::geo::agent(user_agent),
-            english: english.to_owned(),
-            norwegian: norwegian.to_owned(),
+            english: english.iter().map(|f| source(f)).collect(),
+            norwegian: norwegian.iter().map(|f| source(f)).collect(),
             cache: HashMap::new(),
         }
     }
 
-    /// "Here are the latest headlines from BBC News. ..."
+    /// "Here are the latest headlines. From BBC News: ... From Norway: ..."
     pub fn answer(&mut self, lang: Lang) -> Result<Headlines> {
-        let feed = self.feed(lang)?;
-        let lead = if lang == Lang::Norwegian {
-            format!("Her er de siste nyhetene fra {}.", feed.name)
-        } else {
-            format!("Here are the latest headlines from {}.", feed.name)
-        };
-        Ok(headlines(lead, &feed.headlines))
+        let lead = if lang == Lang::Norwegian { "Her er de siste nyhetene." } else { "Here are the latest headlines." };
+        self.read(lead, lang)
     }
 
-    /// The briefing's part: "In the news: ..."
+    /// The briefing's part: "In the news. From BBC News: ..."
     pub fn briefing(&mut self, lang: Lang) -> Result<Headlines> {
-        let feed = self.feed(lang)?;
-        let lead = if lang == Lang::Norwegian { "I nyhetene:" } else { "In the news:" };
-        Ok(headlines(lead.to_owned(), &feed.headlines))
+        self.read(if lang == Lang::Norwegian { "I nyhetene." } else { "In the news." }, lang)
     }
 
-    fn feed(&mut self, lang: Lang) -> Result<Feed> {
-        let url = if lang == Lang::Norwegian { &self.norwegian } else { &self.english }.clone();
-        if let Some((at, feed)) = self.cache.get(&url) {
+    /// The headlines shared between the feeds that answer; a feed that fails is left out.
+    fn read(&mut self, lead: &str, lang: Lang) -> Result<Headlines> {
+        let sources = if lang == Lang::Norwegian { self.norwegian.clone() } else { self.english.clone() };
+        let feeds: Vec<Feed> = sources
+            .iter()
+            .filter_map(|source| {
+                self.feed(source).inspect_err(|error| warn!(error = format!("{error:#}"), "news feed failed")).ok()
+            })
+            .collect();
+        if feeds.is_empty() {
+            bail!("no news feed answered");
+        }
+        let each = (HEADLINES / feeds.len()).max(1);
+        let from = if lang == Lang::Norwegian { "Fra" } else { "From" };
+        let mut said = Vec::new();
+        for feed in &feeds {
+            for (i, headline) in feed.headlines.iter().take(each).enumerate() {
+                let headline = sentence(headline);
+                // Only with several sources is it worth saying where each comes from.
+                said.push(if i == 0 && feeds.len() > 1 {
+                    format!("{from} {}: {headline}", feed.name)
+                } else {
+                    headline
+                });
+            }
+        }
+        // Speech goes a sentence at a time, so "U.S. talks resume." is two pieces: both are live.
+        let live = said
+            .iter()
+            .flat_map(|h| h.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()))
+            .map(str::to_owned)
+            .collect();
+        let text = std::iter::once(lead.to_owned()).chain(said).collect::<Vec<_>>().join(" ");
+        Ok(Headlines { text, live })
+    }
+
+    fn feed(&mut self, source: &Source) -> Result<Feed> {
+        if let Some((at, feed)) = self.cache.get(&source.url) {
             if at.elapsed() < CACHE {
                 return Ok(feed.clone());
             }
         }
         let xml = self
             .agent
-            .get(&url)
+            .get(&source.url)
             .call()
             .and_then(|mut response| response.body_mut().read_to_string())
-            .with_context(|| format!("fetching {url}"))?;
-        let feed = parse(&xml);
+            .with_context(|| format!("fetching {}", source.url))?;
+        let mut feed = parse(&xml);
         if feed.headlines.is_empty() {
-            bail!("{url}: no headlines");
+            bail!("{}: no headlines", source.url);
         }
-        self.cache.insert(url, (Instant::now(), feed.clone()));
+        if let Some(name) = &source.name {
+            feed.name = name.clone();
+        }
+        self.cache.insert(source.url.clone(), (Instant::now(), feed.clone()));
         Ok(feed)
     }
 }
 
-fn headlines(lead: String, headlines: &[String]) -> Headlines {
-    let live: Vec<String> = headlines.iter().take(HEADLINES).map(|h| sentence(h)).collect();
-    let text = std::iter::once(lead).chain(live.iter().cloned()).collect::<Vec<_>>().join(" ");
-    Headlines { text, live }
+/// `Name=URL` or a bare URL.
+fn source(setting: &str) -> Source {
+    match setting.split_once('=') {
+        Some((name, url)) if !name.contains("://") => {
+            Source { name: Some(name.trim().to_owned()), url: url.trim().to_owned() }
+        }
+        _ => Source { name: None, url: setting.trim().to_owned() },
+    }
 }
 
-/// A headline as one spoken sentence: closing punctuation, and no full stop inside to split it.
+/// A headline as spoken: with closing punctuation.
 fn sentence(headline: &str) -> String {
-    let text = headline.trim().replace(". ", ", ");
+    let text = headline.trim().to_owned();
     if text.ends_with(['.', '?', '!']) {
         text
     } else {
@@ -187,17 +234,17 @@ mod tests {
     }
 
     #[test]
-    fn three_headlines_as_sentences() {
-        let h = headlines("In the news:".into(), &parse(RSS).headlines);
-        assert_eq!(
-            h.live,
-            [
-                "Storm brings flooding to coastal towns.",
-                "Talks resume in Geneva & Vienna.",
-                "Who won? The final in 3 minutes."
-            ]
-        );
-        assert!(h.text.starts_with("In the news: Storm brings"));
+    fn headlines_are_sentences() {
+        assert_eq!(sentence("Storm brings flooding"), "Storm brings flooding.");
+        assert_eq!(sentence("Who won? The final"), "Who won? The final.");
+        assert_eq!(sentence("U.S. talks resume"), "U.S. talks resume.");
+    }
+
+    #[test]
+    fn feeds_are_named_or_bare() {
+        assert_eq!(source("Norway=https://x.no/feed/").name.as_deref(), Some("Norway"));
+        assert_eq!(source("https://x.no/feed?a=b").name, None);
+        assert_eq!(source("https://x.no/feed?a=b").url, "https://x.no/feed?a=b");
     }
 
     #[test]

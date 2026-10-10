@@ -19,6 +19,8 @@ const SHORT_WORDS: usize = 2;
 const SHORT_QUESTION_WORDS: usize = 4;
 /// How often an answer gets a remark, when one fits.
 const QUIP_CHANCE: f64 = 0.4;
+/// Longer answers (a briefing) get no remark: it would land after the last item, not the one it is about.
+const QUIP_MAX_SENTENCES: usize = 3;
 /// The first answer after this long may open with "Good evening".
 const GREETING_GAP: Duration = Duration::from_secs(3 * 3600);
 const GREETING_CHANCE: f64 = 0.5;
@@ -79,8 +81,12 @@ impl Persona {
             18..=23 => Some("Good evening"),
             _ => None,
         };
+        // The briefing opens with its own greeting.
+        let greets = ["Good morning", "Good afternoon", "Good evening"].iter().any(|g| answer.starts_with(g));
         let styled = match greeting {
-            Some(greeting) if long_quiet && !answer.ends_with('?') && self.rng.random_bool(GREETING_CHANCE) => {
+            Some(greeting)
+                if long_quiet && !greets && !answer.ends_with('?') && self.rng.random_bool(GREETING_CHANCE) =>
+            {
                 format!("{greeting}, {}. {}", self.honorific, plain(answer))
             }
             _ => self.addressed(answer),
@@ -161,6 +167,9 @@ impl Persona {
 
     /// Now and then a remark that fits the answer, never the same one twice running.
     fn quip(&mut self, answer: &str) -> Option<&'static str> {
+        if answer.split_inclusive(['.', '?', '!']).filter(|s| !s.trim().is_empty()).count() > QUIP_MAX_SENTENCES {
+            return None;
+        }
         let lower = answer.to_lowercase();
         let (_, quips) = QUIPS.iter().find(|(words, _)| words.iter().any(|w| lower.contains(w)))?;
         if !self.rng.random_bool(QUIP_CHANCE) {
@@ -227,6 +236,18 @@ mod tests {
 
     fn sir_once(text: &str) -> bool {
         text.matches("sir").count() == 1
+    }
+
+    #[test]
+    fn a_briefing_greets_once_and_has_no_remark() {
+        let briefing =
+            "Good evening! It's 18:02. It's 4 degrees and rain in Oslo. In the news. Peace Prize reaction rolls in.";
+        for seed in 0..50 {
+            // A fresh persona has been quiet long enough to greet.
+            let styled = Persona::with_seed("sir", seed).style(briefing, 18);
+            assert!(styled.starts_with("Good evening, sir! It's 18:02."), "{styled}");
+            assert!(styled.ends_with("Peace Prize reaction rolls in."), "{styled}");
+        }
     }
 
     #[test]
