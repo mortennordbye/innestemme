@@ -46,6 +46,8 @@ const PERSONAL: &[&str] = &[
     "min", "vi", "vår",
 ];
 const ARTICLES: &[&str] = &["a", "an", "the", "en", "et", "ei"];
+const POLITE: &[&str] =
+    &["can", "could", "would", "will", "you", "please", "jarvis", "kan", "du", "vær", "så", "snill"];
 /// "The capital of France", "the population of Norway": a fact about a topic, which an article's
 /// opening rarely states. Left to a language model.
 const ATTRIBUTES: &[&str] = &[
@@ -82,9 +84,11 @@ const ATTRIBUTES: &[&str] = &[
 /// The topic of a lookup question, if `text` is one.
 pub fn topic(text: &str) -> Option<String> {
     let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
-    let joined = words.join(" ");
+    // "Can you look up ...", "please tell me about ...".
+    let polite = words.iter().take_while(|w| POLITE.contains(&w.as_str())).count();
+    let joined = words[polite..].join(" ");
     let opening = OPENINGS.iter().find(|o| joined.starts_with(&format!("{o} ")))?;
-    let skip = opening.split(' ').count();
+    let skip = polite + opening.split(' ').count();
     // The topic keeps its original spelling ("Jonas Gahr Støre"), without the closing "?".
     let original: Vec<&str> = text.split_whitespace().skip(skip).collect();
     let mut topic: Vec<&str> = original.iter().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric())).collect();
@@ -92,7 +96,9 @@ pub fn topic(text: &str) -> Option<String> {
     while topic.first().is_some_and(|w| ARTICLES.contains(&w.to_lowercase().as_str())) {
         topic.remove(0);
     }
-    if topic.is_empty() || topic.iter().any(|w| PERSONAL.contains(&w.to_lowercase().as_str())) {
+    // "5 plus 5" is a sum, "2024" a year: not topics to read an article on.
+    let numeric = topic.first().is_some_and(|w| w.chars().next().is_some_and(|c| c.is_ascii_digit()));
+    if topic.is_empty() || numeric || topic.iter().any(|w| PERSONAL.contains(&w.to_lowercase().as_str())) {
         return None;
     }
     let lower: Vec<String> = topic.iter().map(|w| w.to_lowercase()).collect();

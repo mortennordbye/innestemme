@@ -55,6 +55,10 @@ pub enum Intent {
     News,
     /// "Who is ...", "what is ...", "tell me about ...": a topic to look up on Wikipedia.
     Lookup(String),
+    /// "What's 5 plus 5": the sum as said, worked out when answering.
+    Calculate(String),
+    /// "How far is it from Oslo to Shanghai?"
+    Distance(crate::distance::Query),
     /// The shopping list (a Home Assistant to-do list).
     ShoppingList(ListCommand),
     /// A Home Assistant scene; the request text, resolved later ("set the bedroom to relax").
@@ -513,6 +517,9 @@ fn rules(text: &str) -> Intent {
     if let Some(chat) = crate::smalltalk::parse(&words) {
         return Intent::SmallTalk(chat);
     }
+    if let Some((said, _)) = crate::calc::parse(text) {
+        return Intent::Calculate(said);
+    }
     // Timers before music ("pause the timer"), except for a song called "Timer".
     let play = words.iter().find(|w| !POLITE.contains(&w.as_str())).is_some_and(|w| PLAY_WORDS.contains(&w.as_str()));
     if !play {
@@ -535,6 +542,9 @@ fn rules(text: &str) -> Intent {
         }
         if is_news(&words) {
             return Intent::News;
+        }
+        if let Some(query) = crate::distance::parse(text) {
+            return Intent::Distance(query);
         }
     }
     // Then music: song titles contain every other kind of word ("Here Comes the Rain Again").
@@ -723,6 +733,9 @@ mod tests {
         assert_eq!(parse("Who is Jonas Gahr Støre?"), Intent::Lookup("Jonas Gahr Støre".into()));
         assert_eq!(parse("What is the weather tomorrow?"), Intent::Weather { place: None, day: Day::Tomorrow });
         assert_eq!(parse("what's the time"), Intent::Time);
+        assert_eq!(parse("What's 5 plus 5?"), Intent::Calculate("5 plus 5".into()));
+        assert!(matches!(parse("How long is it from Oslo to Shanghai?"), Intent::Distance(_)));
+        assert_eq!(parse("Can you look up Edvard Munch?"), Intent::Lookup("Edvard Munch".into()));
         assert_eq!(parse("read me the headlines"), Intent::News);
         assert_eq!(parse("Hva er nyhetene?"), Intent::News);
         assert_eq!(parse("thanks a lot"), Intent::Thanks);

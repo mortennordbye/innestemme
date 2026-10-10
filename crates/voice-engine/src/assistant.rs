@@ -699,6 +699,8 @@ impl Worker {
                 | Intent::Briefing
                 | Intent::News
                 | Intent::Lookup(_)
+                | Intent::Calculate(_)
+                | Intent::Distance(_)
                 | Intent::Thanks
                 | Intent::SmallTalk(_)
                 | Intent::Cancel
@@ -801,7 +803,7 @@ impl Worker {
         };
         info!(request = text, answer, ?lang, after = ?start.elapsed(), "answering");
         // The rules' own fallback, or a skill that could not do it ("Sorry, I couldn't find ...").
-        let fallback = ["Sorry, so far I can only", "Beklager, foreløpig kan jeg bare"];
+        let fallback = ["Sorry, I can't help with that yet.", "Beklager, det kan jeg ikke hjelpe med ennå."];
         if fallback.iter().any(|f| answer.starts_with(f)) {
             self.unhandled(Reason::Unknown, text, Some(&answer));
         } else if ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s) || answer.contains(&format!(". {s}"))) {
@@ -1073,7 +1075,12 @@ impl Worker {
                     Ok(answer) => answer,
                     Err(error) => {
                         warn!(error = format!("{error:#}"), "electricity prices failed");
-                        if no { "Beklager, jeg får ikke hentet strømprisene." } else { "Sorry, I couldn't get the electricity prices." }.into()
+                        if no {
+                            "Beklager, jeg får ikke hentet strømprisene."
+                        } else {
+                            "Sorry, I couldn't get the electricity prices."
+                        }
+                        .into()
                     }
                 },
             },
@@ -1090,7 +1097,12 @@ impl Worker {
                 Ok(None) => format!("Sorry, I couldn't find anything about {topic}."),
                 Err(error) => {
                     warn!(error = format!("{error:#}"), "lookup failed");
-                    if no { "Beklager, jeg får ikke slått det opp nå." } else { "Sorry, I couldn't look that up right now." }.into()
+                    if no {
+                        "Beklager, jeg får ikke slått det opp nå."
+                    } else {
+                        "Sorry, I couldn't look that up right now."
+                    }
+                    .into()
                 }
             },
             Intent::News => match self.news.answer(lang) {
@@ -1100,7 +1112,12 @@ impl Worker {
                 }
                 Err(error) => {
                     warn!(error = format!("{error:#}"), "news failed");
-                    if no { "Beklager, jeg får ikke hentet nyhetene nå." } else { "Sorry, I couldn't get the news right now." }.into()
+                    if no {
+                        "Beklager, jeg får ikke hentet nyhetene nå."
+                    } else {
+                        "Sorry, I couldn't get the news right now."
+                    }
+                    .into()
                 }
             },
             Intent::ShoppingList(command) => self.shopping_list(command, lang),
@@ -1115,15 +1132,14 @@ impl Worker {
                 answers[self.chat_turn % answers.len()].clone()
             }
             Intent::Cancel => return None,
-            Intent::Unknown if no => {
-                "Beklager, foreløpig kan jeg bare været, vitser, lyset, scener, musikk, timere, handlelista og avganger."
-                    .into()
-            }
-            Intent::Unknown => {
-                "Sorry, so far I can only do the weather, jokes, lights, scenes, music, timers, the shopping list and \
-                 departures."
-                    .into()
-            }
+            // Not a list of skills: it keeps growing, and the web page shows it.
+            Intent::Unknown if no => "Beklager, det kan jeg ikke hjelpe med ennå.".into(),
+            Intent::Unknown => "Sorry, I can't help with that yet.".into(),
+            Intent::Calculate(said) => match voice_assistant::calc::parse(&said) {
+                Some((said, value)) => voice_assistant::calc::answer(&said, value, lang),
+                None => return None,
+            },
+            Intent::Distance(query) => self.distance(&query, lang),
         })
     }
 
@@ -1329,6 +1345,31 @@ impl Worker {
             Err(error) => warn!(error = format!("{error:#}"), "no news for the briefing"),
         }
         parts.join(" ")
+    }
+
+    fn distance(&mut self, query: &voice_assistant::distance::Query, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let from = match &query.from {
+            Some(name) => self.weather.find(name),
+            None => Ok(self.home_location.clone()),
+        };
+        let places = from.and_then(|from| Ok((from, self.weather.find(&query.to)?)));
+        match places {
+            Ok((Some(from), Some(to))) => voice_assistant::distance::answer(&from, &to, lang),
+            Ok((None, _)) if query.from.is_none() && no => "Hvor fra? Si for eksempel fra Oslo til Bergen.".into(),
+            Ok((None, _)) if query.from.is_none() => "From where? Say, for example, from Oslo to Bergen.".into(),
+            Ok(_) if no => "Beklager, jeg fant ikke det stedet.".into(),
+            Ok(_) => "Sorry, I couldn't find that place.".into(),
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "place lookup failed");
+                if no {
+                    "Beklager, jeg får ikke slått opp stedet nå."
+                } else {
+                    "Sorry, I couldn't look up the place right now."
+                }
+                .into()
+            }
+        }
     }
 
     fn system_prompt(&self) -> String {

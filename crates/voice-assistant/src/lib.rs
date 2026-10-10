@@ -1,8 +1,10 @@
 //! Voice assistant pieces behind the engine's `assistant` processor: streaming speech-to-text, the
 //! wake word and turn logic, intent parsing, tools and speech output.
 
+pub mod calc;
 pub mod catalogue;
 pub mod dialog;
+pub mod distance;
 pub mod geo;
 pub mod ha;
 pub mod intent;

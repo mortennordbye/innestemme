@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
         user: "what's the weather in Bergen?".into(),
         assistant: "It's 12 degrees and rain in Bergen, with a high of 14.".into(),
     }];
-    let cases: [(&str, &[Turn], &str); 25] = [
+    let cases: [(&str, &[Turn], &str); 26] = [
         ("what's the capital of France?", &[], "say"),
         ("and what about tomorrow?", &weather, "weather Bergen tomorrow"),
         ("it's too dark in the kitchen", &[], "lights kitchen on"),
@@ -40,6 +40,7 @@ fn main() -> anyhow::Result<()> {
         ("is my girlfriend Ingrid back yet?", &[], "who_is_home Ingrid"),
         ("anything happening in the world today?", &[], "news"),
         ("I wonder who Edvard Munch was", &[], "lookup Edvard Munch"),
+        ("is Trondheim a long drive from here?", &[], "distance Trondheim"),
         ("give the bedroom a romantic purple glow", &[], "light_settings bedroom purple"),
     ];
     llm.warm_up(&system)?;
