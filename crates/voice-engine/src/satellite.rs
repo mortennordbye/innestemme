@@ -15,8 +15,10 @@
 //! the device gets no speech events.
 //!
 //! Wake word: with the device's wake word processing set to "in Home Assistant", the device streams
-//! continuously and the assistant listens for its own name. With an on-device wake word ("Okay
-//! Nabu"), the device starts a run itself and the next utterance is the request.
+//! continuously. With a wake word model (`ServerWake`) the bridge scores that stream itself and
+//! the engine only hears what follows the wake word; without one, the assistant listens for its own
+//! name. With an on-device wake word ("Okay Nabu"), the device starts a run itself and the next
+//! utterance is the request.
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -30,6 +32,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
 use voice_assistant::resample;
 use voice_assistant::timer::NoticeKind;
+use voice_assistant::wakeword::{WakeDetector, WakeModels};
 use voice_esphome::proto::{feature, Announce, Event, TimerEvent, TimerUpdate, REQUEST_USE_WAKE_WORD};
 use voice_esphome::{Device, Incoming};
 use voice_proto::{Codec, Header, Kind, HEADER_LEN, MAX_DATAGRAM, PACKET_SAMPLES, SAMPLE_RATE};
@@ -51,6 +54,10 @@ const LISTEN_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_LEAD: Duration = Duration::from_millis(400);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
 const HELLO_WINDOW: Duration = Duration::from_secs(10);
+/// Wake word scores from here up to the threshold are logged as misses, to tune the threshold.
+const NEAR_MISS: f32 = 0.2;
+/// Audio kept from before the wake word, so a run's recording holds the wake word itself.
+const WAKE_PREROLL: usize = 2 * DEVICE_RATE as usize;
 
 pub struct SatelliteConfig {
     /// The device's ESPHome API address, host:port (port 6053).
@@ -69,8 +76,17 @@ pub struct SatelliteConfig {
     pub answer_player: Option<Arc<AnswerPlayer>>,
     /// On-device wake words to turn on, by phrase or id ("Hey Jarvis"); empty keeps the device's.
     pub wake_words: Vec<String>,
+    /// Detect the wake word in the device's continuous stream here.
+    pub server_wake: Option<ServerWake>,
     /// Directory for a wav of each run's microphone audio, as the device sent it.
     pub dump: Option<PathBuf>,
+}
+
+/// A wake word model run on the stream of a satellite that streams continuously.
+pub struct ServerWake {
+    pub models: Arc<WakeModels>,
+    /// Score from 0 to 1 that counts as the wake word.
+    pub threshold: f32,
 }
 
 /// A Home Assistant media player that announces the answers, e.g. a Sonos.
@@ -156,6 +172,12 @@ struct Bridge<'a> {
     dump: Option<PathBuf>,
     /// This run's 16 kHz microphone audio, when dumping.
     recording: Vec<i16>,
+    /// Server-side wake word: the detector and its threshold.
+    wake: Option<(WakeDetector, f32)>,
+    /// The highest score of the current run of scores at or above `NEAR_MISS`.
+    near_miss: f32,
+    /// The last `WAKE_PREROLL` of audio while waiting for the wake word, when dumping.
+    preroll: VecDeque<i16>,
 }
 
 async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &SpeechClips) -> Result<()> {
@@ -213,6 +235,9 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         spoken: false,
         dump: cfg.dump.clone(),
         recording: Vec::new(),
+        wake: cfg.server_wake.as_ref().map(|w| (WakeDetector::new(w.models.clone()), w.threshold)),
+        near_miss: 0.0,
+        preroll: VecDeque::new(),
     };
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -280,6 +305,11 @@ impl Bridge<'_> {
                 if request.flags & REQUEST_USE_WAKE_WORD != 0 {
                     self.device.event(Event::WakeWordStart, &[]).await?;
                     self.run = Run::WakeWord;
+                    if let Some((detector, _)) = &mut self.wake {
+                        // Fresh buffers: the end of the last wake word or answer cannot wake it again.
+                        detector.reset();
+                        self.preroll.clear();
+                    }
                 } else {
                     info!(wake_word = request.wake_word_phrase, "device woke");
                     self.device.event(Event::SttStart, &[]).await?;
@@ -301,6 +331,9 @@ impl Bridge<'_> {
                 }
             }
             Incoming::Audio(pcm) => {
+                if self.run == Run::WakeWord && self.wake.is_some() {
+                    return self.listen_for_wake_word(&pcm, assistant).await;
+                }
                 if self.dump.is_some() && self.run != Run::Idle {
                     self.recording.extend_from_slice(&pcm);
                 }
@@ -469,6 +502,35 @@ impl Bridge<'_> {
                 self.device.announce(&Announce { media_id: url, text, ..Announce::default() }).await?;
             }
         }
+        Ok(())
+    }
+
+    /// Scores the continuous stream; only audio after the wake word goes on to the engine.
+    async fn listen_for_wake_word(&mut self, pcm: &[i16], assistant: &AssistantHandle) -> Result<()> {
+        if self.dump.is_some() {
+            self.preroll.extend(pcm);
+            let excess = self.preroll.len().saturating_sub(WAKE_PREROLL);
+            self.preroll.drain(..excess);
+        }
+        let Some((detector, threshold)) = &mut self.wake else { return Ok(()) };
+        let threshold = *threshold;
+        let Some(score) = detector.push(pcm)? else { return Ok(()) };
+        if score < threshold {
+            if score >= NEAR_MISS {
+                self.near_miss = self.near_miss.max(score);
+            } else if self.near_miss > 0.0 {
+                info!(score = format!("{:.2}", self.near_miss), threshold, "wake word missed");
+                self.near_miss = 0.0;
+            }
+            return Ok(());
+        }
+        info!(score = format!("{score:.2}"), threshold, "wake word");
+        self.near_miss = 0.0;
+        self.device.event(Event::WakeWordEnd, &[]).await?;
+        self.device.event(Event::SttStart, &[]).await?;
+        self.recording = self.preroll.drain(..).collect();
+        self.run = Run::Listening(Instant::now());
+        assistant.woke();
         Ok(())
     }
 

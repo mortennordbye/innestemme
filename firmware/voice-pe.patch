@@ -46,7 +46,7 @@ index 73add02..98497f5 100644
 -      - lambda: id(update_http_request).set_source_url("https://firmware.esphome.io/home-assistant-voice-pe/home-assistant-voice/manifest.json");
 -      - component.update: update_http_request
 diff --git a/home-assistant-voice.yaml b/home-assistant-voice.yaml
-index dbf258e..698c70c 100644
+index dbf258e..948a1c5 100644
 --- a/home-assistant-voice.yaml
 +++ b/home-assistant-voice.yaml
 @@ -129,6 +129,11 @@ psram:
@@ -61,7 +61,163 @@ index dbf258e..698c70c 100644
    # Global index for our LEDs. So that switching between different animation does not lead to unwanted effects.
    - id: global_led_animation_index
      type: int
-@@ -1748,13 +1753,20 @@ micro_wake_word:
+@@ -189,6 +194,26 @@ globals:
+     initial_value: 'false'
+ 
+ switch:
++  # Wake word detection in the innestemme engine: the device streams its microphone continuously and
++  # the engine says when it heard the wake word. Off: the on-device wake word, as in the official firmware.
++  - platform: template
++    id: server_wake_word
++    name: Wake word in innestemme
++    icon: "mdi:server"
++    entity_category: config
++    optimistic: true
++    restore_mode: RESTORE_DEFAULT_ON
++    on_turn_on:
++      - micro_wake_word.stop:
++      - lambda: id(va).set_use_wake_word(true);
++      # The interval below starts streaming.
++    on_turn_off:
++      - lambda: id(va).set_use_wake_word(false);
++      - voice_assistant.stop:
++      - wait_until:
++          not:
++            voice_assistant.is_running:
++      - micro_wake_word.start:
+   # This is the master mute switch. It is exposed to Home Assistant. The user can only turn it on and off if the hardware switch is off. (The hardware switch overrides the software one)
+   - platform: template
+     id: master_mute_switch
+@@ -217,6 +242,14 @@ switch:
+             - microphone.unmute:
+     on_turn_on:
+       - script.execute: control_leds
++      # Muted: stop streaming to the engine. It starts again once unmuted.
++      - if:
++          condition:
++            and:
++              - switch.is_on: server_wake_word
++              - voice_assistant.is_running:
++          then:
++            - voice_assistant.stop:
+     on_turn_off:
+       - script.execute: control_leds
+   # Wake Word Sound Switch.
+@@ -334,39 +367,60 @@ binary_sensor:
+                     else:
+                       - if:
+                           condition:
+-                            voice_assistant.is_running:
++                            and:
++                              - switch.is_on: server_wake_word
++                              - voice_assistant.is_running:
++                              - lambda: return id(voice_assistant_phase) == ${voice_assist_idle_phase_id};
+                           then:
++                            # Streaming for the wake word: restart as a run without one. on_end puts the
++                            # wake word back, and the interval below resumes streaming.
++                            - lambda: id(va).set_use_wake_word(false);
+                             - voice_assistant.stop:
++                            - wait_until:
++                                not:
++                                  voice_assistant.is_running:
++                            - script.execute:
++                                id: play_sound
++                                priority: true
++                                sound_file: "center_button_press_sound"
++                            - delay: 300ms
++                            - voice_assistant.start:
+                           else:
+-                            - if:
+-                                condition:
+-                                  media_player.is_announcing:
+-                                    id: external_media_player
+-                                then:
+-                                  media_player.stop:
+-                                    announcement: true
+-                                    id: external_media_player
+-                                else:
+-                                  - if:
+-                                      condition:
+-                                        media_player.is_playing:
+-                                          id: external_media_player
+-                                      then:
+-                                        - media_player.pause:
++                              - if:
++                                  condition:
++                                    voice_assistant.is_running:
++                                  then:
++                                    - voice_assistant.stop:
++                                  else:
++                                    - if:
++                                        condition:
++                                          media_player.is_announcing:
+                                             id: external_media_player
+-                                      else:
+-                                        - if:
+-                                            condition:
+-                                              and:
+-                                                - switch.is_off: master_mute_switch
+-                                                - not: voice_assistant.is_running
+-                                            then:
+-                                              - script.execute:
+-                                                  id: play_sound
+-                                                  priority: true
+-                                                  sound_file: "center_button_press_sound"
+-                                              - delay: 300ms
+-                                              - voice_assistant.start:
++                                        then:
++                                          media_player.stop:
++                                            announcement: true
++                                            id: external_media_player
++                                        else:
++                                          - if:
++                                              condition:
++                                                media_player.is_playing:
++                                                  id: external_media_player
++                                              then:
++                                                - media_player.pause:
++                                                    id: external_media_player
++                                              else:
++                                                - if:
++                                                    condition:
++                                                      and:
++                                                        - switch.is_off: master_mute_switch
++                                                        - not: voice_assistant.is_running
++                                                    then:
++                                                      - script.execute:
++                                                          id: play_sound
++                                                          priority: true
++                                                          sound_file: "center_button_press_sound"
++                                                      - delay: 300ms
++                                                      - voice_assistant.start:
+       # Double Click
+       #  . Exposed as an event entity. To be used in automations inside Home Assistant
+       - timing:
+@@ -1684,8 +1738,10 @@ media_player:
+         condition:
+           and:
+             - switch.is_off: timer_ringing
+-            - not:
+-                voice_assistant.is_running:
++            # No request: is_running also holds while streaming for the wake word in innestemme.
++            - lambda: |-
++                return !id(va).is_running() ||
++                  (id(va).is_continuous() && id(voice_assistant_phase) == ${voice_assist_idle_phase_id});
+             - not:
+                 media_player.is_announcing: external_media_player
+         then:
+@@ -1708,7 +1764,9 @@ external_components:
+   - source:
+       type: git
+       url: https://github.com/esphome/home-assistant-voice-pe
+-      ref: dev
++      # The release's own voice_kit, not upstream's dev branch: a dev build scored ~0.15 lower on
++      # wake words.
++      ref: 26.9.0
+     components:
+       - voice_kit
+     refresh: 0s
+@@ -1748,13 +1806,20 @@ micro_wake_word:
                  switch.is_on: timer_ringing
                then:
                  - switch.turn_off: timer_ringing
@@ -84,7 +240,7 @@ index dbf258e..698c70c 100644
                      # Stop any other media player announcement
                      else:
                        - if:
-@@ -1776,6 +1788,7 @@ micro_wake_word:
+@@ -1776,6 +1841,7 @@ micro_wake_word:
                                        priority: true
                                        sound_file: "wake_word_triggered_sound"
                                    - delay: 300ms
@@ -92,7 +248,7 @@ index dbf258e..698c70c 100644
                              - voice_assistant.start:
                                  wake_word: !lambda return wake_word;
  
-@@ -1811,6 +1824,26 @@ select:
+@@ -1811,6 +1877,26 @@ select:
            id(hey_mycroft).set_probability_cutoff(237);  // 0.93 -> 1.878 FAPH on DipCo
          }
  
@@ -119,7 +275,102 @@ index dbf258e..698c70c 100644
  voice_assistant:
    id: va
    microphone:
-@@ -1929,7 +1962,7 @@ button:
+@@ -1826,7 +1912,13 @@ voice_assistant:
+   volume_multiplier: 1
+   on_client_connected:
+     - lambda: id(init_in_progress) = false;
+-    - micro_wake_word.start:
++    - lambda: id(va).set_use_wake_word(id(server_wake_word).state);
++    # With the wake word in innestemme, the interval below starts streaming instead.
++    - if:
++        condition:
++          switch.is_off: server_wake_word
++        then:
++          - micro_wake_word.start:
+     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+     - script.execute: control_leds
+   on_client_disconnected:
+@@ -1855,11 +1947,30 @@ voice_assistant:
+               priority: true
+               sound_file: "error_cloud_expired"
+   # When the voice assistant starts: Play a wake up sound, duck audio.
++  # Streaming for the wake word is a run too: duck only once it was heard (on_wake_word_detected).
+   on_start:
++    - if:
++        condition:
++          lambda: return !id(va).is_continuous();
++        then:
++          - mixer_speaker.apply_ducking:
++              id: media_mixing_input
++              decibel_reduction: 20  # Number of dB quieter; higher implies more quiet, 0 implies full volume
++              duration: 0.0s         # The duration of the transition (default is no transition)
++  # innestemme heard the wake word in the stream.
++  on_wake_word_detected:
+     - mixer_speaker.apply_ducking:
+         id: media_mixing_input
+-        decibel_reduction: 20  # Number of dB quieter; higher implies more quiet, 0 implies full volume
+-        duration: 0.0s         # The duration of the transition (default is no transition)
++        decibel_reduction: 20
++        duration: 0.0s
++    - if:
++        condition:
++          switch.is_on: wake_sound
++        then:
++          - script.execute:
++              id: play_sound
++              priority: true
++              sound_file: "wake_word_triggered_sound"
+   on_listening:
+     - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
+     - script.execute: control_leds
+@@ -1891,9 +2002,9 @@ voice_assistant:
+           - script.execute: activate_stop_word_once
+   # When the voice assistant ends ...
+   on_end:
++    # Streaming for the wake word in innestemme, is_running stays true: do not wait for it.
+     - wait_until:
+-        not:
+-          voice_assistant.is_running:
++        lambda: return id(va).is_continuous() || !id(va).is_running();
+     # Stop ducking audio.
+     - mixer_speaker.apply_ducking:
+         id: media_mixing_input
+@@ -1908,6 +2019,8 @@ voice_assistant:
+     # Reset the voice assistant phase id and reset the LED animations.
+     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+     - script.execute: control_leds
++    # A button press runs without the wake word; the next stream uses it again.
++    - lambda: id(va).set_use_wake_word(id(server_wake_word).state);
+   on_timer_finished:
+     - switch.turn_on: timer_ringing
+   on_timer_started:
+@@ -1919,6 +2032,25 @@ voice_assistant:
+   on_timer_tick:
+     - script.execute: control_leds
+ 
++# Starts streaming to innestemme for the wake word, and again after anything stopped it (a button
++# press, an error, unmuting, a reconnect).
++interval:
++  - interval: 1s
++    then:
++      - if:
++          condition:
++            and:
++              - switch.is_on: server_wake_word
++              - switch.is_off: master_mute_switch
++              - switch.is_off: timer_ringing
++              - api.connected:
++              - lambda: return !id(init_in_progress);
++              - not:
++                  voice_assistant.is_running:
++          then:
++            - lambda: id(va).set_use_wake_word(true);
++            - voice_assistant.start_continuous:
++
+ button:
+   - platform: factory_reset
+     id: factory_reset_button
+@@ -1929,7 +2061,7 @@ button:
      id: restart_button
      name: "Restart"
      entity_category: config

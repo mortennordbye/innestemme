@@ -19,7 +19,7 @@ use voice_engine::assistant::{AssistantConfig, AssistantProcessor, Listener};
 use voice_engine::settings;
 use voice_engine::{
     metrics::{serve_http, SpeechClips},
-    satellite::{AnswerPlayer, SatelliteConfig},
+    satellite::{AnswerPlayer, SatelliteConfig, ServerWake},
     serve,
     web::Web,
     Config, FrameProcessor, LoopbackEngine, Metrics, MimiProcessor, Passthrough, UdpTransport,
@@ -275,6 +275,15 @@ struct Args {
     /// Home Assistant's wake word selects do not reach the device while the engine holds it.
     #[arg(long, env = "VOICE_SATELLITE_WAKE_WORDS", value_delimiter = ',')]
     satellite_wake_words: Vec<String>,
+    /// Detect the wake word in the engine instead of on the satellite: an openWakeWord model by
+    /// name (hey_jarvis) or the path to a `.onnx` model of your own. The satellite must stream
+    /// continuously (its wake word processing "in Home Assistant").
+    #[arg(long, env = "VOICE_WAKE_MODEL")]
+    wake_model: Option<String>,
+    /// Score from 0 to 1 at which `--wake-model` wakes. Lower wakes more easily, and falsely more
+    /// often; misses above 0.2 are logged with their score.
+    #[arg(long, env = "VOICE_WAKE_THRESHOLD", default_value_t = 0.5)]
+    wake_threshold: f32,
     /// Announcement volume on `--answer-player`, 0 to 1. Default: the player's own volume.
     #[arg(long, env = "VOICE_ANSWER_VOLUME")]
     answer_volume: Option<f32>,
@@ -451,6 +460,18 @@ fn main() -> Result<()> {
         }
     };
 
+    let server_wake = match &args.wake_model {
+        Some(model) => {
+            if !(0.0..1.0).contains(&args.wake_threshold) {
+                anyhow::bail!("`--wake-threshold` is 0 to 1");
+            }
+            let models = voice_assistant::wakeword::WakeModels::load(model)?;
+            info!(model = models.name, threshold = args.wake_threshold, "wake word model");
+            Some(ServerWake { models: Arc::new(models), threshold: args.wake_threshold })
+        }
+        None => None,
+    };
+
     if args.download_only {
         info!("models downloaded and loaded");
         return Ok(());
@@ -526,6 +547,7 @@ fn main() -> Result<()> {
                 stream_answers: args.satellite_stream,
                 answer_player,
                 wake_words: args.satellite_wake_words.clone(),
+                server_wake,
                 dump: args.dump_utterances.clone(),
             };
             tokio::spawn(voice_engine::satellite::run(cfg, assistant, speech));

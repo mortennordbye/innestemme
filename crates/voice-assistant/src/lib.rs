@@ -24,6 +24,7 @@ pub mod timer;
 pub mod transit;
 pub mod tts;
 pub mod vad;
+pub mod wakeword;
 pub mod weather;
 pub mod whisper;
 mod whisper_decoder;

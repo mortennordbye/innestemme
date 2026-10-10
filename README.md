@@ -239,10 +239,11 @@ the same native API connection Home Assistant makes (plaintext or Noise-encrypte
    **Assist satellite** entity. A device streams to one voice assistant only; with that entity
    disabled, Home Assistant keeps the device's other controls (LED ring, volume, mute) and leaves
    the voice to the engine.
-2. For the engine's own wake word (the name, "Homie"), set the device's wake word processing to
-   **in Home Assistant**: the device then streams continuously and the engine listens for its name.
-   With an on-device wake word ("Okay Nabu") the device starts a run itself and the next utterance
-   is the request.
+2. For a wake word in the engine, the device streams continuously: the Voice PE firmware in
+   `firmware/` does so while its **Wake word in innestemme** switch is on (the official firmware has no
+   such mode). With `wake-model: hey_jarvis` the engine scores that stream with openWakeWord and only
+   transcribes what follows the wake word; without it, Whisper listens for the name ("Homie"). With an
+   on-device wake word ("Okay Nabu") the device starts a run itself and the next utterance is the request.
 3. Settings: `satellite: <device ip>:6053`, and `satellite-key` (the device's base64 API encryption
    key, a secret: `VOICE_SATELLITE_KEY` or `VOICE_SATELLITE_KEY_FILE`). The device fetches spoken
    answers from the engine's HTTP port (`/speech/<id>.wav`); set `public-url` when the address it
@@ -260,6 +261,13 @@ Home Assistant media player (a Sonos) instead of the device, over whatever it is
 `answer-volume: 0.65` sets the announcement's volume. The device only listens then. The player fetches
 the answer from `public-url` too, so it needs to reach the engine's HTTP port. An answer that ends in a
 question does not keep the conversation open with a player, since the device would hear the question.
+
+Wake word in the engine: `wake-model: hey_jarvis` (an openWakeWord model, downloaded on first start to
+`$HF_HOME/openwakeword`; the pretrained models are CC BY-NC-SA 4.0) or the path to a `.onnx` model of your
+own, and `wake-threshold: 0.5`. It costs about 1 ms of CPU per 80 ms of audio on an M4 Pro. Scores between 0.2
+and the threshold are logged as `wake word missed`, and with `dump-utterances` each run's wav starts two
+seconds before the wake word. To pick a threshold from real recordings:
+`cargo run --release -p voice-assistant --example wake_score -- hey_jarvis target/utterances/run-*.wav`.
 
 Wake words on the device: `satellite-wake-words: [Okay Nabu, Hey Jarvis]` turns on those of the device's own
 wake words each time the engine connects. Home Assistant's wake word selects go through its Assist satellite
@@ -329,7 +337,9 @@ Measured with a Voice PE and a Sonos as `answer-player` (2026-10-10):
   device's key) shows each detection with its score and the voice assistant's state changes.
 - **Testing without talking:** announce a synthetic "Hey Jarvis." plus a request on the answer player and read
   the device log; detections are logged with their score, misses are not logged at all.
-- `firmware/` holds a patched Voice PE firmware that is not ready: it scored lower than the official build.
+- **The device's own Hey Jarvis model is marginal:** a real voice scored 0.84 to 0.86 against its most
+  sensitive cutoff of 0.83. openWakeWord scored the same voice, in the run recordings, at 0.99 and ordinary
+  speech at 0.24 at most, which is why `wake-model` exists.
 
 ## Configuration
 
