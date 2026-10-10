@@ -61,6 +61,10 @@ const WAKE_PREROLL: usize = 2 * DEVICE_RATE as usize;
 /// From announcing an answer on the player to its first sound (fetch and start), a little over
 /// what the Sonos takes, so the follow-up does not hear the end of the answer.
 const PLAYER_START: Duration = Duration::from_millis(1200);
+/// The device takes a few tens of milliseconds from the end of speech to waiting for the answer.
+const RUN_END_DELAY: Duration = Duration::from_millis(250);
+/// Announced over an answer to stop it: 0.3 s at 24 kHz.
+const SILENCE: usize = 7200;
 /// After an answer has played, listen this long for a follow-up without the wake word.
 const FOLLOW_UP: Duration = Duration::from_secs(6);
 
@@ -189,6 +193,11 @@ struct Bridge<'a> {
     announced: Option<(Instant, usize)>,
     /// When the last answer will have played, to listen for a follow-up from then on.
     follow_up_at: Option<Instant>,
+    /// An answer is going to the player while the device already listens for the wake word again,
+    /// so it can be interrupted.
+    player_answer: bool,
+    /// When to end the device's run for `player_answer`.
+    run_end_at: Option<Instant>,
 }
 
 async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &SpeechClips) -> Result<()> {
@@ -251,6 +260,8 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         preroll: VecDeque::new(),
         announced: None,
         follow_up_at: None,
+        player_answer: false,
+        run_end_at: None,
     };
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -305,7 +316,10 @@ impl Bridge<'_> {
                     return self.device.refuse_run().await;
                 }
                 self.device.accept_run().await?;
-                self.finish_clip();
+                // An answer still going to the player keeps its stream.
+                if !self.player_answer {
+                    self.finish_clip();
+                }
                 if self.stream_answers && !self.speaker && self.player.is_none() {
                     let (path, clip) = self.speech.open(SAMPLE_RATE);
                     let url = format!("{}{path}", self.base_url);
@@ -416,6 +430,16 @@ impl Bridge<'_> {
                     });
                     self.clip = Some((url, clip));
                     self.announced = Some((Instant::now(), 0));
+                    if self.wake.is_some() {
+                        // The device goes back to streaming for the wake word while the player speaks,
+                        // so "Hey Jarvis" over the answer stops it. Its run ends a moment later: a
+                        // run end while it is still stopping the microphone is ignored, and it waits
+                        // for an answer that never comes.
+                        self.player_answer = true;
+                        self.save_recording();
+                        self.mic.clear();
+                        self.run_end_at = Some(Instant::now() + RUN_END_DELAY);
+                    }
                     return Ok(());
                 }
                 self.device.event(Event::TtsStart, &[("text", &text)]).await?;
@@ -427,7 +451,7 @@ impl Bridge<'_> {
                 }
             }
             AssistantEvent::Speech(pcm) => {
-                if self.run != Run::Answering {
+                if self.run != Run::Answering && !self.player_answer {
                     return Ok(());
                 }
                 if self.player.is_some() {
@@ -453,7 +477,7 @@ impl Bridge<'_> {
                 }
             }
             AssistantEvent::Spoken => {
-                if self.run != Run::Answering {
+                if self.run != Run::Answering && !self.player_answer {
                     return Ok(());
                 }
                 if self.player.is_some() {
@@ -462,6 +486,11 @@ impl Bridge<'_> {
                     if let (Some((at, samples)), Some(_)) = (self.announced.take(), &self.wake) {
                         let length = Duration::from_secs_f64(samples as f64 / SAMPLE_RATE as f64);
                         self.follow_up_at = Some(at + PLAYER_START + length);
+                    }
+                    if std::mem::take(&mut self.player_answer) {
+                        // The device's run already ended when the answer started.
+                        self.finish_clip();
+                        return Ok(());
                     }
                     // Ends the player's stream.
                     self.end_run().await?;
@@ -549,6 +578,10 @@ impl Bridge<'_> {
         }
         info!(score = format!("{score:.2}"), threshold, "wake word");
         self.near_miss = 0.0;
+        let playing = self.follow_up_at.take().is_some_and(|until| Instant::now() < until);
+        if self.player_answer || playing {
+            self.interrupt(assistant);
+        }
         self.device.event(Event::WakeWordEnd, &[]).await?;
         self.device.event(Event::SttStart, &[]).await?;
         self.recording = self.preroll.drain(..).collect();
@@ -557,8 +590,33 @@ impl Bridge<'_> {
         Ok(())
     }
 
+    /// The wake word was said over an answer on the player: stop synthesizing it, end its stream,
+    /// and silence the player by announcing a moment of silence over it (stopping the player
+    /// does not stop an announcement).
+    fn interrupt(&mut self, assistant: &AssistantHandle) {
+        info!("wake word over the answer: interrupting it");
+        assistant.interrupt();
+        self.finish_clip();
+        (self.player_answer, self.announced) = (false, None);
+        if let Some(player) = self.player.clone() {
+            let url = format!("{}{}", self.base_url, self.speech.put(&[0; SILENCE], SAMPLE_RATE));
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = player.announce(&url) {
+                    warn!(error = format!("{error:#}"), "could not silence the answer player");
+                }
+            });
+        }
+    }
+
     /// Paces streamed answer audio and times out a wake word with no request.
     async fn tick(&mut self, assistant: &AssistantHandle) -> Result<()> {
+        if self.run_end_at.is_some_and(|at| Instant::now() >= at) {
+            self.run_end_at = None;
+            if self.run == Run::Answering {
+                self.run = Run::Idle;
+                self.device.event(Event::RunEnd, &[]).await?;
+            }
+        }
         match self.run {
             Run::WakeWord if self.follow_up_at.is_some_and(|at| Instant::now() >= at) => {
                 self.follow_up_at = None;

@@ -423,13 +423,18 @@ fn music(words: &[String]) -> Option<MusicCommand> {
 /// "What time is it (now)?", "what's the time", "hva/hvor mye er klokka (nå)?"; the local time
 /// only: anything more ("in Tokyo", "does the shop close") is left to the language model.
 fn is_time_question(words: &[String]) -> bool {
-    let phrase = words.iter().map(String::as_str).filter(|w| !["now", "please", "right", "nå", "da"].contains(w));
-    let phrase: Vec<&str> = phrase.collect();
+    // Words around the question that do not change it: "what's the time today", "tell me the time please".
+    let filler = ["now", "please", "right", "today", "currently", "exactly", "again", "here", "nå", "da", "egentlig"];
+    let phrase: Vec<&str> = words.iter().map(String::as_str).filter(|w| !filler.contains(w)).collect();
     matches!(
         phrase.as_slice(),
         ["what", "time", "is", "it"]
-            | ["what's", "the", "time"]
+            | ["what's" | "whats", "the", "time"]
             | ["what", "is", "the", "time"]
+            | ["tell", "me", "the", "time"]
+            | ["do", "you", "know", "what", "time", "it", "is"]
+            | ["the", "time"]
+            | ["time"]
             | ["hva", "er", "klokka" | "klokken"]
             | ["hvor", "mye", "er", "klokka" | "klokken"]
     )
@@ -733,6 +738,8 @@ mod tests {
         assert_eq!(parse("Who is Jonas Gahr Støre?"), Intent::Lookup("Jonas Gahr Støre".into()));
         assert_eq!(parse("What is the weather tomorrow?"), Intent::Weather { place: None, day: Day::Tomorrow });
         assert_eq!(parse("what's the time"), Intent::Time);
+        assert_eq!(parse("What's the time today?"), Intent::Time);
+        assert_eq!(parse("tell me the time please"), Intent::Time);
         assert_eq!(parse("What's 5 plus 5?"), Intent::Calculate("5 plus 5".into()));
         assert!(matches!(parse("How long is it from Oslo to Shanghai?"), Intent::Distance(_)));
         assert_eq!(parse("Can you look up Edvard Munch?"), Intent::Lookup("Edvard Munch".into()));

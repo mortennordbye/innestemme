@@ -139,6 +139,7 @@ pub struct AssistantHandle {
     jobs: mpsc::Sender<Job>,
     events: broadcast::Sender<AssistantEvent>,
     hear_now: Arc<AtomicBool>,
+    interrupted: Arc<AtomicBool>,
 }
 
 impl AssistantHandle {
@@ -147,6 +148,12 @@ impl AssistantHandle {
     pub fn woke(&self) {
         self.hear_now.store(true, Relaxed);
         let _ = self.jobs.send(Job::Woken(Instant::now()));
+    }
+
+    /// The wake word was said over the answer: stop speaking it after the sentence being
+    /// synthesized.
+    pub fn interrupt(&self) {
+        self.interrupted.store(true, Relaxed);
     }
 
     /// A satellite listens for a follow-up after an answer has played: hear the microphone at once,
@@ -209,6 +216,7 @@ pub struct AssistantProcessor {
     busy: Arc<AtomicBool>,
     /// A satellite started listening: stop ignoring the microphone at once.
     hear_now: Arc<AtomicBool>,
+    interrupted: Arc<AtomicBool>,
     was_busy: bool,
     frame: u64,
     deaf_until: u64,
@@ -232,6 +240,7 @@ impl AssistantProcessor {
         let (jobs, rx) = mpsc::channel();
         let (reply_tx, reply) = rtrb::RingBuffer::new(SAMPLE_RATE as usize * 60);
         let busy = Arc::new(AtomicBool::new(false));
+        let interrupted = Arc::new(AtomicBool::new(false));
         let speaker = config.speaker.clone();
         let (events, _) = broadcast::channel(256);
         // MET Norway asks for an application name and a contact.
@@ -278,6 +287,7 @@ impl AssistantProcessor {
             events: events.clone(),
             reply: reply_tx,
             busy: busy.clone(),
+            interrupted: interrupted.clone(),
             tts,
             config,
             weather: Weather::new(&user_agent),
@@ -352,11 +362,16 @@ impl AssistantProcessor {
         }
         std::thread::Builder::new().name("assistant".into()).spawn(move || worker.run(rx))?;
         let hear_now = Arc::new(AtomicBool::new(false));
-        Ok(Self { ear, jobs, events, reply, busy, hear_now, was_busy: false, frame: 0, deaf_until: 0 })
+        Ok(Self { ear, jobs, events, reply, busy, hear_now, interrupted, was_busy: false, frame: 0, deaf_until: 0 })
     }
 
     pub fn handle(&self) -> AssistantHandle {
-        AssistantHandle { jobs: self.jobs.clone(), events: self.events.clone(), hear_now: self.hear_now.clone() }
+        AssistantHandle {
+            jobs: self.jobs.clone(),
+            events: self.events.clone(),
+            hear_now: self.hear_now.clone(),
+            interrupted: self.interrupted.clone(),
+        }
     }
 }
 
@@ -372,7 +387,17 @@ impl FrameProcessor for AssistantProcessor {
                 chunk.commit_all();
             }
         }
-        let busy = self.busy.load(Relaxed);
+        // Interrupted by a satellite's wake word: what is still being synthesized is dropped, and the
+        // request said over it must be heard.
+        let interrupted = self.interrupted.load(Relaxed);
+        if interrupted {
+            self.deaf_until = 0;
+            let queued = self.reply.slots();
+            if let Ok(chunk) = self.reply.read_chunk(queued) {
+                chunk.commit_all();
+            }
+        }
+        let busy = self.busy.load(Relaxed) && !interrupted;
         if busy || self.was_busy {
             let queued = (self.reply.slots() / FRAME_SAMPLES) as u64;
             self.deaf_until = self.deaf_until.max(self.frame + queued + DEAF_AFTER_REPLY_FRAMES);
@@ -489,6 +514,8 @@ struct Worker {
     events: broadcast::Sender<AssistantEvent>,
     reply: rtrb::Producer<i16>,
     busy: Arc<AtomicBool>,
+    /// Set by a satellite when the wake word is said over an answer.
+    interrupted: Arc<AtomicBool>,
     tts: Box<dyn Tts>,
     config: AssistantConfig,
     weather: Weather,
@@ -778,6 +805,7 @@ impl Worker {
     }
 
     fn answer(&mut self, text: &str, lang: Lang, start: Instant) {
+        self.interrupted.store(false, Relaxed);
         self.emit(AssistantEvent::Heard { text: text.to_owned() });
         // A slow answer (weather, departures) opens with a lead-in rendered ahead of time, which
         // plays while the data is fetched and its sentence synthesized.
@@ -827,6 +855,7 @@ impl Worker {
 
     /// Speaks an answer and opens the follow-up window.
     fn say(&mut self, answer: String, lang: Lang, start: Instant) {
+        self.interrupted.store(false, Relaxed);
         let answer = match &mut self.persona {
             Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
             _ => answer,
@@ -839,9 +868,18 @@ impl Worker {
 
     /// Audio goes to the speaker as it is synthesized, a sentence at a time.
     fn speak(&mut self, text: &str, lang: Lang, spoken: &mut Spoken) {
-        let (reply, events, tts, live) = (&mut self.reply, &self.events, &mut self.tts, &self.live);
+        let (reply, events, tts, live, interrupted) =
+            (&mut self.reply, &self.events, &mut self.tts, &self.live, &self.interrupted);
         for sentence in text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {
+            if interrupted.load(Relaxed) {
+                info!("answer interrupted");
+                break;
+            }
             let mut sink = |pcm: &[i16]| {
+                // The rest of the sentence being synthesized when the answer was interrupted.
+                if interrupted.load(Relaxed) {
+                    return;
+                }
                 spoken.first.get_or_insert_with(Instant::now);
                 spoken.samples += pcm.len();
                 push(reply, pcm);
