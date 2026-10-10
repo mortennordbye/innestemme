@@ -312,7 +312,9 @@ impl Bridge<'_> {
     async fn device_message(&mut self, message: Incoming, assistant: &AssistantHandle) -> Result<()> {
         match message {
             Incoming::Start(request) => {
-                if self.run == Run::Answering {
+                // Paused from the web page: the device's own wake word starts nothing.
+                let woke = request.flags & REQUEST_USE_WAKE_WORD == 0;
+                if self.run == Run::Answering || (woke && assistant.pause.paused()) {
                     return self.device.refuse_run().await;
                 }
                 self.device.accept_run().await?;
@@ -329,7 +331,7 @@ impl Bridge<'_> {
                     self.device.event(Event::RunStart, &[]).await?;
                 }
                 self.mic.clear();
-                if request.flags & REQUEST_USE_WAKE_WORD != 0 {
+                if !woke {
                     self.device.event(Event::WakeWordStart, &[]).await?;
                     self.run = Run::WakeWord;
                     if let Some((detector, _)) = &mut self.wake {
@@ -565,6 +567,9 @@ impl Bridge<'_> {
             self.preroll.drain(..excess);
         }
         let Some((detector, threshold)) = &mut self.wake else { return Ok(()) };
+        if assistant.pause.paused() {
+            return Ok(());
+        }
         let threshold = *threshold;
         let Some(score) = detector.push(pcm)? else { return Ok(()) };
         if score < threshold {

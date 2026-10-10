@@ -250,7 +250,9 @@ pub async fn serve_http(
                     Ok(read) => n += read,
                 }
             }
-            let path = request[..n].split(|&b| b == b' ').nth(1).unwrap_or_default();
+            let mut words = request[..n].split(|&b| b == b' ');
+            let method = words.next().unwrap_or_default();
+            let path = words.next().unwrap_or_default();
             let clip = std::str::from_utf8(path)
                 .ok()
                 .and_then(|p| p.strip_prefix("/speech/")?.strip_suffix(".wav"))
@@ -263,6 +265,7 @@ pub async fn serve_http(
             let target = std::str::from_utf8(path).unwrap_or_default();
             let page = match &web {
                 Some(web) if target.starts_with("/api/hear?") => web.hear(target).await,
+                Some(web) if target.starts_with("/api/listening") => web.listening(method == b"POST", target),
                 Some(web) => web.route(target),
                 None => None,
             };
