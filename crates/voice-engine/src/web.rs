@@ -1,7 +1,8 @@
-//! The optional web page (`--web`): a map of everything the assistant understands, from the skill
-//! catalogue, and a box that shows how a typed phrase would be understood. Phrases are only parsed,
-//! and only requests that change nothing (weather, departures, what is on) are answered aloud. The
-//! one thing it changes is whether the assistant listens: a pause for guests or a long conversation.
+//! The optional web page (`--web`), the hub (`hub.rs`): a dashboard with the assistant's face, a map
+//! of everything the assistant understands from the skill catalogue, and a box that shows how a typed
+//! phrase would be understood. Phrases are only parsed, and only requests that change nothing
+//! (weather, departures, what is on) are answered aloud. Besides a room's lights from the dashboard,
+//! the one thing it changes is whether the assistant listens: a pause for guests or a long conversation.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +21,6 @@ use crate::unhandled::UnhandledLog;
 /// Weather or departures over a slow network, then speech on a slow CPU.
 const HEAR_TIMEOUT: Duration = Duration::from_secs(30);
 
-const PAGE: &str = include_str!("web/index.html");
 /// Entries the page lists from the unhandled log.
 const UNHANDLED_SHOWN: usize = 200;
 
@@ -130,10 +130,7 @@ impl Web {
     pub fn route(&self, target: &str) -> Option<Response> {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         match path {
-            "/" => Some(("200 OK", "text/html; charset=utf-8", PAGE.as_bytes().to_vec())),
-            "/hub" if self.hub.is_some() => {
-                Some(("200 OK", "text/html; charset=utf-8", crate::hub::PAGE.as_bytes().to_vec()))
-            }
+            "/" | "/hub" => Some(("200 OK", "text/html; charset=utf-8", crate::hub::PAGE.as_bytes().to_vec())),
             _ if path.starts_with("/hub/") => self.hub.as_ref()?.face(path),
             "/api/skills" => Some(json_response(&json!({ "about": self.about, "skills": SKILLS }))),
             "/api/unhandled" => {
@@ -229,10 +226,11 @@ mod tests {
 
     #[test]
     fn draws_every_skill_icon() {
+        let page = crate::hub::PAGE;
         for skill in SKILLS {
-            assert!(PAGE.contains(&format!("id=\"i-{}\"", skill.icon)), "no symbol for {}", skill.icon);
+            assert!(page.contains(&format!("id=\"i-{}\"", skill.icon)), "no symbol for {}", skill.icon);
         }
-        let emoji = PAGE.chars().find(|&c| matches!(c, '\u{2600}'..='\u{27bf}' | '\u{1f000}'..));
+        let emoji = page.chars().find(|&c| matches!(c, '\u{2600}'..='\u{27bf}' | '\u{1f000}'..));
         assert_eq!(emoji, None, "icons are drawn, not emoji");
     }
 
