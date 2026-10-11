@@ -60,6 +60,12 @@ fn main() -> anyhow::Result<()> {
         Intent::House(HouseCommand::Sun(event)) => {
             println!("{}", house::sun_answer(&ha.state("sun.sun")?, event, lang)?)
         }
+        Intent::House(HouseCommand::Climate(place, reading)) => {
+            let rooms = house::climate_readings(&ha)?;
+            println!("{rooms:?}");
+            let here = std::env::var("VOICE_ROOM").ok();
+            println!("{}", house::climate_answer(&rooms, &place, reading, here.as_deref(), lang));
+        }
         Intent::House(HouseCommand::PhoneBattery(name)) => {
             let phones = house::phones(&ha)?;
             println!("{}", house::battery_answer(&house::pick_phones(&phones, name.as_deref()), name.as_deref(), lang));

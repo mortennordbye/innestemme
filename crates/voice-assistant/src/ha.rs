@@ -430,6 +430,11 @@ fn take_room(words: &mut Vec<String>) -> Option<usize> {
     None
 }
 
+/// The room a request names, by its English name ("stua" is "living room").
+pub fn room_named(words: &[String]) -> Option<&'static str> {
+    take_room(&mut words.to_vec()).map(|group| ROOMS[group][0])
+}
+
 /// The script a request names ("run movie time", "kjør movie time"), allowing for mishearings.
 pub fn resolve_script<'a>(scripts: &'a [Named], request: &str) -> Option<&'a Named> {
     let words: Vec<String> = request

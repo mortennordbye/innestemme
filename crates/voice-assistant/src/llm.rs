@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
-use crate::house::{HouseCommand, Routine};
+use crate::house::{HouseCommand, Indoors, Reading, Routine};
 use crate::intent::{Day, Intent, LightLevel, MusicCommand};
 use crate::lang::Lang;
 use crate::power::{PowerQuery, When};
@@ -319,6 +319,19 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 _ => HouseCommand::FindPhone(name),
             }))
         }
+        "indoor_climate" => {
+            let place = match text("room") {
+                Some(room) if ["here", "this room"].contains(&room.to_lowercase().as_str()) => Indoors::Here,
+                Some(room) => Indoors::Room(room.to_lowercase()),
+                None => Indoors::Everywhere,
+            };
+            let reading = match text("reading").as_deref() {
+                Some("humidity") => Reading::Humidity,
+                Some("both") => Reading::Both,
+                _ => Reading::Temperature,
+            };
+            Decision::Act(Intent::House(HouseCommand::Climate(place, reading)))
+        }
         "house" => Decision::Act(match text("action").as_deref() {
             Some("leaving") => Intent::Routine(Routine::Leaving),
             Some("home") => Intent::Routine(Routine::Home),
@@ -453,6 +466,14 @@ pub fn tools() -> Value {
         } })
         ),
         tool(
+            "indoor_climate",
+            "Temperature or humidity inside the home.",
+            json!({ "type": "object", "properties": {
+            "room": { "type": "string", "description": "Room, or here; omit for every room" },
+            "reading": { "type": "string", "enum": ["temperature", "humidity", "both"] }
+        } })
+        ),
+        tool(
             "house",
             "House check, or routine when leaving, coming home or going to bed.",
             json!({ "type": "object", "required": ["action"], "properties": {
@@ -488,14 +509,14 @@ pub fn system_prompt(name: &str, home: Option<&str>, room: Option<&str>, today: 
         "You are {name}, a voice assistant that controls a home.{home}{room} Today is {today}.\n\
          Rule 1: for the weather, lights, brightness or colour, a light scene or mood, music, the TV, a \
          timer or reminder, the shopping list, departures, electricity prices, who is home, a lost phone, the \
-         house, or something funny, call the matching tool. Do not describe the action; the tool does it and speaks.\n\
+         temperature indoors, the house, or something funny, call the matching tool. Do not describe the action; the tool does it and speaks.\n\
          Rule 2: if the words were addressed to another person or are background talk, call ignore.\n\
          Rule 3: otherwise answer from your own knowledge in one short spoken sentence, no markdown. \
          Never say you did something without calling a tool.\n\
          Examples: \"cheer me up\" -> joke. \"we're out of coffee\" -> shopping_list add coffee. \
          \"make it cosy in here\" -> scene relax. \"when should I run the dishwasher\" -> electricity_price \
          cheapest. \"tell me when the eggs are done in 7 minutes\" -> timer. \"Anna, where are my keys?\" -> \
-         ignore. \"off to work, see you\" -> house leaving. \"it's freezing in here\" -> answer, not weather.\n"
+         ignore. \"off to work, see you\" -> house leaving. \"it's freezing in here\" -> indoor_climate here.\n"
     )
 }
 
@@ -573,6 +594,14 @@ mod tests {
         assert_eq!(
             parse_reply(&call("house", r#"{"action":"leaving"}"#)).unwrap(),
             Decision::Act(Intent::Routine(Routine::Leaving))
+        );
+        assert_eq!(
+            parse_reply(&call("indoor_climate", r#"{"room":"Bedroom","reading":"humidity"}"#)).unwrap(),
+            Decision::Act(Intent::House(HouseCommand::Climate(Indoors::Room("bedroom".into()), Reading::Humidity)))
+        );
+        assert_eq!(
+            parse_reply(&call("indoor_climate", r#"{"room":"here"}"#)).unwrap(),
+            Decision::Act(Intent::House(HouseCommand::Climate(Indoors::Here, Reading::Temperature)))
         );
         assert_eq!(parse_reply(&call("ignore", "{}")).unwrap(), Decision::Ignore);
         // Some servers send the arguments as an object.
