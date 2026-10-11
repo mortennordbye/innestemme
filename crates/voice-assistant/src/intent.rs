@@ -2,11 +2,13 @@
 //! route a weather question and pull out the place and day.
 
 use crate::dialog::normalize;
+use crate::house::{self, HouseCommand, Routine};
 use crate::power::{self, PowerQuery};
 use crate::shopping::{self, ListCommand};
 use crate::smalltalk::Chat;
 use crate::timer::{self, TimerCommand};
 use crate::transit::{self, TransitQuery};
+use crate::tv::{self, TvCommand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Day {
@@ -67,6 +69,12 @@ pub enum Intent {
     Script(String),
     /// Reverse the last action: "reverse that", "undo", "switch it back".
     Undo,
+    /// The TV: "turn off the TV", "put Netflix on the TV".
+    Tv(TvCommand),
+    /// The rest of the house: status, sun, phones, guest Wi-Fi, camera, alarm.
+    House(HouseCommand),
+    /// "I'm leaving", "I'm home", "I'm going to bed".
+    Routine(Routine),
     Thanks,
     /// "How are you?", "who are you?", "good night".
     SmallTalk(Chat),
@@ -525,6 +533,13 @@ fn rules(text: &str) -> Intent {
     if let Some((said, _)) = crate::calc::parse(text) {
         return Intent::Calculate(said);
     }
+    if let Some(routine) = house::routine(&words) {
+        return Intent::Routine(routine);
+    }
+    // Before music: "pause the TV" is not the music, "play Netflix" not a song.
+    if let Some(command) = tv::parse(&words) {
+        return Intent::Tv(command);
+    }
     // Timers before music ("pause the timer"), except for a song called "Timer".
     let play = words.iter().find(|w| !POLITE.contains(&w.as_str())).is_some_and(|w| PLAY_WORDS.contains(&w.as_str()));
     if !play {
@@ -538,6 +553,10 @@ fn rules(text: &str) -> Intent {
         // Before music: "next bus" is not "next song".
         if let Some(query) = transit::parse(text) {
             return Intent::Transit(query);
+        }
+        // Before the electricity price ("hvor mye strøm har telefonen") and "stop" ("stop recording").
+        if let Some(command) = house::parse(&words) {
+            return Intent::House(command);
         }
         if let Some(query) = power::parse(text) {
             return Intent::Power(query);
@@ -896,6 +915,27 @@ mod tests {
         assert_eq!(parse("god morgen"), Intent::Briefing);
         assert_eq!(parse("give me my morning briefing"), Intent::Briefing);
         assert!(!matches!(parse("good morning, what's the weather in Bergen"), Intent::Briefing));
+    }
+
+    #[test]
+    fn house_tv_and_routines() {
+        use crate::house::{SunEvent, Switch};
+        assert_eq!(parse("Is everything okay at home?"), Intent::House(HouseCommand::Status));
+        assert_eq!(parse("when is sunset"), Intent::House(HouseCommand::Sun(SunEvent::Sunset)));
+        assert_eq!(parse("where's my phone"), Intent::House(HouseCommand::FindPhone(None)));
+        assert_eq!(parse("hvor mye strøm har telefonen min"), Intent::House(HouseCommand::PhoneBattery(None)));
+        assert_eq!(parse("stop recording"), Intent::House(HouseCommand::Camera(Switch::Off)));
+        assert_eq!(parse("turn off the guest wifi"), Intent::House(HouseCommand::GuestWifi(Switch::Off)));
+        assert_eq!(parse("pause the TV"), Intent::Tv(TvCommand::Pause));
+        assert_eq!(parse("play Netflix on the TV"), Intent::Tv(TvCommand::App("netflix".into())));
+        assert_eq!(parse("turn on the TV and dim the lights"), Intent::Tv(TvCommand::Power(true)));
+        assert_eq!(parse("I'm leaving"), Intent::Routine(Routine::Leaving));
+        assert_eq!(parse("I'm going to bed"), Intent::Routine(Routine::Bedtime));
+        assert_eq!(parse("good night"), Intent::SmallTalk(Chat::GoodNight));
+        assert_eq!(parse("pause"), Intent::Music(MusicCommand::Pause));
+        assert_eq!(parse("stop"), Intent::Cancel);
+        assert!(matches!(parse("turn off the alarm"), Intent::Timer(_) | Intent::Unknown));
+        assert_eq!(split_commands("turn on the TV and dim the lights").unwrap().len(), 2);
     }
 
     #[test]

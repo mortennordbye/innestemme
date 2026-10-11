@@ -8,12 +8,14 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
+use crate::house::{HouseCommand, Routine};
 use crate::intent::{Day, Intent, LightLevel, MusicCommand};
 use crate::lang::Lang;
 use crate::power::{PowerQuery, When};
 use crate::shopping::ListCommand;
 use crate::timer::{TimerCommand, Which};
 use crate::transit::{Mode, TransitQuery};
+use crate::tv::TvCommand;
 
 #[derive(Clone)]
 pub struct Llm {
@@ -294,6 +296,35 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             };
             Decision::Act(Intent::Music(command))
         }
+        "tv" => {
+            let volume = args["volume"].as_f64().or_else(|| text("volume").and_then(|s| s.parse().ok()));
+            let command = match (text("action").as_deref().unwrap_or("on"), text("app")) {
+                (_, Some(app)) => TvCommand::App(app),
+                _ if volume.is_some() => TvCommand::Volume(volume.unwrap_or(0.0).clamp(0.0, 100.0).round() as u8),
+                ("off", _) => TvCommand::Power(false),
+                ("louder", _) => TvCommand::Louder,
+                ("quieter", _) => TvCommand::Quieter,
+                ("mute", _) => TvCommand::Mute(true),
+                ("unmute", _) => TvCommand::Mute(false),
+                ("pause", _) => TvCommand::Pause,
+                ("resume", _) => TvCommand::Resume,
+                _ => TvCommand::Power(true),
+            };
+            Decision::Act(Intent::Tv(command))
+        }
+        "phone" => {
+            let name = text("name").map(|n| n.to_lowercase()).filter(|n| !["my", "me", "mine"].contains(&n.as_str()));
+            Decision::Act(Intent::House(match text("action").as_deref() {
+                Some("battery") => HouseCommand::PhoneBattery(name),
+                _ => HouseCommand::FindPhone(name),
+            }))
+        }
+        "house" => Decision::Act(match text("action").as_deref() {
+            Some("leaving") => Intent::Routine(Routine::Leaving),
+            Some("home") => Intent::Routine(Routine::Home),
+            Some("bedtime") => Intent::Routine(Routine::Bedtime),
+            _ => Intent::House(HouseCommand::Status),
+        }),
         "ignore" => Decision::Ignore,
         other => return Err(anyhow!("the language model called an unknown tool {other:?}")),
     })
@@ -404,6 +435,30 @@ pub fn tools() -> Value {
             "name": { "type": "string", "description": "Omit for everyone" }
         } })
         ),
+        tool(
+            "tv",
+            "Control the TV: on, off, volume, mute, pause, or open an app.",
+            json!({ "type": "object", "properties": {
+            "action": { "type": "string", "enum": ["on", "off", "louder", "quieter", "mute", "unmute", "pause", "resume"] },
+            "volume": { "type": "number", "description": "0-100" },
+            "app": { "type": "string", "description": "e.g. Netflix" }
+        } })
+        ),
+        tool(
+            "phone",
+            "Ring a phone to find it, or its battery level.",
+            json!({ "type": "object", "properties": {
+            "action": { "type": "string", "enum": ["find", "battery"] },
+            "name": { "type": "string", "description": "Owner; omit for mine" }
+        } })
+        ),
+        tool(
+            "house",
+            "House check, or routine when leaving, coming home or going to bed.",
+            json!({ "type": "object", "required": ["action"], "properties": {
+            "action": { "type": "string", "enum": ["status", "leaving", "home", "bedtime"] }
+        } })
+        ),
         tool("joke", "Tell a joke.", none.clone()),
         tool("news", "Latest news headlines.", none.clone()),
         tool(
@@ -431,16 +486,16 @@ pub fn system_prompt(name: &str, home: Option<&str>, room: Option<&str>, today: 
     let room = room.map(|r| format!(" You are in the {r}; \"here\" means the {r}.")).unwrap_or_default();
     format!(
         "You are {name}, a voice assistant that controls a home.{home}{room} Today is {today}.\n\
-         Rule 1: for the weather, lights, brightness or colour, a light scene or mood, music, a timer or \
-         reminder, the shopping list, departures, electricity prices, who is home, or something funny, call \
-         the matching tool. Do not describe the action; the tool does it and speaks.\n\
+         Rule 1: for the weather, lights, brightness or colour, a light scene or mood, music, the TV, a \
+         timer or reminder, the shopping list, departures, electricity prices, who is home, a lost phone, the \
+         house, or something funny, call the matching tool. Do not describe the action; the tool does it and speaks.\n\
          Rule 2: if the words were addressed to another person or are background talk, call ignore.\n\
          Rule 3: otherwise answer from your own knowledge in one short spoken sentence, no markdown. \
          Never say you did something without calling a tool.\n\
          Examples: \"cheer me up\" -> joke. \"we're out of coffee\" -> shopping_list add coffee. \
          \"make it cosy in here\" -> scene relax. \"when should I run the dishwasher\" -> electricity_price \
          cheapest. \"tell me when the eggs are done in 7 minutes\" -> timer. \"Anna, where are my keys?\" -> \
-         ignore. \"it's freezing in here\" -> answer, not weather.\n"
+         ignore. \"off to work, see you\" -> house leaving. \"it's freezing in here\" -> answer, not weather.\n"
     )
 }
 
@@ -502,6 +557,22 @@ mod tests {
         assert_eq!(
             parse_reply(&call("who_is_home", r#"{"name":"Ingrid"}"#)).unwrap(),
             Decision::Act(Intent::WhosHome(Some("ingrid".into())))
+        );
+        assert_eq!(
+            parse_reply(&call("tv", r#"{"app":"Netflix"}"#)).unwrap(),
+            Decision::Act(Intent::Tv(TvCommand::App("Netflix".into())))
+        );
+        assert_eq!(
+            parse_reply(&call("tv", r#"{"action":"off"}"#)).unwrap(),
+            Decision::Act(Intent::Tv(TvCommand::Power(false)))
+        );
+        assert_eq!(
+            parse_reply(&call("phone", r#"{"action":"find","name":"my"}"#)).unwrap(),
+            Decision::Act(Intent::House(HouseCommand::FindPhone(None)))
+        );
+        assert_eq!(
+            parse_reply(&call("house", r#"{"action":"leaving"}"#)).unwrap(),
+            Decision::Act(Intent::Routine(Routine::Leaving))
         );
         assert_eq!(parse_reply(&call("ignore", "{}")).unwrap(), Decision::Ignore);
         // Some servers send the arguments as an object.

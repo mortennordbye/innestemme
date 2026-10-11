@@ -155,6 +155,12 @@ pub enum Change {
 }
 
 impl ShoppingList {
+    /// What is still to buy, in list order.
+    pub fn open_items(&mut self, ha: &HomeAssistant) -> Result<Vec<String>> {
+        let entity = self.entity(ha)?;
+        Ok(get_items(ha, &entity)?.into_iter().filter(Item::open).map(|i| i.summary).collect())
+    }
+
     /// Runs a command; the answer, and what changed on the list.
     pub fn run(&mut self, ha: &HomeAssistant, command: &ListCommand, lang: Lang) -> Result<(String, Option<Change>)> {
         let no = lang == Lang::Norwegian;

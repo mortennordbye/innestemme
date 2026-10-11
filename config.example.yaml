@@ -57,6 +57,12 @@ whisper-size: base
 # The room the microphone is in, for "turn off the lights" without a room. A satellite's default is its
 # area in Home Assistant.
 # room: Living Room
+# The TV's media player. Default: the media player that is a TV by its device class or name.
+# tv: media_player.living_room_tv
+# Speak at once when a smoke, carbon monoxide, gas, water or breaking glass sensor goes off.
+# alerts: true
+# Your own face images for the hub page (/hub): idle.jpg, listening.jpg, speaking.jpg.
+# hub-faces: /models/faces
 
 # --- Voice satellite (ESPHome) -----------------------------------------------------------------
 # Be the voice assistant of an ESPHome voice device (Voice PE): its address, port 6053. Disable its

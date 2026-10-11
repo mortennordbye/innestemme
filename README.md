@@ -35,7 +35,13 @@ Piper (Norwegian). The audio path does no heap allocation after startup, and eve
 | Weather | "what's the weather tomorrow?", "hvordan blir været i Bergen?" (Yr) |
 | Departures | "when's the next bus?", "how do I get to Majorstuen?" (Entur) |
 | Electricity prices | "when is power cheapest tonight?", "hva koster strømmen nå?" |
-| Home | "who's home?", "good morning" (a short briefing) |
+| Home | "who's home?", "good morning" (a short briefing), "is everything okay at home?" |
+| Routines | "I'm leaving" (lights off, music paused, TV off), "I'm home", "I'm going to bed" |
+| TV | "turn off the TV", "put Netflix on the TV", "mute the TV" |
+| Phones | "where's my phone?" (rings it through the Home Assistant app), "how much battery does my phone have?" |
+| Guest Wi-Fi, camera, alarm | "turn on the guest Wi-Fi", "turn on privacy mode", "arm the alarm" (never disarmed by voice) |
+| Sun | "when is sunset?", "when does it get dark?" |
+| Safety alerts | spoken unasked when a smoke, carbon monoxide, gas, water or breaking glass sensor goes off |
 | Anything else | answered by the language model in one sentence |
 
 ## Layout
@@ -46,7 +52,7 @@ Piper (Norwegian). The audio path does no heap allocation after startup, and eve
 | `voice-rt` | Real-time plumbing: reorder buffer, atomic histogram, allocation guard, pinned threads. |
 | `voice-codec` | Packet codec (raw PCM) and `MimiCodec` over `moshi` / candle. |
 | `voice-engine` | The server: UDP transport, net task and model thread joined by lock-free rings, `/metrics`. |
-| `voice-assistant` | Assistant parts: Whisper and Kyutai STT, wake word and turn logic, intent rules, the language model client, skills (Home Assistant lights, scenes, shopping list, Music Assistant, timers, Yr, Entur, electricity prices), Pocket TTS and Piper output. |
+| `voice-assistant` | Assistant parts: Whisper and Kyutai STT, wake word and turn logic, intent rules, the language model client, skills (Home Assistant lights, scenes, shopping list, TV, phones, house status and routines, safety alerts, Music Assistant, timers, Yr, Entur, electricity prices), Pocket TTS and Piper output. |
 | `voice-esphome` | ESPHome native API client (plaintext and Noise), so the engine can serve a Voice PE instead of Home Assistant's Assist. |
 | `voice-client` | Test client: tone, wav file or live microphone. Reports frame turnaround and mouth-to-ear. |
 | `voice-bench` | Per-frame step times for [docs/benchmarks.md](docs/benchmarks.md). |
@@ -314,11 +320,18 @@ the voice, default `am_onyx` (American, deep); `bm_george` is British. Audio str
 Pre-rendered speech: `speech-cache: <dir>` keeps every fixed English sentence once it is spoken (one folder per
 voice): the persona's openers and remarks, lead-ins, all jokes (the built-in list, then) and confirmations such as
 "The kitchen lights are off." The fixed ones are rendered ahead in idle time after start. Sentences with numbers are
-live data and are always synthesized; a slow answer (weather, departures, prices, what's on, who's home) opens
+live data and are always synthesized; a slow answer (weather, departures, prices, what's on, who's home, house status) opens
 with a lead-in ("Checking the forecast, sir.") that plays while its data sentence is synthesized.
 
+The hub (`/hub`, with `web: true`): a dark dashboard for a wall tablet or the TV's browser. The assistant's face
+(a raccoon in a bow tie) follows what it does, idle, listening or speaking, with the spoken line under it; the
+cards show the rooms (tap one to switch its lights), what is playing, timers, the shopping list, alerts and the
+weather from Home Assistant. The Map tab (`/hub#map`) places every skill as a star around the face; tap one for
+its phrases, and tap a phrase to hear the answer when it only reads. `hub-faces: <dir>` swaps in your own `idle.jpg`, `listening.jpg` and `speaking.jpg`.
+
 On the web page, "Hear response" answers a typed request aloud in the browser, with the assistant's voice and
-style, when answering changes nothing (weather, departures, prices, what's on, who's home, the shopping list);
+style, when answering changes nothing (weather, departures, prices, what's on, who's home, the shopping list,
+house status, sunset, a phone's battery);
 requests that switch or play something are not run from the page.
 
 Running a deployed device's engine from the Mac while working on it: stop the deployed engine (a device takes

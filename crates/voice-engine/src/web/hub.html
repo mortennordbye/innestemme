@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#08090c">
+<title>Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=Anton&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #08090c; --panel: #0e1015; --line: #1c2028; --text: #e8ebf0; --soft: #a3abb8; --dim: #6b7382;
+  --accent: #7cf5d4; --warm: #ffc46b; --good: #5fd38d; --bad: #ff6b6b;
+  --mono: "Geist Mono", ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  background: radial-gradient(circle at 85% -10%, rgba(124, 245, 212, .06), transparent 45%), var(--bg);
+  color: var(--text); font: 16px/1.4 "Geist", system-ui, sans-serif; overflow-x: hidden;
+}
+main { min-height: 100vh; display: flex; flex-direction: column; gap: 24px; padding: 28px 36px 0; }
+.label { font-family: var(--mono); font-size: 12px; letter-spacing: .18em; color: var(--dim); text-transform: uppercase; }
+.top { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.who { display: flex; align-items: center; gap: 12px; }
+.dot { position: relative; width: 12px; height: 12px; }
+.dot i, .dot b { position: absolute; border-radius: 50%; background: var(--accent); }
+.dot b { inset: 0; }
+.dot i { inset: -6px; opacity: .2; animation: breathe 3.2s ease-in-out infinite; }
+.pill {
+  position: relative; overflow: hidden; display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; font-family: var(--mono); font-size: 13px; color: var(--soft);
+}
+.pill .scan { position: absolute; inset: 0 auto 0 0; width: 40%; background: linear-gradient(90deg, transparent, rgba(124, 245, 212, .12), transparent); animation: scan 4.5s ease-in-out infinite; }
+.pill .led { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+.pill.alert { border-color: rgba(255, 107, 107, .5); color: #ffd0d0; }
+.pill.alert .led { background: var(--bad); animation: blink 1s steps(2) infinite; }
+
+.grid { flex: 1; display: grid; grid-template-columns: minmax(300px, 1fr) minmax(340px, 1.35fr) minmax(280px, 1fr); gap: 28px; align-items: start; }
+@media (max-width: 1100px) { .grid { grid-template-columns: 1fr 1fr; } .face-col { grid-column: 1 / -1; } }
+@media (max-width: 700px) { main { padding: 20px 16px 0; } .grid { grid-template-columns: 1fr; } }
+
+/* The face */
+.face-col { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+.face { position: relative; width: min(300px, 70vw); aspect-ratio: 1; }
+.face .ring { position: absolute; inset: 0; border-radius: 50%; border: 3px solid var(--accent); opacity: 0; }
+.face .photo { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; box-shadow: 0 0 0 1px var(--line), 0 24px 60px rgba(0, 0, 0, .6); transition: box-shadow .4s; }
+.face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .25s; }
+.face .orbit { position: absolute; inset: -14px; border-radius: 50%; border: 1px dashed rgba(124, 245, 212, .35); opacity: 0; transition: opacity .3s; }
+body[data-state="idle"] .face img.idle,
+body[data-state="listening"] .face img.listening,
+body[data-state="thinking"] .face img.listening,
+body[data-state="speaking"] .face img.speaking { opacity: 1; }
+body[data-state="idle"] .face .photo { animation: float 4s ease-in-out infinite; filter: saturate(.85) brightness(.9); }
+body[data-state="listening"] .face .photo { box-shadow: 0 0 0 3px var(--accent), 0 0 60px rgba(124, 245, 212, .55); animation: tilt 1.6s ease-in-out infinite; }
+body[data-state="listening"] .face .ring { animation: ripple 1.7s ease-out infinite; }
+body[data-state="listening"] .face .ring:nth-child(2) { animation-delay: .55s; }
+body[data-state="listening"] .face .ring:nth-child(3) { animation-delay: 1.1s; }
+body[data-state="thinking"] .face .photo { box-shadow: 0 0 0 3px var(--accent); }
+body[data-state="thinking"] .face .orbit { opacity: 1; animation: spin 2.4s linear infinite; }
+body[data-state="speaking"] .face .photo { animation: bounce .45s ease-in-out infinite; }
+.meme {
+  font-family: "Anton", Impact, sans-serif; text-transform: uppercase; color: #fff; text-align: center; line-height: 1.05;
+  -webkit-text-stroke: 2px #000; paint-order: stroke fill; text-shadow: 0 3px 0 #000; font-size: clamp(24px, 3vw, 34px);
+  min-height: 2.2em; display: flex; align-items: flex-end; justify-content: center; max-width: 360px;
+}
+.wave { display: none; align-items: center; gap: 4px; height: 24px; }
+.wave span { width: 4px; height: 24px; border-radius: 2px; background: var(--accent); animation: bar .7s ease-in-out infinite; }
+.wave span:nth-child(2) { animation-delay: .12s; } .wave span:nth-child(3) { animation-delay: .24s; }
+.wave span:nth-child(4) { animation-delay: .06s; } .wave span:nth-child(5) { animation-delay: .18s; }
+body[data-state="speaking"] .wave { display: flex; }
+.said:empty { display: none; }
+.said { min-height: 1.4em; max-width: 380px; text-align: center; color: var(--soft); font-size: 17px; }
+.clock { display: flex; align-items: baseline; gap: 14px; }
+.clock .time { font-size: 64px; font-weight: 300; letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+.weather { display: flex; gap: 10px; align-items: baseline; color: var(--soft); }
+.weather b { color: var(--text); font-size: 26px; font-weight: 400; }
+
+/* Rooms */
+.rooms { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 12px; }
+.room {
+  font: inherit; color: var(--text); text-align: left; cursor: pointer; border-radius: 22px; padding: 20px; min-height: 120px;
+  display: flex; flex-direction: column; justify-content: space-between; gap: 18px;
+  background: var(--panel); border: 1px solid var(--line); transition: background .6s, border-color .6s, box-shadow .6s, transform .15s;
+}
+.room:active { transform: scale(.98); }
+.room:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.room .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.room .name { font-size: 20px; font-weight: 500; }
+.room svg { width: 26px; height: 26px; fill: none; stroke: #4a5160; stroke-width: 1.5; stroke-linecap: round; transition: stroke .6s; }
+.room .state { font-family: var(--mono); font-size: 13px; color: var(--dim); }
+.room.on { background: radial-gradient(circle at 85% 0%, rgba(255, 196, 107, .22), transparent 60%), #12151b; border-color: rgba(255, 196, 107, .35); box-shadow: 0 10px 40px rgba(255, 170, 60, .08); }
+.room.on svg { stroke: var(--warm); }
+.room.on .state { color: var(--warm); }
+.room.busy { opacity: .6; }
+
+/* Side cards */
+.side { display: flex; flex-direction: column; gap: 14px; }
+.card { border: 1px solid var(--line); border-radius: 20px; padding: 18px 20px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; }
+.card .big { font-size: 20px; font-weight: 500; }
+.card .soft { color: var(--soft); font-size: 15px; }
+.bars { display: flex; align-items: flex-end; gap: 3px; height: 22px; }
+.bars span { width: 3px; height: 22px; border-radius: 2px; background: var(--accent); transform-origin: 50% 100%; animation: bar .9s ease-in-out infinite; }
+.bars span:nth-child(2n) { animation-delay: .2s; } .bars span:nth-child(3n) { animation-delay: .35s; }
+.timer { display: flex; align-items: center; gap: 14px; }
+.timer svg { width: 54px; height: 54px; transform: rotate(-90deg); flex: none; }
+.timer .t { font-size: 28px; font-variant-numeric: tabular-nums; }
+.alert-card { border-color: rgba(255, 107, 107, .5); background: rgba(255, 107, 107, .08); color: #ffd0d0; }
+
+.ticker { border-top: 1px solid #161a21; height: 52px; overflow: hidden; display: flex; align-items: center; margin: 0 -36px; }
+.ticker div { display: flex; gap: 48px; white-space: nowrap; font-family: var(--mono); font-size: 13px; color: var(--dim); padding-left: 36px; animation: ticker 40s linear infinite; }
+
+/* Views */
+.tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
+.tabs button { font: inherit; font-size: 15px; border: 0; border-radius: 999px; padding: 9px 22px; min-height: 40px; cursor: pointer; background: transparent; color: var(--soft); }
+.tabs button[aria-selected="true"] { background: var(--accent); color: #04110d; font-weight: 600; }
+.tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }
+
+/* The map: every skill a star around the face */
+.map { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.map-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+.map-title { font-size: 24px; font-weight: 500; }
+.sky { position: relative; flex: 1; min-height: 520px; }
+.sky svg.orbits { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.sky svg.orbits ellipse { fill: none; stroke: #222a35; stroke-width: 1; stroke-dasharray: 2 9; animation: drift 30s linear infinite; }
+.sky svg.orbits ellipse.outer { stroke: #1b212a; animation-duration: 50s; animation-direction: reverse; }
+.sky .face { position: absolute; width: min(170px, 22vw); transform: translate(-50%, -50%); }
+.star {
+  position: absolute; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 8px; white-space: nowrap;
+  font: inherit; font-size: 15px; color: var(--text); padding: 8px 14px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: rgba(14, 16, 21, .88); transition: border-color .3s, background .3s, transform .2s;
+}
+.star:hover { transform: translate(-50%, -50%) scale(1.06); }
+.star:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.star i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); box-shadow: 0 0 10px var(--c); animation: twinkle 3s ease-in-out infinite; }
+.star[aria-pressed="true"] { border-color: var(--c); background: color-mix(in srgb, var(--c) 16%, #0e1015); }
+.callout {
+  border: 1px solid var(--c, var(--line)); border-radius: 18px; padding: 14px 18px; margin-bottom: 18px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--c) 10%, transparent), transparent 40%), var(--panel);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+}
+.callout .head { display: flex; flex-direction: column; gap: 2px; flex: 1 1 260px; min-width: 0; }
+.callout .what { color: var(--soft); font-size: 14px; }
+.callout button {
+  font: inherit; font-size: 15px; text-align: left; color: var(--text); cursor: pointer; background: #12151b;
+  border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; min-height: 44px;
+}
+.callout button:hover, .callout button:focus-visible { border-color: var(--c); outline: 0; }
+.callout .note { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+/* Too narrow for rings: a list. */
+.sky.list { min-height: 0; display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; padding-top: 12px; }
+.sky.list .star { position: static; transform: none; }
+.sky.list svg.orbits, .sky.list .face { display: none; }
+
+@keyframes drift { to { stroke-dashoffset: -220; } }
+@keyframes twinkle { 50% { opacity: .55; } }
+@keyframes breathe { 50% { transform: scale(1.35); opacity: .35; } }
+@keyframes scan { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
+@keyframes blink { 50% { opacity: .2; } }
+@keyframes float { 50% { transform: translateY(-6px); } }
+@keyframes tilt { 0%, 100% { transform: rotate(-3deg) scale(1.03); } 50% { transform: rotate(3deg) scale(1.06); } }
+@keyframes bounce { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-6px) scale(1.03); } }
+@keyframes ripple { from { transform: scale(.95); opacity: .8; } to { transform: scale(1.3); opacity: 0; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes bar { 0%, 100% { transform: scaleY(.2); } 50% { transform: scaleY(1); } }
+@keyframes ticker { to { transform: translateX(-50%); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body data-state="idle">
+<main>
+  <div class="top">
+    <div class="who"><span class="dot"><i></i><b></b></span><strong id="name">Jarvis</strong><span class="label" id="status-line">listening for the wake word</span></div>
+    <div class="tabs" role="tablist" aria-label="Views">
+      <button type="button" role="tab" id="tab-home" aria-selected="true" aria-controls="view-home">Home</button>
+      <button type="button" role="tab" id="tab-map" aria-selected="false" aria-controls="view-map">Map</button>
+    </div>
+    <div class="pill" id="pill"><span class="scan"></span><span class="led"></span><span id="pill-text">CONNECTING</span></div>
+  </div>
+
+  <div class="grid" id="view-home" role="tabpanel" aria-labelledby="tab-home">
+    <section class="face-col" aria-label="Assistant">
+      <div class="meme" id="meme">waiting for<br>hey jarvis</div>
+      <div class="face">
+        <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+        <span class="orbit"></span>
+        <div class="photo">
+          <img class="idle" src="hub/face-idle.jpg" alt="">
+          <img class="listening" src="hub/face-listening.jpg" alt="">
+          <img class="speaking" src="hub/face-speaking.jpg" alt="">
+        </div>
+      </div>
+      <div class="wave" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+      <div class="said" id="said" aria-live="polite"></div>
+      <div class="clock"><span class="time" id="time">--:--</span><span class="label" id="date"></span></div>
+      <div class="weather" id="weather"></div>
+    </section>
+
+    <section aria-label="Rooms">
+      <span class="label">Rooms · tap to switch</span>
+      <div class="rooms" id="rooms"></div>
+    </section>
+
+    <section class="side" id="side" aria-label="Now"></section>
+  </div>
+
+  <section class="map" id="view-map" role="tabpanel" aria-labelledby="tab-map" hidden>
+    <div class="map-head"><span class="label">What you can say</span><span class="map-title">Tap a star</span><span class="label" id="map-count"></span></div>
+    <div class="sky" id="sky">
+      <svg class="orbits" aria-hidden="true"><ellipse id="orbit-inner"></ellipse><ellipse class="outer" id="orbit-outer"></ellipse></svg>
+      <div class="face" id="map-face">
+        <span class="ring"></span><span class="ring"></span><span class="ring"></span>
+        <span class="orbit"></span>
+        <div class="photo">
+          <img class="idle" src="hub/face-idle.jpg" alt="">
+          <img class="listening" src="hub/face-listening.jpg" alt="">
+          <img class="speaking" src="hub/face-speaking.jpg" alt="">
+        </div>
+      </div>
+    </div>
+    <div class="callout" id="callout" aria-live="polite"></div>
+  </section>
+
+  <div class="ticker" aria-hidden="true"><div id="ticker"></div></div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const BULB = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>';
+const CONDITIONS = {
+  "clear-night": "Clear", sunny: "Sunny", partlycloudy: "Partly cloudy", cloudy: "Cloudy", rainy: "Rain", pouring: "Heavy rain",
+  snowy: "Snow", "snowy-rainy": "Sleet", fog: "Fog", windy: "Windy", "windy-variant": "Windy", lightning: "Thunder",
+  "lightning-rainy": "Thunderstorm", hail: "Hail", exceptional: "Unusual weather",
+};
+const MEMES = {
+  idle: "waiting for<br>hey jarvis", listening: "…huh?", thinking: "hmm…", speaking: "very good,<br>sir",
+};
+const hhmm = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+let data = null;
+const timers = new Map();
+
+// --- The face ----------------------------------------------------------------------------------
+let backToIdle = null;
+function setState(state, text) {
+  clearTimeout(backToIdle);
+  document.body.dataset.state = state;
+  $("#meme").innerHTML = MEMES[state] || MEMES.idle;
+  $("#status-line").textContent = { idle: "listening for the wake word", listening: "listening", thinking: "thinking", speaking: "speaking" }[state];
+  if (text != null) $("#said").textContent = text;
+  // Missed events must not leave the face stuck.
+  if (state === "listening" || state === "thinking") backToIdle = setTimeout(() => setState("idle"), 15000);
+}
+function connectEvents() {
+  const events = new EventSource("api/events");
+  events.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.timer) { onTimer(m.timer); return; }
+    switch (m.state) {
+      case "listening": setState("listening", ""); break;
+      case "thinking": setState("thinking", "“" + m.heard + "”"); break;
+      case "speaking": setState("speaking", m.text); break;
+      // All audio is out; the speaker still plays it for about that long.
+      case "spoken": clearTimeout(backToIdle); backToIdle = setTimeout(() => { setState("idle"); }, m.seconds * 1000 + 1200); break;
+      case "idle": if (document.body.dataset.state !== "speaking") setState("idle"); break;
+    }
+  };
+  events.onerror = () => { events.close(); setTimeout(connectEvents, 3000); };
+}
+
+// --- Timers, counted down here between notices --------------------------------------------------
+function onTimer(t) {
+  if (t.gone) timers.delete(t.id);
+  else timers.set(t.id, { ...t, at: Date.now() });
+  renderSide();
+}
+function left(t) { return t.active ? Math.max(0, t.left - Math.floor((Date.now() - t.at) / 1000)) : t.left; }
+const mmss = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+
+// --- Cards -------------------------------------------------------------------------------------
+async function refresh() {
+  try {
+    const res = await fetch("api/hub");
+    data = await res.json();
+  } catch { data = { error: "The engine didn't answer." }; }
+  render();
+}
+function render() {
+  const pill = $("#pill");
+  const alerts = data?.alerts || [];
+  pill.classList.toggle("alert", alerts.length > 0);
+  $("#pill-text").textContent = data?.error ? "NO DATA" : alerts.length ? "ALERT" : ("ALL IS WELL" + (data.alarm ? " · " + data.alarm.replace(/^The alarm is /, "ALARM ").replace(/\.$/, "").toUpperCase() : ""));
+  const w = data?.weather;
+  $("#weather").replaceChildren();
+  if (w) {
+    $("#weather").append(el("b", null, Math.round(w.temp) + w.unit), el("span", null, CONDITIONS[w.condition] || w.condition));
+  }
+  renderRooms();
+  renderSide();
+  const tick = [];
+  if (data?.sunset) tick.push("SUNSET " + hhmm(data.sunset));
+  if (data?.sunrise) tick.push("SUNRISE " + hhmm(data.sunrise));
+  for (const p of data?.people || []) tick.push(`${p.name.toUpperCase()} ${p.home ? "IS HOME" : "IS OUT"}`);
+  if (data?.guest_wifi) tick.push("GUEST WI-FI " + (data.guest_wifi.on ? `ON · ${data.guest_wifi.clients ?? 0} DEVICES` : "OFF"));
+  if (data?.privacy) tick.push("CAMERA IN PRIVACY MODE");
+  if (data?.tv_on) tick.push("TV ON");
+  if (!tick.length) tick.push("SAY “HEY JARVIS”");
+  const items = [...tick, ...tick].map((t) => el("span", null, t));
+  $("#ticker").replaceChildren(...items);
+}
+function renderRooms() {
+  const box = $("#rooms");
+  box.replaceChildren();
+  for (const r of data?.rooms || []) {
+    const on = r.lit > 0;
+    const b = el("button", "room" + (on ? " on" : ""));
+    b.type = "button";
+    b.setAttribute("aria-pressed", on);
+    const head = el("span", "head");
+    head.append(el("span", "name", r.area));
+    head.insertAdjacentHTML("beforeend", BULB);
+    const state = el("span", "state", on ? (r.lit === r.total ? "ON" : `${r.lit} OF ${r.total} ON`) : "OFF");
+    b.append(head, state);
+    b.onclick = () => toggle(r, b);
+    box.append(b);
+  }
+  if (!box.children.length) box.append(el("div", "label", data?.error || "No rooms with lights."));
+}
+async function toggle(room, button) {
+  const on = room.lit === 0;
+  button.classList.add("busy");
+  button.classList.toggle("on", on);
+  try {
+    await fetch(`api/hub/room?area=${encodeURIComponent(room.area)}&on=${on ? 1 : 0}`, { method: "POST" });
+  } finally { setTimeout(refresh, 400); }
+}
+function renderSide() {
+  const side = $("#side");
+  side.replaceChildren();
+  for (const text of data?.alerts || []) side.append(el("div", "card alert-card big", text));
+  for (const m of data?.media || []) {
+    const c = el("div", "card");
+    c.append(el("span", "label", "Now playing · " + m.name));
+    const bars = el("div", "bars"); bars.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < 7; i++) bars.append(el("span"));
+    c.append(bars, el("span", "big", m.title || "Playing"), el("span", "soft", m.artist || ""));
+    side.append(c);
+    break;
+  }
+  for (const t of timers.values()) {
+    const s = left(t);
+    const c = el("div", "card timer");
+    const r = 24, len = 2 * Math.PI * r;
+    c.innerHTML = `<svg viewBox="0 0 54 54" aria-hidden="true"><circle cx="27" cy="27" r="${r}" fill="none" stroke="#1c2028" stroke-width="3"/><circle cx="27" cy="27" r="${r}" fill="none" stroke="#ffc46b" stroke-width="3" stroke-linecap="round" stroke-dasharray="${len}" stroke-dashoffset="${len * (1 - s / Math.max(1, t.total))}"/></svg>`;
+    const text = el("div");
+    text.append(el("div", "label", t.name || "Timer"), el("div", "t", mmss(s)));
+    c.append(text);
+    side.append(c);
+  }
+  const list = data?.shopping || [];
+  if (list.length) {
+    const c = el("div", "card");
+    c.append(el("span", "label", "Shopping list"), el("span", "big", list.slice(0, 3).join(", ")));
+    if (list.length > 3) c.append(el("span", "soft", `and ${list.length - 3} more`));
+    side.append(c);
+  }
+  if (!side.children.length) {
+    const c = el("div", "card");
+    c.append(el("span", "label", "Try"), el("span", "big", "“Hey Jarvis, is everything okay at home?”"));
+    side.append(c);
+  }
+}
+
+// --- The map ---------------------------------------------------------------------------------
+// A hue per skill (OKLCH degrees), the same as on the skills page.
+const HUES = {
+  lights: 90, light_level: 345, lights_status: 200, scene: 300, script: 255, undo: 265, tv: 245,
+  house_status: 150, routines: 185, alerts: 25, phone: 280, guest_wifi: 225, camera: 50, alarm: 10,
+  sun: 65, weather: 230, transit: 20, power: 100, music: 330, timer: 55, shopping: 140, whos_home: 170,
+  briefing: 75, time: 240, joke: 95, manners: 0, news: 215, lookup: 290, calc: 125, distance: 40, smalltalk: 195,
+};
+const colour = (id) => `oklch(.8 .14 ${HUES[id] ?? 200})`;
+let skills = [], picked = null, clip = null;
+
+async function loadSkills() {
+  try {
+    const res = await fetch("api/skills");
+    const body = await res.json();
+    skills = body.skills.filter((s) => s.examples.length);
+    if (body.about?.name) $("#name").textContent = body.about.name;
+  } catch { skills = []; }
+  const phrases = skills.reduce((n, s) => n + s.examples.length, 0);
+  $("#map-count").textContent = `${skills.length} skills · ${phrases} phrases`;
+  const sky = $("#sky");
+  for (const s of skills) {
+    const b = el("button", "star");
+    b.type = "button";
+    b.style.setProperty("--c", colour(s.id));
+    b.setAttribute("aria-pressed", "false");
+    b.dataset.id = s.id;
+    b.append(el("i"), el("span", null, s.name));
+    b.onclick = () => pick(s.id);
+    sky.append(b);
+  }
+  pick(skills.find((s) => s.id === "lights") ? "lights" : skills[0]?.id);
+  layout();
+}
+
+// Skills in group order around two rings, shared by the rings' size so neither is crowded. The
+// outer ring keeps half a label's width from the edges.
+function layout() {
+  const sky = $("#sky");
+  const w = sky.clientWidth, h = sky.clientHeight;
+  sky.classList.toggle("list", w < 760);
+  if (w < 760 || !w) return;
+  const cx = w / 2, cy = h / 2;
+  const ordered = ["Home", "Information", "Everyday"].flatMap((g) => skills.filter((s) => s.group === g));
+  const rings = [{ rx: w * 0.23, ry: h * 0.28 }, { rx: w / 2 - 115, ry: h / 2 - 36 }];
+  const share = rings[0].rx + rings[0].ry;
+  const inner = Math.round(ordered.length * share / (share + rings[1].rx + rings[1].ry));
+  rings[0].stars = ordered.slice(0, inner);
+  rings[1].stars = ordered.slice(inner);
+  rings.forEach((ring, i) => {
+    const e = $(i ? "#orbit-outer" : "#orbit-inner");
+    e.setAttribute("cx", cx); e.setAttribute("cy", cy); e.setAttribute("rx", ring.rx); e.setAttribute("ry", ring.ry);
+    ring.stars.forEach((s, n) => {
+      const a = -Math.PI / 2 + (i ? Math.PI / ring.stars.length : 0) + (n / ring.stars.length) * Math.PI * 2;
+      const star = sky.querySelector(`.star[data-id="${s.id}"]`);
+      star.style.left = cx + Math.cos(a) * ring.rx + "px";
+      star.style.top = cy + Math.sin(a) * ring.ry + "px";
+    });
+  });
+  const face = $("#map-face");
+  face.style.left = cx + "px"; face.style.top = cy + "px";
+}
+
+function pick(id) {
+  const s = skills.find((x) => x.id === id);
+  if (!s) return;
+  picked = id;
+  document.querySelectorAll(".star").forEach((b) => b.setAttribute("aria-pressed", b.dataset.id === id));
+  const box = $("#callout");
+  box.style.setProperty("--c", colour(id));
+  box.replaceChildren();
+  const head = el("div", "head");
+  const title = el("span", "label", s.name + " · say");
+  title.style.color = colour(id);
+  head.append(title, el("span", "what", s.does), el("span", "note", "Tap a phrase to hear the answer"));
+  box.append(head);
+  for (const phrase of s.examples) {
+    const b = el("button", null, "“" + phrase + "”");
+    b.type = "button";
+    b.onclick = () => hear(phrase);
+    box.append(b);
+  }
+}
+
+// Read-only requests are answered aloud by the raccoon; the rest only say why not.
+async function hear(phrase) {
+  if (clip) clip.pause();
+  setState("thinking", "“" + phrase + "”");
+  const note = $("#callout .note");
+  try {
+    const res = await fetch("api/hear?q=" + encodeURIComponent(phrase));
+    const r = await res.json();
+    if (!r.answer) { setState("idle", ""); note.textContent = r.reason || "No answer."; return; }
+    note.textContent = "Tap a phrase to hear the answer";
+    setState("speaking", r.answer);
+    clip = new Audio(r.audio);
+    clip.onended = () => setState("idle");
+    clip.play().catch(() => { backToIdle = setTimeout(() => setState("idle"), 4000); });
+  } catch { setState("idle", ""); note.textContent = "The engine didn't answer."; }
+}
+
+function show(view) {
+  const map = view === "map";
+  $("#view-home").hidden = map;
+  $("#view-map").hidden = !map;
+  $("#tab-home").setAttribute("aria-selected", !map);
+  $("#tab-map").setAttribute("aria-selected", map);
+  history.replaceState(null, "", map ? "#map" : "#");
+  if (map) layout();
+}
+$("#tab-home").onclick = () => show("home");
+$("#tab-map").onclick = () => show("map");
+window.addEventListener("resize", () => { if (!$("#view-map").hidden) layout(); });
+
+// --- Clock -------------------------------------------------------------------------------------
+function clock() {
+  const now = new Date();
+  $("#time").textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  $("#date").textContent = now.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }).toUpperCase();
+  if (timers.size) renderSide();
+}
+
+setInterval(clock, 1000);
+setInterval(refresh, 10000);
+clock();
+refresh();
+connectEvents();
+loadSkills().then(() => show(location.hash === "#map" ? "map" : "home"));
+</script>
+</body>
+</html>
