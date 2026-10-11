@@ -1,5 +1,6 @@
 //! Measures recognition of names: transcribes each case with and without a vocabulary prompt.
 //! `cargo run --release -p voice-assistant --example transcribe_eval -- cases.tsv vocab.txt 0,80,150,223`
+//! WHISPER_SIZE picks the model (default base).
 //! cases.tsv: `<24 kHz wav>\t<name that must appear>` per line; vocab.txt: one name per line.
 
 use std::time::Instant;
@@ -23,7 +24,8 @@ fn main() -> Result<()> {
     let names = Names::new(&vocab);
     // Controls: sentences whose "name" is not in the vocabulary must not match anything.
     let known = |name: &str| vocab.iter().any(|v| v.to_lowercase().contains(&name.to_lowercase()));
-    let files = WhisperFiles::fetch(&default_repo(false, "base"))?;
+    let size = std::env::var("WHISPER_SIZE").unwrap_or_else(|_| "base".into());
+    let files = WhisperFiles::fetch(&default_repo(false, &size))?;
     let audio: Vec<Vec<i16>> = cases
         .iter()
         .map(|(path, _)| -> Result<Vec<i16>> {

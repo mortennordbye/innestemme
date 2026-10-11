@@ -165,6 +165,16 @@ impl Persona {
         phrases
     }
 
+    /// Every way [`Persona::style`] can put a fixed answer, without greetings and remarks (those
+    /// are in [`Persona::phrases`]), for rendering ahead of time.
+    pub fn forms(&self, answer: &str) -> Vec<String> {
+        let mut forms: Vec<String> =
+            (0..64).map(|seed| Persona::with_seed(&self.honorific, seed).addressed(answer.trim())).collect();
+        forms.sort();
+        forms.dedup();
+        forms
+    }
+
     /// Now and then a remark that fits the answer, never the same one twice running.
     fn quip(&mut self, answer: &str) -> Option<&'static str> {
         if answer.split_inclusive(['.', '?', '!']).filter(|s| !s.trim().is_empty()).count() > QUIP_MAX_SENTENCES {
@@ -247,6 +257,17 @@ mod tests {
             let styled = Persona::with_seed("sir", seed).style(briefing, 18);
             assert!(styled.starts_with("Good evening, sir! It's 18:02."), "{styled}");
             assert!(styled.ends_with("Peace Prize reaction rolls in."), "{styled}");
+        }
+    }
+
+    #[test]
+    fn forms_cover_every_styling() {
+        let p = Persona::with_seed("sir", 1);
+        assert_eq!(p.forms("Okay, paused."), ["Paused, sir."]);
+        assert_eq!(p.forms("Okay.").len(), OPENERS.len());
+        for seed in 0..20 {
+            let styled = Persona::with_seed("sir", seed).addressed("Okay, the TV is off.");
+            assert!(p.forms("Okay, the TV is off.").contains(&styled), "{styled}");
         }
     }
 

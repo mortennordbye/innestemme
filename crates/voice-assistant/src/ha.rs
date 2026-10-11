@@ -171,6 +171,11 @@ impl HomeAssistant {
         }
     }
 
+    /// A client of its own, for a call made on another thread.
+    pub fn detached(&self) -> Self {
+        Self::new(&self.base, &self.token)
+    }
+
     fn post(&self, path: &str, body: serde_json::Value) -> Result<ureq::http::Response<ureq::Body>> {
         self.post_within(path, body, TIMEOUT)
     }
@@ -312,6 +317,17 @@ impl HomeAssistant {
     /// An entity's state object (`state`, `attributes`).
     pub fn state(&self, entity_id: &str) -> Result<serde_json::Value> {
         self.get(&format!("/api/states/{entity_id}"))
+    }
+
+    /// Media players that are playing: those in `area`, and any of `also` (a Music Assistant player
+    /// has no area of its own).
+    pub fn playing(&self, area: Option<&str>, also: &[String]) -> Result<Vec<String>> {
+        let template = format!(
+            r#"{{% set area = {} %}}{{% set also = {} %}}[{{% for s in states.media_player if s.state == 'playing' and ((area and area_name(s.entity_id) == area) or s.entity_id in also) %}}{{{{ s.entity_id | tojson }}}}{{% if not loop.last %}},{{% endif %}}{{% endfor %}}]"#,
+            serde_json::to_string(&area)?,
+            serde_json::to_string(also)?
+        );
+        serde_json::from_str(&self.template(&template)?).context("parsing the playing media players")
     }
 
     /// The area of the first device with one of these names (friendly name or ESPHome name).
