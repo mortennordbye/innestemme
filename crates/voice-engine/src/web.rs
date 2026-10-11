@@ -13,6 +13,7 @@ use voice_assistant::intent;
 use voice_proto::SAMPLE_RATE;
 
 use crate::assistant::{AssistantHandle, Preview};
+use crate::hub::Hub;
 use crate::metrics::SpeechClips;
 use crate::unhandled::UnhandledLog;
 
@@ -31,6 +32,8 @@ pub struct Web {
     assistant: Option<AssistantHandle>,
     speech: Arc<SpeechClips>,
     unhandled: Option<Arc<UnhandledLog>>,
+    /// The dashboard at `/hub`.
+    hub: Option<Arc<Hub>>,
 }
 
 /// Status, content type and body.
@@ -44,7 +47,33 @@ impl Web {
         speech: Arc<SpeechClips>,
         unhandled: Option<Arc<UnhandledLog>>,
     ) -> Self {
-        Self { wake, about, assistant, speech, unhandled }
+        Self { wake, about, assistant, speech, unhandled, hub: None }
+    }
+
+    pub fn with_hub(mut self, hub: Arc<Hub>) -> Self {
+        self.hub = Some(hub);
+        self
+    }
+
+    /// `/api/events`: the assistant's state as server-sent events, for the hub's face. `false` when
+    /// there is nothing to stream.
+    pub async fn events(&self, stream: &mut tokio::net::TcpStream) -> bool {
+        let Some(assistant) = &self.assistant else { return false };
+        if let Err(error) = crate::hub::events(stream, assistant).await {
+            tracing::debug!(%error, "hub event stream closed");
+        }
+        true
+    }
+
+    /// `/api/hub` and `POST /api/hub/room?...`.
+    pub async fn hub_api(&self, post: bool, target: &str) -> Option<Response> {
+        let hub = self.hub.as_ref()?;
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        match (path, post) {
+            ("/api/hub", _) => Some(hub.snapshot().await),
+            ("/api/hub/room", true) => Some(hub.room(query).await),
+            _ => None,
+        }
     }
 
     /// `/api/listening`: whether the assistant listens. A POST with `pause=<minutes>` (0: until
@@ -102,6 +131,10 @@ impl Web {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         match path {
             "/" => Some(("200 OK", "text/html; charset=utf-8", PAGE.as_bytes().to_vec())),
+            "/hub" if self.hub.is_some() => {
+                Some(("200 OK", "text/html; charset=utf-8", crate::hub::PAGE.as_bytes().to_vec()))
+            }
+            _ if path.starts_with("/hub/") => self.hub.as_ref()?.face(path),
             "/api/skills" => Some(json_response(&json!({ "about": self.about, "skills": SKILLS }))),
             "/api/unhandled" => {
                 let entries = self.unhandled.as_ref().map(|log| log.recent(UNHANDLED_SHOWN));
@@ -139,7 +172,7 @@ fn bad_request(reason: &str) -> Response {
 }
 
 /// Percent-decoding for a query value; `+` is a space.
-fn decode(value: &str) -> String {
+pub(crate) fn decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let (mut out, mut i) = (Vec::with_capacity(bytes.len()), 0);
     while i < bytes.len() {

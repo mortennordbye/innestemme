@@ -2,6 +2,7 @@
 
 pub mod assistant;
 pub mod engine;
+pub mod hub;
 pub mod metrics;
 pub mod pipeline;
 pub mod satellite;

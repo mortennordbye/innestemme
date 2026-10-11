@@ -17,8 +17,8 @@ const SERVICE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Lights and areas change rarely; refetch after this long.
 const REFRESH: Duration = Duration::from_secs(600);
 
-/// Every light as `{"id", "name", "area"}`, rendered by Home Assistant itself.
-const LIGHTS_TEMPLATE: &str = r#"[{% for s in states.light %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}, "area": {{ (area_name(s.entity_id) or "") | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
+/// Every light as `{"id", "name", "area", "group"}`, rendered by Home Assistant itself.
+const LIGHTS_TEMPLATE: &str = r#"[{% for s in states.light %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}, "area": {{ (area_name(s.entity_id) or "") | tojson }}, "group": {{ (s.attributes.entity_id is defined) | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
 
 /// Room names people say, in both languages, grouped by room. A request and an area match when
 /// they share a group, so "living room" finds an area called "Stue" and the other way round.
@@ -132,6 +132,9 @@ pub struct Light {
     pub id: String,
     pub name: String,
     pub area: String,
+    /// A light group (a Hue room, a Home Assistant group): it is on while any member is.
+    #[serde(default)]
+    pub group: bool,
 }
 
 /// What a request resolved to: a label to speak and the entities to switch.
@@ -461,6 +464,12 @@ pub fn names_something(request: &str) -> bool {
     request.split_whitespace().map(normalize).any(|w| !w.is_empty() && !FILLER.contains(&w.as_str()))
 }
 
+/// Whether a name or area is the room `room` names, in either language ("Soverom" is the bedroom).
+pub fn is_room(name: &str, room: &str) -> bool {
+    let (name, room) = (normalize_phrase(name), normalize_phrase(room));
+    !name.is_empty() && (name == room || room_group(&room).is_some_and(|g| room_group(&name) == Some(g)))
+}
+
 /// The room group a phrase belongs to, if any.
 fn room_group(phrase: &str) -> Option<usize> {
     ROOMS.iter().position(|names| names.contains(&phrase))
@@ -524,7 +533,7 @@ mod tests {
     use super::*;
 
     fn light(id: &str, name: &str, area: &str) -> Light {
-        Light { id: id.into(), name: name.into(), area: area.into() }
+        Light { id: id.into(), name: name.into(), area: area.into(), group: false }
     }
 
     fn home() -> Vec<Light> {

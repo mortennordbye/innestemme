@@ -1,10 +1,11 @@
 //! Runs one home request (shopping list, scene, script, lights on, light level, who's home,
-//! electricity prices) against the real Home
+//! electricity prices, house status, sun, phones, TV) against the real Home
 //! Assistant, without audio: `cargo run -p voice-assistant --example home -- "what's on the shopping list"`.
 //! Reads HA_URL and HA_TOKEN from the environment (`set -a; . ./.env`). Scenes and scripts are only
-//! looked up unless RUN=1 (light levels too); shopping list changes are real. VOICE_ROOM plays the satellite's room.
+//! looked up unless RUN=1 (light levels, phones and the TV too); shopping list changes are real. VOICE_ROOM plays the satellite's room.
 
 use voice_assistant::ha::{self, HomeAssistant};
+use voice_assistant::house::{self, HouseCommand};
 use voice_assistant::intent::{self, Intent};
 use voice_assistant::lang::Lang;
 use voice_assistant::shopping::ShoppingList;
@@ -50,6 +51,42 @@ fn main() -> anyhow::Result<()> {
             let area = std::env::var("VOICE_PRICE_AREA").unwrap_or_else(|_| "NO1".into());
             let answer = voice_assistant::power::Power::new("innestemme-example", &area).answer(query, lang)?;
             println!("{query:?} in {area} -> {answer:?}");
+        }
+        Intent::House(HouseCommand::Status) => {
+            let alerts = voice_assistant::alerts::active(&ha)?;
+            let lights: Vec<ha::Light> = ha.lights_on()?.into_iter().filter(|l| !l.name.ends_with(" LED")).collect();
+            println!("{}", house::status_answer(&alerts, &lights, &house::snapshot(&ha)?, lang));
+        }
+        Intent::House(HouseCommand::Sun(event)) => {
+            println!("{}", house::sun_answer(&ha.state("sun.sun")?, event, lang)?)
+        }
+        Intent::House(HouseCommand::PhoneBattery(name)) => {
+            let phones = house::phones(&ha)?;
+            println!("{}", house::battery_answer(&house::pick_phones(&phones, name.as_deref()), name.as_deref(), lang));
+        }
+        Intent::House(HouseCommand::FindPhone(name)) => {
+            let phones = house::phones(&ha)?;
+            let picked = house::pick_phones(&phones, name.as_deref());
+            println!("{name:?} -> {picked:?}");
+            if run {
+                for phone in &picked {
+                    house::ring(&ha, phone, "Homie")?;
+                }
+                println!("{}", house::rang_answer(&picked, name.as_deref(), lang));
+            }
+        }
+        Intent::House(other) => {
+            for (domain, word) in
+                [("switch", "guest"), ("switch", "privacy"), ("camera", ""), ("alarm_control_panel", "")]
+            {
+                println!("{other:?}: {domain} {word:?} -> {:?}", house::entities(&ha, domain, word)?);
+            }
+        }
+        Intent::Tv(command) => {
+            println!("{command:?}: TVs on {:?}", voice_assistant::tv::on_tvs(&ha)?);
+            if run {
+                println!("{}", voice_assistant::tv::Tv::new(None).run(Some(&ha), &command, lang));
+            }
         }
         Intent::LightsStatus { target } => {
             let on: Vec<String> = ha.lights_on()?.into_iter().map(|l| format!("{} ({})", l.name, l.area)).collect();

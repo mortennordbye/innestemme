@@ -1,12 +1,14 @@
 //! Voice assistant pieces behind the engine's `assistant` processor: streaming speech-to-text, the
 //! wake word and turn logic, intent parsing, tools and speech output.
 
+pub mod alerts;
 pub mod calc;
 pub mod catalogue;
 pub mod dialog;
 pub mod distance;
 pub mod geo;
 pub mod ha;
+pub mod house;
 pub mod intent;
 pub mod jokes;
 pub mod kokoro;
@@ -28,6 +30,7 @@ pub mod stt;
 pub mod timer;
 pub mod transit;
 pub mod tts;
+pub mod tv;
 pub mod vad;
 pub mod wakeword;
 pub mod weather;

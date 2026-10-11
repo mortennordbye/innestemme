@@ -18,9 +18,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::broadcast;
 use tracing::{info, warn};
+use voice_assistant::alerts::{self, Watch};
 use voice_assistant::dialog::{Action, Dialog, WakeWord};
 use voice_assistant::geo::{self, Location};
-use voice_assistant::ha::{self, HomeAssistant, Target};
+use voice_assistant::ha::{self, HomeAssistant, Light, Target};
+use voice_assistant::house::{self, HouseCommand, Routine, Switch};
 use voice_assistant::intent::{self, Day, Intent, LightLevel};
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
@@ -35,6 +37,7 @@ use voice_assistant::stt::SpeechToText;
 use voice_assistant::timer::{self, Notice, Timers};
 use voice_assistant::transit::Transit;
 use voice_assistant::tts::{self, Tts};
+use voice_assistant::tv::Tv;
 use voice_assistant::vad::{self, Vad};
 use voice_assistant::weather::Weather;
 use voice_assistant::whisper::{Transcriber, Transcript};
@@ -65,6 +68,8 @@ const WAKE_TAIL: Duration = Duration::from_millis(500);
 const WAKE_TAIL_LONGEST: Duration = Duration::from_millis(1600);
 /// Unrecognised speech after a wake longer than this many words gets no "didn't catch that".
 const LONGEST_REQUEST_WORDS: usize = 12;
+/// How often Home Assistant's safety sensors are checked.
+const ALERT_POLL: Duration = Duration::from_secs(5);
 
 pub struct AssistantConfig {
     /// Place used when a weather question names none; also the home's name in answers.
@@ -99,6 +104,10 @@ pub struct AssistantConfig {
     pub dump_utterances: Option<std::path::PathBuf>,
     /// Where requests that no skill handled are logged.
     pub unhandled: Option<Arc<UnhandledLog>>,
+    /// The TV's media player entity; default: the media player that is a TV.
+    pub tv: Option<String>,
+    /// Speak at once when a smoke, gas, water or breaking glass sensor goes off.
+    pub alerts: bool,
 }
 
 pub enum Listener {
@@ -241,6 +250,8 @@ enum Job {
     Satellite(Vec<String>),
     /// The web page's "hear the answer".
     Preview(String, tokio::sync::oneshot::Sender<Preview>),
+    /// A safety sensor went off: speak this warning.
+    Alert(String),
 }
 
 pub struct AssistantProcessor {
@@ -280,6 +291,7 @@ impl AssistantProcessor {
         let interrupted = Arc::new(AtomicBool::new(false));
         let pause = Arc::new(Pause::default());
         let speaker = config.speaker.clone();
+        let tv = Tv::new(config.tv.clone());
         let (events, _) = broadcast::channel(256);
         // MET Norway asks for an application name and a contact.
         let user_agent = match &config.contact {
@@ -339,6 +351,7 @@ impl AssistantProcessor {
             jokes: Jokes::default(),
             home_assistant: None,
             player: Player::new(speaker),
+            tv,
             transcriber,
             draft: None,
             follow_up_until: None,
@@ -380,6 +393,13 @@ impl AssistantProcessor {
                 Err(error) => warn!(%error, "music assistant not usable; music requests will fail"),
             }
             worker.home_assistant = Some(ha);
+        }
+        if let Some((url, token)) = worker.config.home_assistant.clone().filter(|_| worker.config.alerts) {
+            let jobs = jobs.clone();
+            std::thread::Builder::new()
+                .name("alerts".into())
+                .spawn(move || watch_alerts(HomeAssistant::new(&url, &token), jobs))?;
+            info!("watching home assistant for safety alerts");
         }
         if let Some(llm) = &worker.config.llm {
             let start = Instant::now();
@@ -546,8 +566,18 @@ const LEADS_HOME: &[&str] = &["Let me see who's in"];
 const LEADS_THINK: &[&str] = &["Let me think"];
 const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news"];
 const LEADS_LOOKUP: &[&str] = &["Let me look that up", "One moment"];
-const LEADS: &[&[&str]] =
-    &[LEADS_WEATHER, LEADS_TRANSIT, LEADS_POWER, LEADS_LIGHTS, LEADS_HOME, LEADS_THINK, LEADS_NEWS, LEADS_LOOKUP];
+const LEADS_HOUSE: &[&str] = &["Let me check the house", "Checking the house"];
+const LEADS: &[&[&str]] = &[
+    LEADS_WEATHER,
+    LEADS_TRANSIT,
+    LEADS_POWER,
+    LEADS_LIGHTS,
+    LEADS_HOME,
+    LEADS_THINK,
+    LEADS_NEWS,
+    LEADS_LOOKUP,
+    LEADS_HOUSE,
+];
 
 /// "Checking the forecast, sir." or "Checking the forecast."
 fn capitalize(text: &str) -> String {
@@ -585,6 +615,7 @@ struct Worker {
     jokes: Jokes,
     home_assistant: Option<HomeAssistant>,
     player: Player,
+    tv: Tv,
     transcriber: Option<Box<Transcriber>>,
     /// The latest draft and its transcripts.
     draft: Option<(Vec<i16>, Vec<Transcript>)>,
@@ -685,6 +716,10 @@ impl Worker {
                     if !queued.iter().any(|job| matches!(job, Job::Draft(_) | Job::Utterance(..))) {
                         self.transcribe_draft(audio);
                     }
+                }
+                Job::Alert(text) => {
+                    info!(text, "safety alert");
+                    self.announce(&text, tts::alarm_chime(), Lang::English, false);
                 }
                 Job::Ready => {
                     info!("ready");
@@ -793,6 +828,14 @@ impl Worker {
                 | Intent::SmallTalk(_)
                 | Intent::Cancel
                 | Intent::ShoppingList(ListCommand::Read)
+                | Intent::House(
+                    HouseCommand::Status
+                        | HouseCommand::Sun(_)
+                        | HouseCommand::PhoneBattery(_)
+                        | HouseCommand::GuestWifi(Switch::Status)
+                        | HouseCommand::Camera(Switch::Status)
+                        | HouseCommand::Alarm(Switch::Status | Switch::Off)
+                )
         );
         let answer = match intent {
             _ if reads => match self.compose(&request, Lang::English) {
@@ -991,6 +1034,7 @@ impl Worker {
             Intent::Lookup(_) => LEADS_LOOKUP,
             Intent::LightsStatus { .. } => LEADS_LIGHTS,
             Intent::WhosHome(_) => LEADS_HOME,
+            Intent::House(HouseCommand::Status) => LEADS_HOUSE,
             Intent::Unknown if self.config.llm.is_some() => LEADS_THINK,
             _ => return None,
         };
@@ -1239,7 +1283,47 @@ impl Worker {
                 None => return None,
             },
             Intent::Distance(query) => self.distance(&query, lang),
+            Intent::Tv(command) => self.tv.run(self.home_assistant.as_ref(), &command, lang),
+            Intent::House(command) => self.house(&command, lang),
+            Intent::Routine(routine) => self.routine(routine, lang),
         })
+    }
+
+    fn house(&mut self, command: &HouseCommand, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let name = self.config.wake.name().to_owned();
+        let Some(ha) = &mut self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        match house_answer(ha, command, lang, &name) {
+            Ok(answer) => {
+                info!(?command, "house");
+                answer
+            }
+            Err(error) => unreachable(&error, no),
+        }
+    }
+
+    /// Leaving, coming home and bedtime. Lights a routine switched count as the last lights, so
+    /// "undo" or "turn them back on" reverses it.
+    fn routine(&mut self, routine: Routine, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let here = self.room.clone();
+        let Some(ha) = &mut self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        match routine_answer(ha, routine, here.as_deref(), lang) {
+            Ok((answer, switched)) => {
+                info!(?routine, answer, "routine");
+                if let Some((target, on)) = switched {
+                    self.last_lights = Some((target, on, Instant::now()));
+                }
+                answer
+            }
+            Err(error) => unreachable(&error, no),
+        }
     }
 
     /// A named place, else the home: the address when it is set, else the `home` place name.
@@ -1580,20 +1664,8 @@ impl Worker {
                 };
             }
         }
-        // One name per room: the area, or the light's own name when it has none.
-        let mut places: Vec<String> = Vec::new();
-        for light in &on {
-            let place = if light.area.is_empty() { light.name.to_lowercase() } else { light.area.to_lowercase() };
-            if !places.contains(&place) {
-                places.push(place);
-            }
-        }
-        let and = if no { "og" } else { "and" };
-        let list = match places.as_slice() {
-            [] => String::new(),
-            [one] => one.clone(),
-            [rest @ .., last] => format!("{} {and} {last}", rest.join(", ")),
-        };
+        let places = house::rooms_lit(&on);
+        let list = house::join(&places, lang);
         match (no, places.is_empty()) {
             (false, true) => "All the lights are off.".into(),
             (true, true) => "Alt lyset er av.".into(),
@@ -1728,23 +1800,29 @@ impl Worker {
         }
     }
 
-    /// Rings for timers that ran out and speaks what they were for. The audio also goes to
-    /// satellites as an announcement.
+    /// Rings for timers that ran out and speaks what they were for.
     fn ring_due_timers(&mut self) {
         for (timer, notice) in self.timers.due(Instant::now()) {
             let text = timer::finished_text(&timer);
             info!(text, "timer done");
             self.emit(AssistantEvent::Timer(notice));
-            // Deaf while it plays, like an answer.
-            self.busy.store(true, Relaxed);
-            let mut audio = if timer.is_reminder { tts::reminder_chime() } else { tts::alarm_chime() };
-            if let Err(error) = self.tts.speak(&text, timer.lang, &mut |pcm| audio.extend_from_slice(pcm)) {
-                warn!(%error, "speech synthesis failed");
-            }
-            push(&mut self.reply, &audio);
-            self.busy.store(false, Relaxed);
-            self.emit(AssistantEvent::Announcement { text, audio: audio.into(), timer_ring: !timer.is_reminder });
+            let chime = if timer.is_reminder { tts::reminder_chime() } else { tts::alarm_chime() };
+            self.announce(&text, chime, timer.lang, !timer.is_reminder);
         }
+    }
+
+    /// Speaks outside a conversation, after a chime. The audio also goes to satellites as an
+    /// announcement.
+    fn announce(&mut self, text: &str, chime: Vec<i16>, lang: Lang, timer_ring: bool) {
+        // Deaf while it plays, like an answer.
+        self.busy.store(true, Relaxed);
+        let mut audio = chime;
+        if let Err(error) = self.tts.speak(text, lang, &mut |pcm| audio.extend_from_slice(pcm)) {
+            warn!(%error, "speech synthesis failed");
+        }
+        push(&mut self.reply, &audio);
+        self.busy.store(false, Relaxed);
+        self.emit(AssistantEvent::Announcement { text: text.to_owned(), audio: audio.into(), timer_ring });
     }
 
     fn emit(&self, event: AssistantEvent) {
@@ -1755,6 +1833,214 @@ impl Worker {
     fn play(&mut self, pcm: &[i16]) {
         push(&mut self.reply, pcm);
     }
+}
+
+/// Checks the safety sensors every few seconds and hands new warnings to the worker, which speaks
+/// them even while listening is paused.
+fn watch_alerts(ha: HomeAssistant, jobs: mpsc::Sender<Job>) {
+    let mut watch = Watch::default();
+    let mut failing = false;
+    loop {
+        std::thread::sleep(ALERT_POLL);
+        match alerts::active(&ha) {
+            Ok(active) => {
+                failing = false;
+                for alert in watch.due(&active, Instant::now()) {
+                    info!(id = alert.id, "safety sensor on");
+                    if jobs.send(Job::Alert(alerts::sentence(alert, Lang::English))).is_err() {
+                        return;
+                    }
+                }
+            }
+            // Once per outage: Home Assistant restarts now and then.
+            Err(error) if !failing => {
+                failing = true;
+                warn!(error = format!("{error:#}"), "could not check the safety sensors");
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+fn house_answer(ha: &mut HomeAssistant, command: &HouseCommand, lang: Lang, name: &str) -> anyhow::Result<String> {
+    use serde_json::json;
+    let no = lang == Lang::Norwegian;
+    let say = |english: &str, norwegian: &str| if no { norwegian.to_owned() } else { english.to_owned() };
+    Ok(match command {
+        HouseCommand::Status => {
+            let alerts = alerts::active(ha)?;
+            let lights: Vec<Light> = ha.lights_on()?.into_iter().filter(|l| !l.name.ends_with(" LED")).collect();
+            house::status_answer(&alerts, &lights, &house::snapshot(ha)?, lang)
+        }
+        HouseCommand::Sun(event) => house::sun_answer(&ha.state("sun.sun")?, *event, lang)?,
+        HouseCommand::FindPhone(who) => {
+            let phones = house::phones(ha)?;
+            let picked = house::pick_phones(&phones, who.as_deref());
+            for phone in &picked {
+                house::ring(ha, phone, name)?;
+                info!(phone = phone.id, "ringing phone");
+            }
+            house::rang_answer(&picked, who.as_deref(), lang)
+        }
+        HouseCommand::PhoneBattery(who) => {
+            let phones = house::phones(ha)?;
+            house::battery_answer(&house::pick_phones(&phones, who.as_deref()), who.as_deref(), lang)
+        }
+        HouseCommand::GuestWifi(switch) => {
+            let Some(wifi) = house::entities(ha, "switch", "guest")?.into_iter().next() else {
+                return Ok(say(
+                    "I can't find a guest Wi-Fi in Home Assistant.",
+                    "Jeg finner ikke gjestenettet i Home Assistant.",
+                ));
+            };
+            match switch {
+                Switch::On | Switch::Off => {
+                    let on = *switch == Switch::On;
+                    ha.service("switch", if on { "turn_on" } else { "turn_off" }, json!({ "entity_id": wifi.id }))?;
+                    match on {
+                        true => say("Okay, the guest Wi-Fi is on.", "Ok, gjestenettet er på."),
+                        false => say("Okay, the guest Wi-Fi is off.", "Ok, gjestenettet er av."),
+                    }
+                }
+                Switch::Status if wifi.state != "on" => say("The guest Wi-Fi is off.", "Gjestenettet er av."),
+                Switch::Status => {
+                    let clients = match (wifi.clients.parse::<u32>(), no) {
+                        (Ok(0), false) => " Nobody is connected.".to_owned(),
+                        (Ok(0), true) => " Ingen er koblet til.".to_owned(),
+                        (Ok(1), false) => " One device is connected.".to_owned(),
+                        (Ok(1), true) => " Én enhet er koblet til.".to_owned(),
+                        (Ok(n), false) => format!(" {n} devices are connected."),
+                        (Ok(n), true) => format!(" {n} enheter er koblet til."),
+                        (Err(_), _) => String::new(),
+                    };
+                    say("The guest Wi-Fi is on.", "Gjestenettet er på.") + &clients
+                }
+            }
+        }
+        HouseCommand::Camera(switch) => {
+            let privacy = house::entities(ha, "switch", "privacy")?;
+            if privacy.is_empty() {
+                return Ok(say(
+                    "I can't find a camera with a privacy mode.",
+                    "Jeg finner ikke noe kamera med personvernmodus.",
+                ));
+            }
+            let ids: Vec<&str> = privacy.iter().map(|p| p.id.as_str()).collect();
+            match switch {
+                Switch::On => {
+                    ha.service("switch", "turn_off", json!({ "entity_id": ids }))?;
+                    say("Okay, the camera is back on.", "Ok, kameraet er på igjen.")
+                }
+                Switch::Off => {
+                    ha.service("switch", "turn_on", json!({ "entity_id": ids }))?;
+                    say(
+                        "Okay, privacy mode is on. The camera isn't recording.",
+                        "Ok, personvernmodus er på. Kameraet tar ikke opp.",
+                    )
+                }
+                Switch::Status if privacy.iter().any(|p| p.state == "on") => {
+                    say("The camera is in privacy mode.", "Kameraet er i personvernmodus.")
+                }
+                Switch::Status if house::entities(ha, "camera", "")?.iter().any(|c| c.state == "recording") => {
+                    say("The camera is recording.", "Kameraet tar opp.")
+                }
+                Switch::Status => say("The camera is on, but not recording.", "Kameraet er på, men tar ikke opp."),
+            }
+        }
+        HouseCommand::Alarm(switch) => {
+            let Some(panel) = house::entities(ha, "alarm_control_panel", "")?.into_iter().next() else {
+                return Ok(say("There's no alarm in Home Assistant.", "Det er ingen alarm i Home Assistant."));
+            };
+            match switch {
+                Switch::Off => say(
+                    "I won't disarm the alarm by voice; anyone at the door could ask. Use the app instead.",
+                    "Jeg slår ikke av alarmen med stemmen; hvem som helst ved døra kunne spurt. Bruk appen.",
+                ),
+                Switch::Status => house::alarm_sentence(&panel.state, lang)
+                    .unwrap_or_else(|| say("I can't tell whether the alarm is on.", "Jeg vet ikke om alarmen er på.")),
+                Switch::On if panel.state.starts_with("armed") => {
+                    say("The alarm is already armed.", "Alarmen er allerede på.")
+                }
+                Switch::On => {
+                    ha.service("alarm_control_panel", "alarm_arm_away", json!({ "entity_id": panel.id }))?;
+                    info!(panel = panel.id, "alarm armed");
+                    say("Okay, the alarm is armed.", "Ok, alarmen er på.")
+                }
+            }
+        }
+    })
+}
+
+/// A routine's answer, and the lights it switched for "undo".
+fn routine_answer(
+    ha: &mut HomeAssistant,
+    routine: Routine,
+    here: Option<&str>,
+    lang: Lang,
+) -> anyhow::Result<(String, Option<(Target, bool)>)> {
+    let no = lang == Lang::Norwegian;
+    let mut parts = Vec::new();
+    let mut switched_lights = None;
+    match routine {
+        Routine::Leaving | Routine::Bedtime => {
+            let bedtime = routine == Routine::Bedtime;
+            let keep = |l: &Light| bedtime && (ha::is_room(&l.area, "bedroom") || ha::is_room(&l.name, "bedroom"));
+            let switched = house::everything_off(ha, keep)?;
+            let except = if bedtime && !switched.lights.is_empty() {
+                Some(if no { "soverommet" } else { "bedroom" })
+            } else {
+                None
+            };
+            parts.push(house::switched_answer(&switched, except, lang));
+            if !switched.lights.is_empty() {
+                let ids = switched.lights.iter().map(|l| l.id.clone()).collect();
+                let label = if no { "huset" } else { "house" }.to_owned();
+                switched_lights = Some((Target { label, ids, area: true }, false));
+            }
+            parts.extend(alerts::active(ha)?.iter().map(|a| alerts::sentence(a, lang)));
+            if !bedtime && house::snapshot(ha)?.alarm == "disarmed" {
+                parts.push(
+                    if no {
+                        "Alarmen er av. Si slå på alarmen hvis du vil."
+                    } else {
+                        "The alarm is off. Say arm the alarm to set it."
+                    }
+                    .into(),
+                );
+            }
+            parts.push(
+                match (bedtime, no) {
+                    (false, false) => "See you later.",
+                    (false, true) => "Ha det bra.",
+                    (true, false) => "Good night.",
+                    (true, true) => "God natt.",
+                }
+                .into(),
+            );
+        }
+        Routine::Home => {
+            parts.push(if no { "Velkommen hjem." } else { "Welcome home." }.into());
+            let dark = ha.state("sun.sun")?["state"] == "below_horizon";
+            if let Some(target) = here.filter(|_| dark).map(|room| ha.find(room)).transpose()?.flatten() {
+                let on = ha.lights_on()?;
+                if !on.iter().any(|l| target.ids.contains(&l.id)) {
+                    ha.set(&target, true)?;
+                    let label = target.label.to_lowercase();
+                    parts.push(if no {
+                        format!("Jeg har skrudd på lyset i {label}.")
+                    } else {
+                        format!("I've turned on the {label} lights.")
+                    });
+                    switched_lights = Some((target, true));
+                }
+            }
+            parts.extend(alerts::active(ha)?.iter().map(|a| alerts::sentence(a, lang)));
+            if house::snapshot(ha)?.alarm.starts_with("armed") {
+                parts.push(if no { "Alarmen er fortsatt på." } else { "The alarm is still armed." }.into());
+            }
+        }
+    }
+    Ok((parts.join(" "), switched_lights))
 }
 
 /// "In here", "this room", "her inne", "dette rommet".

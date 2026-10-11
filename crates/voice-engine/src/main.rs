@@ -178,6 +178,18 @@ struct Args {
     /// Home Assistant base URL, for example http://homeassistant.local:8123. Lights need this and a token.
     #[arg(long, env = "HA_URL")]
     ha_url: Option<String>,
+    /// The TV's Home Assistant media player, e.g. media_player.living_room_tv. Default: the media
+    /// player that is a TV by its device class or name.
+    #[arg(long, env = "VOICE_TV")]
+    tv: Option<String>,
+    /// Speak at once when a smoke, carbon monoxide, gas, water or breaking glass sensor in Home
+    /// Assistant goes off, and every five minutes while it stays on.
+    #[arg(long, env = "VOICE_ALERTS", default_value_t = true, action = clap::ArgAction::Set)]
+    alerts: bool,
+    /// Full-size face images for the hub page (`idle.jpg`, `listening.jpg`, `speaking.jpg`); the
+    /// built-in raccoon otherwise.
+    #[arg(long, env = "VOICE_HUB_FACES")]
+    hub_faces: Option<PathBuf>,
     /// Home Assistant long-lived access token (Profile > Security in the HA UI).
     #[arg(long, env = "HA_TOKEN", hide_env_values = true)]
     ha_token: Option<String>,
@@ -457,6 +469,8 @@ fn main() -> Result<()> {
                     speaker: args.speaker.clone(),
                     room: args.room.clone(),
                     honorific: args.honorific.clone(),
+                    tv: args.tv.clone(),
+                    alerts: args.alerts,
                     prerender: args.speech_cache.is_some(),
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");
@@ -525,7 +539,10 @@ fn main() -> Result<()> {
             });
             info!(url = format!("http://{}/", args.metrics_bind), "web page");
             let wake = WakeWord::new(&args.wake_name).with_spellings(&args.wake_spellings);
-            Arc::new(Web::new(wake, about, handle.clone(), speech.clone(), unhandled.clone()))
+            let hub =
+                voice_engine::hub::Hub::new(args.ha_url.clone().zip(args.ha_token.clone()), args.hub_faces.clone());
+            info!(url = format!("http://{}/hub", args.metrics_bind), "hub page");
+            Arc::new(Web::new(wake, about, handle.clone(), speech.clone(), unhandled.clone()).with_hub(hub))
         });
         tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));
         if let Some(address) = args.satellite.clone() {
