@@ -285,8 +285,8 @@ with a command word and every part is a request on its own, so "add milk and egg
 
 What it could not do: `unhandled-log: unhandled.jsonl` appends one JSON object per request no skill handled
 (not understood, no skill for it, a skill that apologised, ignored in a follow-up, or left to the language
-model), with what was heard, the answer and the recording's file name. The web page lists the latest under
-"Not understood yet".
+model), with what was heard, the answer and the recording's file name. The web page lists the latest on its Log
+tab ("Not understood yet").
 
 Wake words on the device: `satellite-wake-words: [Okay Nabu, Hey Jarvis]` turns on those of the device's own
 wake words each time the engine connects. Home Assistant's wake word selects go through its Assist satellite
@@ -303,9 +303,6 @@ pretends to be a device, for testing without hardware (`--speaker` for streamed 
 timer display, `--stay 15` to stay connected after the answer and see timers end, `--then reply.wav` for
 the reply when the conversation stays open).
 
-A page with everything the assistant understands: `web: true` serves it on the metrics port (`/`). Each
-skill shows what it does, where its data comes from, the Home Assistant services or APIs it calls and phrases
-that reach it; a box shows how a typed phrase is understood (`/api/parse?q=...`), without acting on it.
 
 The JARVIS style: `honorific: sir` makes English answers sound like a butler ("As you wish, sir. The living
 room lights are off."), with varied openers, a greeting after a quiet spell and now and then a remark that
@@ -323,16 +320,22 @@ voice): the persona's openers and remarks, lead-ins, all jokes (the built-in lis
 live data and are always synthesized; a slow answer (weather, departures, prices, what's on, who's home, house status) opens
 with a lead-in ("Checking the forecast, sir.") that plays while its data sentence is synthesized.
 
-The hub (`/hub`, with `web: true`): a dark dashboard for a wall tablet or the TV's browser. The assistant's face
-(a raccoon in a bow tie) follows what it does, idle, listening or speaking, with the spoken line under it; the
-cards show the rooms (tap one to switch its lights), what is playing, timers, the shopping list, alerts and the
-weather from Home Assistant. The Map tab (`/hub#map`) places every skill as a star around the face; tap one for
-its phrases, and tap a phrase to hear the answer when it only reads. `hub-faces: <dir>` swaps in your own `idle.jpg`, `listening.jpg` and `speaking.jpg`.
+The web page: `web: true` serves it on the metrics port (`/`), a dark dashboard for a wall tablet or the TV's
+browser, with three tabs.
 
-On the web page, "Hear response" answers a typed request aloud in the browser, with the assistant's voice and
-style, when answering changes nothing (weather, departures, prices, what's on, who's home, the shopping list,
-house status, sunset, a phone's battery);
-requests that switch or play something are not run from the page.
+- **Home:** the assistant's face (a raccoon in a bow tie) follows what it does, idle, listening or speaking,
+  with the spoken line under it; the cards show the rooms (tap one to switch its lights), what is playing,
+  timers, the shopping list, alerts and the weather from Home Assistant. The top bar pauses listening (for
+  guests or a long conversation) for an hour, three hours or until switched on.
+- **Map** (`/#map`): every skill as a star around the face. A star shows what the skill does, where its data
+  comes from, the Home Assistant services or APIs it calls and phrases that reach it. The box at the top
+  filters the stars and shows how a typed phrase is understood (`/api/parse?q=...`), without acting on it. A
+  phrase is answered aloud, with the assistant's voice and style, when answering changes nothing (weather,
+  departures, prices, what's on, who's home, the shopping list, house status, sunset, a phone's battery);
+  requests that switch or play something are not run from the page.
+- **Log** (with `unhandled-log`): what no skill handled, newest first.
+
+`hub-faces: <dir>` swaps in your own `idle.jpg`, `listening.jpg` and `speaking.jpg`.
 
 Running a deployed device's engine from the Mac while working on it: stop the deployed engine (a device takes
 one engine), put the deployed settings in `config.satellite.yaml` (git-ignored, same keys as above, plus

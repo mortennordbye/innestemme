@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#08090c">
-<title>Hub</title>
+<title>Jarvis</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=Anton&display=swap" rel="stylesheet">
 <style>
@@ -110,6 +110,68 @@ body[data-state="speaking"] .wave { display: flex; }
 .ticker { border-top: 1px solid #161a21; height: 52px; overflow: hidden; display: flex; align-items: center; margin: 0 -36px; }
 .ticker div { display: flex; gap: 48px; white-space: nowrap; font-family: var(--mono); font-size: 13px; color: var(--dim); padding-left: 36px; animation: ticker 40s linear infinite; }
 
+/* Mute: a clear button, a menu of how long, a banner while muted */
+.mute-wrap { position: relative; }
+.mute {
+  display: inline-flex; align-items: center; gap: 10px; font: inherit; font-size: 15px; font-weight: 500; cursor: pointer;
+  color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 9px 18px 9px 14px; min-height: 44px;
+}
+.mute .ico { width: 20px; height: 20px; stroke: var(--good); }
+.mute:hover { border-color: var(--soft); }
+.mute:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mute:disabled { cursor: not-allowed; opacity: .55; }
+body.paused .mute { border-color: var(--warm); background: rgba(255, 196, 107, .12); color: var(--warm); }
+body.paused .mute .ico { stroke: var(--warm); }
+.mute-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 5; min-width: 250px; display: flex; flex-direction: column; gap: 4px;
+  background: #0c0e12; border: 1px solid var(--line); border-radius: 16px; padding: 8px; box-shadow: 0 20px 50px rgba(0, 0, 0, .6);
+}
+.mute-menu button {
+  font: inherit; font-size: 15px; text-align: left; color: var(--text); background: transparent; border: 0; border-radius: 10px;
+  padding: 12px 14px; min-height: 44px; cursor: pointer;
+}
+.mute-menu button:hover, .mute-menu button:focus-visible { background: #161a21; outline: 0; }
+.mute-menu .label { padding: 6px 14px 2px; }
+.banner {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap; border: 1px solid rgba(255, 196, 107, .5); border-radius: 16px;
+  padding: 12px 14px 12px 18px; background: rgba(255, 196, 107, .1); color: #ffe2b0;
+}
+.banner .ico { width: 22px; height: 22px; stroke: var(--warm); }
+.banner strong { font-size: 17px; font-weight: 600; }
+.banner button {
+  margin-left: auto; font: inherit; font-weight: 600; font-size: 15px; color: #1d1200; background: var(--warm); border: 0;
+  border-radius: 999px; padding: 10px 22px; min-height: 44px; cursor: pointer;
+}
+.banner button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+body.paused .dot b, body.paused .dot i { background: var(--warm); }
+body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
+
+/* Icons, chips, the try box */
+.ico { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; gap: 6px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); font-size: 13px; }
+.chip b { color: var(--text); font-weight: 500; }
+.try { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 14px; padding: 4px 6px 4px 14px; background: var(--panel); flex: 1 1 360px; max-width: 620px; }
+.try:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124, 245, 212, .12); }
+.try input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 16px; padding: 10px 0; }
+.star.dim { opacity: .22; }
+.calls { display: flex; flex-wrap: wrap; gap: 4px; }
+.call { font-family: var(--mono); font-size: 12px; padding: 2px 7px; border-radius: 6px; background: color-mix(in srgb, var(--c) 14%, transparent); color: var(--c); overflow-wrap: anywhere; }
+.badge { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none; color: var(--c); background: color-mix(in srgb, var(--c) 16%, transparent); }
+.intent { font-family: var(--mono); font-size: 13px; color: var(--soft); background: #12151b; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; overflow-wrap: anywhere; }
+.ok { color: var(--good); font-weight: 600; }
+.no { color: var(--warm); font-weight: 600; }
+.hear { border-color: var(--accent) !important; }
+.callout button.say-no::before { content: "NO "; font-family: var(--mono); font-size: 10px; color: var(--dim); }
+
+/* The log */
+.log { display: flex; flex-direction: column; gap: 4px; max-width: 980px; }
+.miss { display: grid; grid-template-columns: 10em 1fr; gap: 2px 16px; padding: 12px 0; border-top: 1px solid var(--line); }
+.miss .when { color: var(--dim); font-family: var(--mono); font-size: 13px; }
+.miss .heard { font-size: 17px; overflow-wrap: anywhere; }
+.miss .why { grid-column: 2; color: var(--dim); font-size: 14px; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .miss { grid-template-columns: 1fr; } .miss .why { grid-column: 1; } }
+
 /* Views */
 .tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
 .tabs button { font: inherit; font-size: 15px; border: 0; border-radius: 999px; padding: 9px 22px; min-height: 40px; cursor: pointer; background: transparent; color: var(--soft); }
@@ -121,7 +183,7 @@ body[data-state="speaking"] .wave { display: flex; }
 .map { flex: 1; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .map-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
 .map-title { font-size: 24px; font-weight: 500; }
-.sky { position: relative; flex: 1; min-height: 520px; }
+.sky { position: relative; flex: 1; min-height: 470px; }
 .sky svg.orbits { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .sky svg.orbits ellipse { fill: none; stroke: #222a35; stroke-width: 1; stroke-dasharray: 2 9; animation: drift 30s linear infinite; }
 .sky svg.orbits ellipse.outer { stroke: #1b212a; animation-duration: 50s; animation-direction: reverse; }
@@ -138,9 +200,13 @@ body[data-state="speaking"] .wave { display: flex; }
 .callout {
   border: 1px solid var(--c, var(--line)); border-radius: 18px; padding: 14px 18px; margin-bottom: 18px;
   background: linear-gradient(90deg, color-mix(in srgb, var(--c) 10%, transparent), transparent 40%), var(--panel);
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  display: grid; grid-template-columns: auto minmax(0, 560px) minmax(0, 1fr); align-items: start; gap: 10px 18px;
 }
-.callout .head { display: flex; flex-direction: column; gap: 2px; flex: 1 1 260px; min-width: 0; }
+.callout .head { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.callout .phrases { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; }
+.callout .result { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 6px; }
+.callout .result.alone { grid-column: 1 / -1; }
+@media (max-width: 900px) { .callout { grid-template-columns: auto minmax(0, 1fr); } .callout .phrases { grid-column: 1 / -1; } }
 .callout .what { color: var(--soft); font-size: 14px; }
 .callout button {
   font: inherit; font-size: 15px; text-align: left; color: var(--text); cursor: pointer; background: #12151b;
@@ -169,14 +235,69 @@ body[data-state="speaking"] .wave { display: flex; }
 </style>
 </head>
 <body data-state="idle">
+<!-- Line icons after Lucide (ISC license). -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-bulb" viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></symbol>
+  <symbol id="i-palette" viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-clapper" viewBox="0 0 24 24"><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-scroll" viewBox="0 0 24 24"><path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v3h4"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+  <symbol id="i-cloud-sun" viewBox="0 0 24 24"><path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.95 12.65a4 4 0 0 0-5.93-4.13"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6z"/></symbol>
+  <symbol id="i-bus" viewBox="0 0 24 24"><path d="M8 6v6"/><path d="M15 6v6"/><path d="M2 12h19.6"/><path d="M18 18h3s.5-1.7.8-2.8c.1-.4.2-.8.2-1.2 0-.4-.1-.8-.2-1.2l-1.4-5C20.1 6.8 19.1 6 18 6H4a2 2 0 0 0-2 2v10h3"/><circle cx="7" cy="18" r="2"/><path d="M9 18h5"/><circle cx="16" cy="18" r="2"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+  <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+  <symbol id="i-timer" viewBox="0 0 24 24"><path d="M10 2h4"/><path d="m12 14 3-3"/><circle cx="12" cy="14" r="8"/></symbol>
+  <symbol id="i-cart" viewBox="0 0 24 24"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+  <symbol id="i-sunrise" viewBox="0 0 24 24"><path d="M12 2v8"/><path d="m4.93 10.93 1.41 1.41"/><path d="M2 18h2"/><path d="M20 18h2"/><path d="m19.07 10.93-1.41 1.41"/><path d="M22 22H2"/><path d="m8 6 4-4 4 4"/><path d="M16 18a4 4 0 0 0-8 0"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+  <symbol id="i-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><path d="M9 9h.01"/><path d="M15 9h.01"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7z"/></symbol>
+  <symbol id="i-newspaper" viewBox="0 0 24 24"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2"/><path d="M18 14h-8"/><path d="M15 18h-5"/><path d="M10 6h8v4h-8z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-calculator" viewBox="0 0 24 24"><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M8 6h8"/><path d="M16 14v4"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/></symbol>
+  <symbol id="i-ruler" viewBox="0 0 24 24"><path d="M21.3 15.3a2.4 2.4 0 0 1 0 3.4l-2.6 2.6a2.4 2.4 0 0 1-3.4 0L2.7 8.7a2.41 2.41 0 0 1 0-3.4l2.6-2.6a2.41 2.41 0 0 1 3.4 0z"/><path d="m14.5 12.5 2-2"/><path d="m11.5 9.5 2-2"/><path d="m8.5 6.5 2-2"/><path d="m17.5 15.5 2-2"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22z"/></symbol>
+  <symbol id="i-tv" viewBox="0 0 24 24"><rect width="20" height="15" x="2" y="7" rx="2"/><path d="m17 2-5 5-5-5"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-door" viewBox="0 0 24 24"><path d="M13 4h3a2 2 0 0 1 2 2v14"/><path d="M2 20h3"/><path d="M13 20h9"/><path d="M10 12v.01"/><path d="M13 4.56v16.16a1 1 0 0 1-1.24.97L5 20V5.56a2 2 0 0 1 1.52-1.94l4-1A2 2 0 0 1 13 4.56z"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M22 8c0-2.3-.8-4.3-2-6"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/><path d="M4 2C2.8 3.7 2 5.7 2 8"/></symbol>
+  <symbol id="i-phone" viewBox="0 0 24 24"><rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/></symbol>
+  <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.86a10 10 0 0 1 14 0"/><path d="M8.5 16.43a5 5 0 0 1 7 0"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><path d="m16 13 5.22 3.48a.5.5 0 0 0 .78-.42V7.87a.5.5 0 0 0-.75-.43L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+  <symbol id="i-sunset" viewBox="0 0 24 24"><path d="M12 10V2"/><path d="m4.93 10.93 1.41 1.41"/><path d="M2 18h2"/><path d="M20 18h2"/><path d="m19.07 10.93-1.41 1.41"/><path d="M22 22H2"/><path d="m16 6-4 4-4-4"/><path d="M16 18a4 4 0 0 0-8 0"/></symbol>
+  <symbol id="i-question" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></symbol>
+  <symbol id="i-mic-off" viewBox="0 0 24 24"><path d="m2 2 20 20"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><path d="M12 19v3"/></symbol>
+</svg>
 <main>
   <div class="top">
     <div class="who"><span class="dot"><i></i><b></b></span><strong id="name">Jarvis</strong><span class="label" id="status-line">listening for the wake word</span></div>
     <div class="tabs" role="tablist" aria-label="Views">
       <button type="button" role="tab" id="tab-home" aria-selected="true" aria-controls="view-home">Home</button>
       <button type="button" role="tab" id="tab-map" aria-selected="false" aria-controls="view-map">Map</button>
+      <button type="button" role="tab" id="tab-log" aria-selected="false" aria-controls="view-log" hidden>Log</button>
+    </div>
+    <div class="mute-wrap">
+      <button type="button" class="mute" id="mute" aria-haspopup="true" aria-expanded="false" aria-controls="mute-menu">
+        <svg class="ico" aria-hidden="true"><use href="#i-mic"></use></svg><span id="mute-text">Mute</span>
+      </button>
+      <div class="mute-menu" id="mute-menu" role="menu" hidden>
+        <span class="label">Stop listening</span>
+        <button type="button" role="menuitem" data-set="pause=60">For 1 hour</button>
+        <button type="button" role="menuitem" data-set="pause=180">For 3 hours</button>
+        <button type="button" role="menuitem" data-set="pause=0">Until I turn it back on</button>
+      </div>
     </div>
     <div class="pill" id="pill"><span class="scan"></span><span class="led"></span><span id="pill-text">CONNECTING</span></div>
+  </div>
+
+  <div class="banner" id="banner" role="status" hidden>
+    <svg class="ico" aria-hidden="true"><use href="#i-mic-off"></use></svg>
+    <div><strong id="banner-title">Muted</strong><div class="label" id="banner-detail">Timers and safety alerts still sound</div></div>
+    <button type="button" id="unmute">Unmute</button>
   </div>
 
   <div class="grid" id="view-home" role="tabpanel" aria-labelledby="tab-home">
@@ -206,7 +327,12 @@ body[data-state="speaking"] .wave { display: flex; }
   </div>
 
   <section class="map" id="view-map" role="tabpanel" aria-labelledby="tab-map" hidden>
-    <div class="map-head"><span class="label">What you can say</span><span class="map-title">Tap a star</span><span class="label" id="map-count"></span></div>
+    <div class="map-head">
+      <span class="map-title">Tap a star, or try a phrase</span>
+      <label class="try"><svg class="ico" aria-hidden="true"><use href="#i-search"></use></svg><input id="phrase" autocomplete="off" spellcheck="false" placeholder="Turn off the living room lights" aria-label="Try a phrase"></label>
+      <span class="label" id="map-count"></span>
+    </div>
+    <div class="chips" id="about"></div>
     <div class="sky" id="sky">
       <svg class="orbits" aria-hidden="true"><ellipse id="orbit-inner"></ellipse><ellipse class="outer" id="orbit-outer"></ellipse></svg>
       <div class="face" id="map-face">
@@ -220,6 +346,12 @@ body[data-state="speaking"] .wave { display: flex; }
       </div>
     </div>
     <div class="callout" id="callout" aria-live="polite"></div>
+  </section>
+
+  <section class="log" id="view-log" role="tabpanel" aria-labelledby="tab-log" hidden>
+    <span class="map-title">Not understood yet</span>
+    <span class="label">What was said that no skill handled, newest first: ideas for what to build next</span>
+    <div id="misses"></div>
   </section>
 
   <div class="ticker" aria-hidden="true"><div id="ticker"></div></div>
@@ -245,7 +377,7 @@ let backToIdle = null;
 function setState(state, text) {
   clearTimeout(backToIdle);
   document.body.dataset.state = state;
-  $("#meme").innerHTML = MEMES[state] || MEMES.idle;
+  $("#meme").innerHTML = document.body.classList.contains("paused") && state === "idle" ? "do not<br>disturb" : (MEMES[state] || MEMES.idle);
   $("#status-line").textContent = { idle: "listening for the wake word", listening: "listening", thinking: "thinking", speaking: "speaking" }[state];
   if (text != null) $("#said").textContent = text;
   // Missed events must not leave the face stuck.
@@ -380,14 +512,22 @@ const HUES = {
   briefing: 75, time: 240, joke: 95, manners: 0, news: 215, lookup: 290, calc: 125, distance: 40, smalltalk: 195,
 };
 const colour = (id) => `oklch(.8 .14 ${HUES[id] ?? 200})`;
-let skills = [], picked = null, clip = null;
+let skills = [], about = {}, picked = null, clip = null;
 
 async function loadSkills() {
   try {
     const res = await fetch("api/skills");
     const body = await res.json();
     skills = body.skills.filter((s) => s.examples.length);
-    if (body.about?.name) $("#name").textContent = body.about.name;
+    about = body.about || {};
+    if (about.name) { $("#name").textContent = about.name; document.title = about.name; }
+    const chips = $("#about");
+    const chip = (k, v) => { const c = el("span", "chip"); c.append(k + " "); c.append(el("b", null, v)); chips.append(c); };
+    if (about.wake_words?.length) chip("Wake word", about.wake_words.join(", "));
+    if (about.voice) chip("Voice", about.voice);
+    if (about.honorific) chip("Calls you", about.honorific);
+    chip("Understanding", about.language_model ? "rules + language model" : "rules only");
+    chip("Norwegian", about.norwegian ? "on" : "off");
   } catch { skills = []; }
   const phrases = skills.reduce((n, s) => n + s.examples.length, 0);
   $("#map-count").textContent = `${skills.length} skills · ${phrases} phrases`;
@@ -434,7 +574,8 @@ function layout() {
   face.style.left = cx + "px"; face.style.top = cy + "px";
 }
 
-function pick(id) {
+// The phrase bar: what the skill does, where its data comes from, what it calls, what to say.
+function pick(id, understood) {
   const s = skills.find((x) => x.id === id);
   if (!s) return;
   picked = id;
@@ -442,24 +583,161 @@ function pick(id) {
   const box = $("#callout");
   box.style.setProperty("--c", colour(id));
   box.replaceChildren();
+  const badge = el("span", "badge");
+  badge.innerHTML = `<svg class="ico" aria-hidden="true"><use href="#i-${s.icon}"></use></svg>`;
   const head = el("div", "head");
-  const title = el("span", "label", s.name + " · say");
+  const title = el("span", "label", s.name + " · " + s.group);
   title.style.color = colour(id);
-  head.append(title, el("span", "what", s.does), el("span", "note", "Tap a phrase to hear the answer"));
-  box.append(head);
-  for (const phrase of s.examples) {
-    const b = el("button", null, "“" + phrase + "”");
+  head.append(title, el("span", "what", s.does), el("span", "note", "Data: " + s.source));
+  if (s.calls.length) {
+    const calls = el("div", "calls");
+    s.calls.forEach((k) => calls.append(el("span", "call", k)));
+    head.append(calls);
+  }
+  if (understood) head.append(understood);
+  head.append(el("span", "note hint", "Tap a phrase to hear the answer"));
+  const phrases = el("div", "phrases");
+  box.append(badge, head, phrases);
+  const say = (phrase, cls) => {
+    const b = el("button", cls, "“" + phrase + "”");
     b.type = "button";
     b.onclick = () => hear(phrase);
-    box.append(b);
+    phrases.append(b);
+  };
+  s.examples.forEach((p) => say(p, null));
+  if (about.norwegian) s.norwegian.forEach((p) => say(p, "say-no"));
+}
+
+// The try box: filters the stars as you type, and after a pause shows how the rules read it.
+let typing = null, ticket = 0;
+function tryPhrase(text) {
+  const q = text.trim().toLowerCase();
+  document.querySelectorAll(".star").forEach((b) => {
+    const s = skills.find((x) => x.id === b.dataset.id);
+    const hit = !q || [s.name, s.does, s.source, ...s.calls, ...s.examples, ...s.norwegian].join(" ").toLowerCase().includes(q);
+    b.classList.toggle("dim", !hit);
+  });
+  clearTimeout(typing);
+  if (!q) return;
+  typing = setTimeout(async () => {
+    const mine = ++ticket;
+    const r = await (await fetch("api/parse?q=" + encodeURIComponent(text))).json();
+    if (mine !== ticket) return;
+    const result = el("div", "result");
+    const line = el("span");
+    if (r.skill) line.append(el("span", "ok", "Understood "), "“" + r.text + "”");
+    else line.append(el("span", "no", "Not understood by the rules "), "“" + r.text + "”");
+    result.append(line, el("span", "intent", r.intent));
+    if (!r.skill) {
+      result.append(el("span", "what", about.language_model
+        ? "The language model decides what to do with it."
+        : "After a wake word the assistant says it didn't catch that."));
+    }
+    const listen = el("button", "hear", "Hear the answer");
+    listen.type = "button";
+    listen.onclick = () => hear(r.text);
+    result.append(listen);
+    if (r.skill && skills.some((s) => s.id === r.skill.id)) {
+      document.querySelector(`.star[data-id="${r.skill.id}"]`)?.classList.remove("dim");
+      pick(r.skill.id, result);
+    } else {
+      const box = $("#callout");
+      box.style.removeProperty("--c");
+      result.classList.add("alone");
+      box.replaceChildren(result);
+      document.querySelectorAll(".star").forEach((b) => b.setAttribute("aria-pressed", "false"));
+    }
+  }, 300);
+}
+$("#phrase").addEventListener("input", (e) => tryPhrase(e.target.value));
+$("#phrase").addEventListener("keydown", (e) => { if (e.key === "Enter") { clearTimeout(typing); tryPhrase(e.target.value); } });
+
+// --- Mute: listening switched off for guests or a long conversation ----------------------------
+// Timers and alerts still sound; only the wake word and requests are ignored.
+let listening = { available: false, listening: true };
+function showListening(r) {
+  listening = r;
+  const button = $("#mute");
+  const name = about.name || "Jarvis";
+  if (!r.available) {
+    button.disabled = true;
+    button.title = "This engine has no assistant to mute";
+    $("#mute-text").textContent = "Mute (no assistant here)";
+    return;
   }
+  button.disabled = false;
+  button.title = "";
+  document.body.classList.toggle("paused", !r.listening);
+  button.querySelector("use").setAttribute("href", r.listening ? "#i-mic" : "#i-mic-off");
+  $("#banner").hidden = r.listening;
+  if (r.listening) {
+    $("#mute-text").textContent = "Mute";
+    if (document.body.dataset.state === "idle") $("#status-line").textContent = "listening for the wake word";
+  } else {
+    const at = r.until && new Date(r.until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    $("#mute-text").textContent = at ? "Muted until " + at : "Muted";
+    $("#banner-title").textContent = at ? `${name} is muted until ${at}` : `${name} is muted until you turn it back on`;
+    $("#status-line").textContent = "muted";
+  }
+  $("#meme").innerHTML = r.listening ? (MEMES[document.body.dataset.state] || MEMES.idle) : "do not<br>disturb";
+}
+async function loadListening() {
+  try { showListening(await (await fetch("api/listening")).json()); } catch {}
+}
+async function setListening(query) {
+  closeMenu();
+  try { showListening(await (await fetch("api/listening?" + query, { method: "POST" })).json()); } catch {}
+}
+function closeMenu() {
+  $("#mute-menu").hidden = true;
+  $("#mute").setAttribute("aria-expanded", "false");
+}
+$("#mute").onclick = () => {
+  // Muted: one tap unmutes. Listening: choose for how long.
+  if (!listening.listening) { setListening("resume"); return; }
+  const menu = $("#mute-menu");
+  menu.hidden = !menu.hidden;
+  $("#mute").setAttribute("aria-expanded", String(!menu.hidden));
+  if (!menu.hidden) menu.querySelector("button").focus();
+};
+document.querySelectorAll("#mute-menu button").forEach((b) => b.onclick = () => setListening(b.dataset.set));
+$("#unmute").onclick = () => setListening("resume");
+document.addEventListener("click", (e) => { if (!e.target.closest(".mute-wrap")) closeMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+
+// --- The log of what no skill handled ----------------------------------------------------------
+const WHY = {
+  not_understood: "Not understood after the wake word",
+  unknown: "No skill for it",
+  apologised: "A skill could not do it",
+  follow_up_ignored: "Ignored in a follow-up",
+  language_model: "Answered by the language model",
+  language_model_ignored: "The language model ignored it",
+};
+async function loadMisses() {
+  try {
+    const { enabled, entries } = await (await fetch("api/unhandled")).json();
+    if (!enabled) return;
+    $("#tab-log").hidden = false;
+    const list = $("#misses");
+    if (!entries.length) { list.replaceChildren(el("div", "label", "Nothing yet.")); return; }
+    list.replaceChildren(...entries.map((e) => {
+      const row = el("div", "miss");
+      row.append(el("div", "when", e.time), el("div", "heard", `“${e.heard}”`));
+      const why = [WHY[e.reason] || e.reason];
+      if (e.answer) why.push(`answered “${e.answer}”`);
+      if (e.audio) why.push(e.audio);
+      row.append(el("div", "why", why.join(" · ")));
+      return row;
+    }));
+  } catch {}
 }
 
 // Read-only requests are answered aloud by the raccoon; the rest only say why not.
 async function hear(phrase) {
   if (clip) clip.pause();
   setState("thinking", "“" + phrase + "”");
-  const note = $("#callout .note");
+  const note = $("#callout .hint") || $("#callout").appendChild(el("span", "note hint"));
   try {
     const res = await fetch("api/hear?q=" + encodeURIComponent(phrase));
     const r = await res.json();
@@ -473,16 +751,17 @@ async function hear(phrase) {
 }
 
 function show(view) {
-  const map = view === "map";
-  $("#view-home").hidden = map;
-  $("#view-map").hidden = !map;
-  $("#tab-home").setAttribute("aria-selected", !map);
-  $("#tab-map").setAttribute("aria-selected", map);
-  history.replaceState(null, "", map ? "#map" : "#");
-  if (map) layout();
+  for (const v of ["home", "map", "log"]) {
+    $("#view-" + v).hidden = v !== view;
+    $("#tab-" + v).setAttribute("aria-selected", v === view);
+  }
+  history.replaceState(null, "", view === "home" ? location.pathname : "#" + view);
+  if (view === "map") layout();
+  if (view === "log") loadMisses();
 }
 $("#tab-home").onclick = () => show("home");
 $("#tab-map").onclick = () => show("map");
+$("#tab-log").onclick = () => show("log");
 window.addEventListener("resize", () => { if (!$("#view-map").hidden) layout(); });
 
 // --- Clock -------------------------------------------------------------------------------------
@@ -498,7 +777,13 @@ setInterval(refresh, 10000);
 clock();
 refresh();
 connectEvents();
-loadSkills().then(() => show(location.hash === "#map" ? "map" : "home"));
+loadListening();
+setInterval(loadListening, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadListening(); });
+loadMisses().then(() => loadSkills()).then(() => {
+  const view = location.hash.slice(1);
+  show(["map", "log"].includes(view) && !$("#tab-" + view).hidden ? view : "home");
+});
 </script>
 </body>
 </html>
