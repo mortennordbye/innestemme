@@ -40,6 +40,27 @@ pub enum HouseCommand {
     Camera(Switch),
     /// The alarm system. `Off` is refused: anyone at the door could ask.
     Alarm(Switch),
+    /// Temperature or humidity indoors: "how warm is it in the bedroom".
+    Climate(Indoors, Reading),
+}
+
+/// Where an indoor climate question is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Indoors {
+    /// "Inside", "at home": every room with a sensor.
+    Everywhere,
+    /// "In here": the satellite's room, else every room.
+    Here,
+    /// A room by name, as [`ha::room_named`](crate::ha::room_named) gives it or as the language
+    /// model said it.
+    Room(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    Temperature,
+    Humidity,
+    Both,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,7 +131,95 @@ pub fn parse(words: &[String]) -> Option<HouseCommand> {
     if let Some(command) = alarm(words) {
         return Some(HouseCommand::Alarm(command));
     }
+    if let Some((place, reading)) = climate(words) {
+        return Some(HouseCommand::Climate(place, reading));
+    }
     is_status(words).then_some(HouseCommand::Status)
+}
+
+const TEMPERATURE_WORDS: &[&str] = &[
+    "temperature",
+    "temp",
+    "warm",
+    "hot",
+    "cold",
+    "chilly",
+    "freezing",
+    "degrees",
+    "varm",
+    "varmt",
+    "kald",
+    "kaldt",
+    "grader",
+    "iskaldt",
+];
+const HUMIDITY_WORDS: &[&str] =
+    &["humid", "humidity", "dry", "damp", "muggy", "fukt", "fuktig", "fuktighet", "fuktigheten", "tørr", "tørt"];
+/// Both readings: "what's the climate in the bedroom", "inneklimaet".
+const CLIMATE_WORDS: &[&str] = &["climate", "inneklima", "inneklimaet", "klima", "klimaet"];
+const INSIDE_WORDS: &[&str] =
+    &["inside", "indoors", "inne", "innendørs", "hjemme", "innetemperatur", "innetemperaturen"];
+const INSIDE_PHRASES: &[&str] =
+    &["at home", "in the house", "in the flat", "in the apartment", "i huset", "i leiligheten"];
+/// Outdoor words leave it to the weather: "is it cold outside", "how warm is it in the garden tomorrow".
+const OUTDOOR_WORDS: &[&str] = &[
+    "outside",
+    "outdoors",
+    "weather",
+    "forecast",
+    "tomorrow",
+    "rain",
+    "snow",
+    "wind",
+    "ute",
+    "utenfor",
+    "utendørs",
+    "været",
+    "vær",
+    "morgen",
+    "imorgen",
+    "regn",
+    "snø",
+    "vind",
+];
+/// A command, not a question: there is no heating to set, so "make it warmer" goes to the language model.
+const COMMAND_WORDS: &[&str] =
+    &["make", "set", "turn", "raise", "lower", "increase", "decrease", "gjør", "sett", "skru", "øk", "senk"];
+
+/// "How warm is it in the bedroom", "is it humid in the bathroom", "what's the temperature inside",
+/// "it's freezing in here", "hvor varmt er det i stua".
+fn climate(words: &[String]) -> Option<(Indoors, Reading)> {
+    let temperature = has_any(words, TEMPERATURE_WORDS) || words.iter().any(|w| w.contains("peratur"));
+    let humidity = has_any(words, HUMIDITY_WORDS) || words.iter().any(|w| w.starts_with("luftfukt"));
+    let both = has_any(words, CLIMATE_WORDS);
+    if !(temperature || humidity || both) {
+        return None;
+    }
+    let first = phrase(words);
+    let first = first.split(' ').next().unwrap_or_default();
+    // "Make the bedroom lights warmer" is the lights.
+    let light = has_any(words, &["light", "lights", "lamp", "lamps", "lys", "lyset", "lysene", "lampen", "lampene"]);
+    if has_any(words, OUTDOOR_WORDS) || COMMAND_WORDS.contains(&first) || light {
+        return None;
+    }
+    let text = phrase(words);
+    let here = ["in here", "her inne", "this room", "dette rommet"].iter().any(|p| contains_words(&text, p));
+    let place = if let Some(room) = crate::ha::room_named(words) {
+        Indoors::Room(room.to_owned())
+    } else if here {
+        Indoors::Here
+    } else if has_any(words, INSIDE_WORDS) || INSIDE_PHRASES.iter().any(|p| contains_words(&text, p)) {
+        Indoors::Everywhere
+    } else {
+        return None;
+    };
+    let reading = match (temperature, humidity) {
+        _ if both => Reading::Both,
+        (true, true) => Reading::Both,
+        (false, true) => Reading::Humidity,
+        _ => Reading::Temperature,
+    };
+    Some((place, reading))
 }
 
 const STATUS_PHRASES: &[&str] = &[
@@ -614,6 +723,213 @@ pub fn sun_answer(sun: &Value, event: SunEvent, lang: Lang) -> Result<String> {
     })
 }
 
+/// Temperature and humidity of one room; several sensors in a room are averaged.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoomClimate {
+    pub area: String,
+    pub temperature: Option<f64>,
+    pub humidity: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClimateSensor {
+    area: String,
+    kind: String,
+    value: f64,
+}
+
+/// Sensors without an area say nothing about a room (a phone, a router's CPU), so they are left out.
+const CLIMATE_TEMPLATE: &str = r#"[{% for s in states.sensor if s.attributes.device_class in ['temperature', 'humidity'] and area_name(s.entity_id) and s.state | is_number %}{"area": {{ area_name(s.entity_id) | tojson }}, "kind": {{ s.attributes.device_class | tojson }}, "value": {{ s.state | float }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
+
+/// Areas that are not indoors, by their names in either language.
+const OUTDOOR_AREAS: &[&str] = &[
+    "outside",
+    "outdoors",
+    "garden",
+    "yard",
+    "balcony",
+    "terrace",
+    "patio",
+    "garage",
+    "ute",
+    "hage",
+    "hagen",
+    "balkong",
+    "balkongen",
+    "terrasse",
+    "terrassen",
+    "garasje",
+    "garasjen",
+];
+
+/// Every indoor room with a temperature or humidity sensor, in Home Assistant's order.
+pub fn climate_readings(ha: &HomeAssistant) -> Result<Vec<RoomClimate>> {
+    let sensors: Vec<ClimateSensor> =
+        serde_json::from_str(&ha.template(CLIMATE_TEMPLATE)?).context("parsing the climate sensors")?;
+    Ok(rooms_of(&sensors))
+}
+
+fn rooms_of(sensors: &[ClimateSensor]) -> Vec<RoomClimate> {
+    let mut areas: Vec<&str> = Vec::new();
+    for sensor in sensors {
+        let outdoor = sensor.area.split_whitespace().any(|w| OUTDOOR_AREAS.contains(&w.to_lowercase().as_str()));
+        if !outdoor && !areas.contains(&sensor.area.as_str()) {
+            areas.push(&sensor.area);
+        }
+    }
+    let mean = |area: &str, kind: &str| {
+        let values: Vec<f64> = sensors.iter().filter(|s| s.area == area && s.kind == kind).map(|s| s.value).collect();
+        (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
+    };
+    areas
+        .into_iter()
+        .map(|area| RoomClimate {
+            area: area.to_owned(),
+            temperature: mean(area, "temperature"),
+            humidity: mean(area, "humidity"),
+        })
+        .collect()
+}
+
+/// Below this the air feels dry (skin, throat, static); above the other it feels damp.
+const DRY_BELOW: f64 = 30.0;
+const DAMP_ABOVE: f64 = 60.0;
+
+/// The answer to an indoor climate question. `here` is the satellite's room, if known; "in here"
+/// without a sensor there gives every room.
+pub fn climate_answer(
+    rooms: &[RoomClimate],
+    place: &Indoors,
+    reading: Reading,
+    here: Option<&str>,
+    lang: Lang,
+) -> String {
+    let no = lang == Lang::Norwegian;
+    let wants = |r: &RoomClimate| match reading {
+        Reading::Temperature => r.temperature.is_some(),
+        Reading::Humidity => r.humidity.is_some(),
+        Reading::Both => r.temperature.is_some() || r.humidity.is_some(),
+    };
+    let measured: Vec<&RoomClimate> = rooms.iter().filter(|r| wants(r)).collect();
+    let sensor = match (reading, no) {
+        (Reading::Humidity, false) => "humidity sensor",
+        (Reading::Humidity, true) => "fuktighetsmåler",
+        (_, false) => "temperature sensor",
+        (_, true) => "temperaturmåler",
+    };
+    if measured.is_empty() {
+        return if no {
+            format!("Jeg finner ingen {sensor} i Home Assistant.")
+        } else {
+            format!("I don't see a {sensor} in any room in Home Assistant.")
+        };
+    }
+    let room = match place {
+        Indoors::Room(room) => match measured.iter().find(|r| crate::ha::is_room(&r.area, room)) {
+            Some(found) => Some(*found),
+            None => {
+                let have: Vec<String> = measured.iter().map(|r| r.area.to_lowercase()).collect();
+                let room = room.to_lowercase();
+                return if no {
+                    format!("Det er ingen {sensor} i {room}. Jeg har {}.", join(&have, lang))
+                } else {
+                    format!("There's no {sensor} in the {room}. I have the {}.", join(&have, lang))
+                };
+            }
+        },
+        Indoors::Here => here.and_then(|h| measured.iter().find(|r| crate::ha::is_room(&r.area, h)).copied()),
+        Indoors::Everywhere => None,
+    };
+    let picked: Vec<&RoomClimate> = match room {
+        Some(room) => vec![room],
+        None => measured,
+    };
+    let mut parts = Vec::new();
+    if let [one] = picked.as_slice() {
+        parts.push(one_room(one, reading, lang));
+    } else {
+        let list = |value: fn(&RoomClimate) -> Option<f64>, unit: &str| {
+            let items: Vec<String> = picked
+                .iter()
+                .filter_map(|r| value(r).map(|v| (r, v)))
+                .enumerate()
+                .map(|(i, (r, v))| {
+                    let area = r.area.to_lowercase();
+                    match (i, no) {
+                        (0, false) => format!("{} {unit} in the {area}", v.round()),
+                        (0, true) => format!("{} {unit} i {area}", v.round()),
+                        (_, false) => format!("{} in the {area}", v.round()),
+                        (_, true) => format!("{} i {area}", v.round()),
+                    }
+                })
+                .collect();
+            join(&items, lang)
+        };
+        if reading != Reading::Humidity {
+            let degrees = if no { "grader" } else { "degrees" };
+            let text = list(|r| r.temperature, degrees);
+            parts.push(if no { format!("Det er {text}.") } else { format!("It's {text}.") });
+        }
+        if reading != Reading::Temperature {
+            let percent = if no { "prosent" } else { "percent" };
+            let text = list(|r| r.humidity, percent);
+            if !text.is_empty() {
+                parts.push(if no { format!("Luftfuktigheten er {text}.") } else { format!("Humidity is {text}.") });
+            }
+        }
+    }
+    if reading != Reading::Temperature {
+        parts.extend(picked.iter().filter_map(|r| humidity_remark(r, picked.len() > 1, lang)));
+    }
+    parts.join(" ")
+}
+
+fn one_room(room: &RoomClimate, reading: Reading, lang: Lang) -> String {
+    let no = lang == Lang::Norwegian;
+    let area = room.area.to_lowercase();
+    let t = room.temperature.map(f64::round);
+    let h = room.humidity.map(f64::round);
+    match (reading, t, h, no) {
+        (Reading::Humidity, _, Some(h), false) => format!("The humidity in the {area} is {h} percent."),
+        (Reading::Humidity, _, Some(h), true) => format!("Luftfuktigheten i {area} er {h} prosent."),
+        (Reading::Both, Some(t), Some(h), false) => {
+            format!("It's {t} degrees in the {area}, with {h} percent humidity.")
+        }
+        (Reading::Both, Some(t), Some(h), true) => {
+            format!("Det er {t} grader i {area}, med {h} prosent luftfuktighet.")
+        }
+        (_, Some(t), _, false) => format!("It's {t} degrees in the {area}."),
+        (_, Some(t), _, true) => format!("Det er {t} grader i {area}."),
+        (_, None, Some(h), false) => format!("The humidity in the {area} is {h} percent."),
+        (_, None, Some(h), true) => format!("Luftfuktigheten i {area} er {h} prosent."),
+        (_, None, None, _) => String::new(),
+    }
+}
+
+/// "The air is dry." Fixed wording on its own when one room is asked about, so it is pre-rendered.
+fn humidity_remark(room: &RoomClimate, name_it: bool, lang: Lang) -> Option<String> {
+    let no = lang == Lang::Norwegian;
+    let h = room.humidity?;
+    let dry = if h < DRY_BELOW {
+        true
+    } else if h > DAMP_ABOVE {
+        false
+    } else {
+        return None;
+    };
+    let area = room.area.to_lowercase();
+    Some(match (dry, name_it, no) {
+        (true, false, false) => "The air is dry.".into(),
+        (false, false, false) => "The air is damp.".into(),
+        (true, false, true) => "Lufta er tørr.".into(),
+        (false, false, true) => "Lufta er fuktig.".into(),
+        (true, true, false) => format!("The air in the {area} is dry."),
+        (false, true, false) => format!("The air in the {area} is damp."),
+        (true, true, true) => format!("Lufta i {area} er tørr."),
+        (false, true, true) => format!("Lufta i {area} er fuktig."),
+    })
+}
+
 /// "the living room and kitchen", "stua og kjøkkenet".
 pub fn join(items: &[String], lang: Lang) -> String {
     let and = if lang == Lang::Norwegian { "og" } else { "and" };
@@ -799,6 +1115,90 @@ mod tests {
             assert_eq!(house(text), Some(HouseCommand::Status), "{text}");
         }
         assert_eq!(house("is everything okay with you and your family over there today"), None);
+    }
+
+    #[test]
+    fn climate_questions() {
+        use Indoors::*;
+        use Reading::*;
+        let climate = |place, reading| Some(HouseCommand::Climate(place, reading));
+        let room = |r: &str| Room(r.to_owned());
+        assert_eq!(house("how warm is it in the bedroom"), climate(room("bedroom"), Temperature));
+        assert_eq!(house("what's the temperature in the living room?"), climate(room("living room"), Temperature));
+        assert_eq!(house("is it humid in the bathroom"), climate(room("bathroom"), Humidity));
+        assert_eq!(house("what's the temperature inside"), climate(Everywhere, Temperature));
+        assert_eq!(house("is it cold at home"), climate(Everywhere, Temperature));
+        assert_eq!(house("it's freezing in here"), climate(Here, Temperature));
+        assert_eq!(house("is it dry in here"), climate(Here, Humidity));
+        assert_eq!(house("what's the temperature and humidity in the kitchen"), climate(room("kitchen"), Both));
+        assert_eq!(house("hvor varmt er det i stua"), climate(room("living room"), Temperature));
+        assert_eq!(house("hva er innetemperaturen"), climate(Everywhere, Temperature));
+        assert_eq!(house("hva er luftfuktigheten på badet"), climate(room("bathroom"), Humidity));
+        // The weather, the lights and a heating command are not it.
+        assert_eq!(house("how warm is it"), None);
+        assert_eq!(house("what's the temperature in Trondheim"), None);
+        assert_eq!(house("is it cold outside"), None);
+        assert_eq!(house("make it warmer in here"), None);
+        assert_eq!(house("make the bedroom lights warmer"), None);
+        assert_eq!(house("hvordan blir været i morgen"), None);
+    }
+
+    fn rooms() -> Vec<RoomClimate> {
+        let room =
+            |area: &str, t: f64, h: f64| RoomClimate { area: area.into(), temperature: Some(t), humidity: Some(h) };
+        vec![room("Living Room", 23.96, 28.4), room("Bedroom", 19.05, 43.2), room("Bathroom", 22.0, 65.0)]
+    }
+
+    #[test]
+    fn climate_answers() {
+        let answer = |place: Indoors, reading, here| climate_answer(&rooms(), &place, reading, here, Lang::English);
+        let bedroom = Indoors::Room("bedroom".into());
+        assert_eq!(answer(bedroom.clone(), Reading::Temperature, None), "It's 19 degrees in the bedroom.");
+        assert_eq!(answer(bedroom, Reading::Both, None), "It's 19 degrees in the bedroom, with 43 percent humidity.");
+        assert_eq!(
+            answer(Indoors::Here, Reading::Humidity, Some("Living Room")),
+            "The humidity in the living room is 28 percent. The air is dry."
+        );
+        assert_eq!(
+            answer(Indoors::Everywhere, Reading::Temperature, None),
+            "It's 24 degrees in the living room, 19 in the bedroom and 22 in the bathroom."
+        );
+        assert_eq!(
+            answer(Indoors::Here, Reading::Humidity, None),
+            "Humidity is 28 percent in the living room, 43 in the bedroom and 65 in the bathroom. \
+             The air in the living room is dry. The air in the bathroom is damp."
+        );
+        assert_eq!(
+            answer(Indoors::Room("kitchen".into()), Reading::Temperature, None),
+            "There's no temperature sensor in the kitchen. I have the living room, bedroom and bathroom."
+        );
+        assert_eq!(
+            climate_answer(&[], &Indoors::Everywhere, Reading::Temperature, None, Lang::English),
+            "I don't see a temperature sensor in any room in Home Assistant."
+        );
+        assert_eq!(
+            climate_answer(&rooms(), &Indoors::Room("stua".into()), Reading::Temperature, None, Lang::Norwegian),
+            "Det er 24 grader i living room."
+        );
+    }
+
+    #[test]
+    fn climate_sensors_group_by_room() {
+        let sensor = |area: &str, kind: &str, value| ClimateSensor { area: area.into(), kind: kind.into(), value };
+        let rooms = rooms_of(&[
+            sensor("Bedroom", "temperature", 19.0),
+            sensor("Bedroom", "temperature", 20.0),
+            sensor("Balcony", "temperature", 8.0),
+            sensor("Bedroom", "humidity", 40.0),
+            sensor("Bathroom", "humidity", 50.0),
+        ]);
+        assert_eq!(
+            rooms,
+            [
+                RoomClimate { area: "Bedroom".into(), temperature: Some(19.5), humidity: Some(40.0) },
+                RoomClimate { area: "Bathroom".into(), temperature: None, humidity: Some(50.0) },
+            ]
+        );
     }
 
     #[test]

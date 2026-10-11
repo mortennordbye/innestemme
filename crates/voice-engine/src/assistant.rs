@@ -835,6 +835,7 @@ impl Worker {
                         | HouseCommand::GuestWifi(Switch::Status)
                         | HouseCommand::Camera(Switch::Status)
                         | HouseCommand::Alarm(Switch::Status | Switch::Off)
+                        | HouseCommand::Climate(..)
                 )
         );
         let answer = match intent {
@@ -1292,11 +1293,12 @@ impl Worker {
     fn house(&mut self, command: &HouseCommand, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let name = self.config.wake.name().to_owned();
+        let here = self.room.clone();
         let Some(ha) = &mut self.home_assistant else {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
         };
-        match house_answer(ha, command, lang, &name) {
+        match house_answer(ha, command, here.as_deref(), lang, &name) {
             Ok(answer) => {
                 info!(?command, "house");
                 answer
@@ -1862,7 +1864,13 @@ fn watch_alerts(ha: HomeAssistant, jobs: mpsc::Sender<Job>) {
     }
 }
 
-fn house_answer(ha: &mut HomeAssistant, command: &HouseCommand, lang: Lang, name: &str) -> anyhow::Result<String> {
+fn house_answer(
+    ha: &mut HomeAssistant,
+    command: &HouseCommand,
+    here: Option<&str>,
+    lang: Lang,
+    name: &str,
+) -> anyhow::Result<String> {
     use serde_json::json;
     let no = lang == Lang::Norwegian;
     let say = |english: &str, norwegian: &str| if no { norwegian.to_owned() } else { english.to_owned() };
@@ -1967,6 +1975,9 @@ fn house_answer(ha: &mut HomeAssistant, command: &HouseCommand, lang: Lang, name
                     say("Okay, the alarm is armed.", "Ok, alarmen er på.")
                 }
             }
+        }
+        HouseCommand::Climate(place, reading) => {
+            house::climate_answer(&house::climate_readings(ha)?, place, *reading, here, lang)
         }
     })
 }
