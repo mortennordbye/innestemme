@@ -238,11 +238,17 @@ impl Player {
             MusicCommand::Previous => {
                 ("media_previous_track", if no { "Ok, forrige." } else { "Okay, previous song." })
             }
-            MusicCommand::Louder | MusicCommand::Quieter => {
+            MusicCommand::Louder | MusicCommand::Quieter | MusicCommand::VolumeBy(_) | MusicCommand::VolumeTo(_) => {
                 let state = ha.state(&entity)?;
                 let now = state["attributes"]["volume_level"].as_f64().unwrap_or(0.3);
-                let step = if *command == MusicCommand::Louder { VOLUME_STEP } else { -VOLUME_STEP };
-                let level = (now + step).clamp(0.0, 1.0);
+                let level = match command {
+                    MusicCommand::Louder => now + VOLUME_STEP,
+                    MusicCommand::Quieter => now - VOLUME_STEP,
+                    MusicCommand::VolumeBy(points) => now + f64::from(*points) / 100.0,
+                    MusicCommand::VolumeTo(percent) => f64::from(*percent) / 100.0,
+                    _ => unreachable!(),
+                }
+                .clamp(0.0, 1.0);
                 ha.service("media_player", "volume_set", json!({ "entity_id": entity, "volume_level": level }))?;
                 info!(from = now, to = level, "volume set");
                 let percent = (level * 100.0).round();
