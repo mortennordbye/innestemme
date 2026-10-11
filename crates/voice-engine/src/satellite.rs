@@ -522,6 +522,15 @@ impl Bridge<'_> {
                 Run::Idle => {}
                 // The device already ended its run.
                 Run::Stopped(_) => self.run = Run::Idle,
+                // Done without words ("pause the music"): as after a spoken answer, the run ends a
+                // moment later, since a run end while the device stops its microphone is ignored.
+                Run::Answering if self.wake.is_some() => {
+                    self.device.event(Event::IntentEnd, &[("continue_conversation", "0")]).await?;
+                    self.finish_clip();
+                    self.save_recording();
+                    self.mic.clear();
+                    self.run_end_at = Some(Instant::now() + RUN_END_DELAY);
+                }
                 _ => self.end_run().await?,
             },
             AssistantEvent::Timer(notice) => {

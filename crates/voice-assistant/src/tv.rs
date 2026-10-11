@@ -12,6 +12,19 @@ use crate::ha::HomeAssistant;
 use crate::lang::Lang;
 use crate::names::Names;
 
+/// Fixed English answers, rendered ahead of time.
+pub const ENGLISH_ANSWERS: &[&str] = &[
+    "The TV is off.",
+    "The TV is already on.",
+    "Okay, the TV is on.",
+    "The TV is already off.",
+    "Okay, the TV is off.",
+    "Okay, the TV is muted.",
+    "Okay, the TV sound is back on.",
+    "Okay, paused.",
+    "Okay.",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TvCommand {
     Power(bool),

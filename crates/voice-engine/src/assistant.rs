@@ -23,7 +23,7 @@ use voice_assistant::dialog::{Action, Dialog, WakeWord};
 use voice_assistant::geo::{self, Location};
 use voice_assistant::ha::{self, HomeAssistant, Light, Target};
 use voice_assistant::house::{self, HouseCommand, Routine, Switch};
-use voice_assistant::intent::{self, Day, Intent, LightLevel};
+use voice_assistant::intent::{self, Day, Intent, LightLevel, MusicCommand};
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::llm::{self, Decision, Llm, Turn};
@@ -37,7 +37,7 @@ use voice_assistant::stt::SpeechToText;
 use voice_assistant::timer::{self, Notice, Timers};
 use voice_assistant::transit::Transit;
 use voice_assistant::tts::{self, Tts};
-use voice_assistant::tv::Tv;
+use voice_assistant::tv::{Tv, TvCommand};
 use voice_assistant::vad::{self, Vad};
 use voice_assistant::weather::Weather;
 use voice_assistant::whisper::{Transcriber, Transcript};
@@ -62,6 +62,11 @@ const HISTORY_TURNS: usize = 4;
 const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// After a bare name or an answer, speech within this time needs no name.
 const FOLLOW_UP: Duration = Duration::from_secs(8);
+/// Music paused for a request plays on after this long with nothing heard (a wake with no request,
+/// speech that was not speech), and at the latest after `HUSH_CAP`, so talk in the room cannot
+/// keep it paused.
+const HUSH_QUIET: Duration = Duration::from_secs(12);
+const HUSH_CAP: Duration = Duration::from_secs(40);
 /// A short utterance that starts this soon after a device's wake word holds the end of the wake
 /// word ("Oh", "What?"), not the request. A longer one is the name and the request in one breath.
 const WAKE_TAIL: Duration = Duration::from_millis(500);
@@ -356,6 +361,8 @@ impl AssistantProcessor {
             draft: None,
             follow_up_until: None,
             woken_at: None,
+            answered_draft: None,
+            hushed: None,
             speech_ended: None,
             history: VecDeque::new(),
             last_lights: None,
@@ -592,6 +599,13 @@ fn lead_sentence(lead: &str, honorific: Option<&str>) -> String {
     }
 }
 
+/// Players paused for a request.
+struct Hushed {
+    players: Vec<String>,
+    at: Instant,
+    last_heard: Instant,
+}
+
 struct Worker {
     events: broadcast::Sender<AssistantEvent>,
     reply: rtrb::Producer<i16>,
@@ -624,6 +638,12 @@ struct Worker {
     follow_up_until: Option<Instant>,
     /// A satellite woke on its own wake word and nothing has been answered since.
     woken_at: Option<Instant>,
+    /// A command was acted on from its draft, of this many samples: the utterance it ends in is
+    /// not answered again.
+    answered_draft: Option<usize>,
+    /// The music was paused for a request, and when something was last heard. It plays on after
+    /// the answer, unless the request was to stop it.
+    hushed: Option<Hushed>,
     /// When the speaker stopped talking, for how long the answer took to start.
     speech_ended: Option<Instant>,
     /// Recent exchanges, oldest first, for the language model.
@@ -666,9 +686,17 @@ impl Worker {
             let wait = next_timer.map_or(WARM_CHECK, |t| t.min(WARM_CHECK));
             // With speech still to render ahead, that is done between jobs, a sentence at a time.
             let wait = if self.prerender.is_empty() { wait } else { Duration::from_millis(20) };
+            let wait = if self.hushed.is_some() { wait.min(Duration::from_secs(1)) } else { wait };
             let job = match queued.pop_front().map_or_else(|| jobs.recv_timeout(wait), Ok) {
                 Ok(job) => job,
                 Err(RecvTimeoutError::Timeout) => {
+                    if self
+                        .hushed
+                        .as_ref()
+                        .is_some_and(|h| h.last_heard.elapsed() > HUSH_QUIET || h.at.elapsed() > HUSH_CAP)
+                    {
+                        self.unhush();
+                    }
                     self.ring_due_timers();
                     if self.prerender.is_empty() {
                         self.keep_warm();
@@ -687,15 +715,20 @@ impl Worker {
             if heard && self.pause.paused() {
                 continue;
             }
+            if let (true, Some(hushed)) = (heard, &mut self.hushed) {
+                hushed.last_heard = Instant::now();
+            }
             match job {
                 Job::Action(Action::Wake) => {
                     info!("wake word");
                     self.emit(AssistantEvent::Listening);
+                    self.hush();
                     self.play(&tts::wake_chime());
                 }
                 Job::Action(Action::GaveUp) => {
                     info!("nothing asked after the wake word");
                     self.emit(AssistantEvent::Done);
+                    self.unhush();
                     self.play(&tts::give_up_chime());
                 }
                 Job::Woken(at) => {
@@ -703,6 +736,7 @@ impl Worker {
                     self.woken_at = Some(at);
                     self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
                     self.emit(AssistantEvent::Listening);
+                    self.hush();
                 }
                 Job::Satellite(names) => self.satellite(&names),
                 Job::Preview(text, reply) => {
@@ -715,6 +749,7 @@ impl Worker {
                     // The speaker went on, or ended: a later job has newer audio.
                     if !queued.iter().any(|job| matches!(job, Job::Draft(_) | Job::Utterance(..))) {
                         self.transcribe_draft(audio);
+                        self.act_on_draft();
                     }
                 }
                 Job::Alert(text) => {
@@ -733,6 +768,14 @@ impl Worker {
     }
 
     fn utterance(&mut self, audio: &[i16], ended: Instant) {
+        // The utterance ended in the pause the draft was taken in: same speech, more silence.
+        let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
+        if let Some(len) = self.answered_draft.take() {
+            if audio.len() <= len + closing {
+                info!("answered from the draft");
+                return;
+            }
+        }
         // The utterance ends after a stretch of silence; the speaker stopped before it.
         let silence = Duration::from_secs_f32((vad::END_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
         self.speech_ended = ended.checked_sub(silence);
@@ -747,8 +790,6 @@ impl Worker {
             return;
         };
         let start = Instant::now();
-        // The utterance ended in the pause the draft was taken in: same speech, more silence.
-        let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
         let draft = self
             .draft
             .take()
@@ -766,6 +807,33 @@ impl Worker {
                 return;
             }
         };
+        self.heard(&candidates, audio, ended, start, from_draft);
+    }
+
+    /// A draft that is a whole command with nothing that could follow ("pause the music", "what
+    /// time is it") is acted on at once, without waiting out the rest of the closing silence.
+    fn act_on_draft(&mut self) {
+        let Some((_, candidates)) = &self.draft else { return };
+        let Some(first) = candidates.first() else { return };
+        let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);
+        let request = match self.config.wake.strip(&first.text) {
+            Some(rest) if !rest.is_empty() => rest,
+            None if follow_up || self.woken_at.is_some() => first.text.clone(),
+            _ => return,
+        };
+        if intent::split_commands(&request).is_some() || !complete_at_once(&intent::parse(&request)) {
+            return;
+        }
+        let Some((audio, candidates)) = self.draft.take() else { return };
+        let pause = Duration::from_secs_f32((vad::DRAFT_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
+        let now = Instant::now();
+        self.speech_ended = now.checked_sub(pause);
+        self.answered_draft = Some(audio.len());
+        self.heard(&candidates, &audio, now, now, true);
+    }
+
+    /// What was said, as transcribed: a wake word, a request, or nothing for the assistant.
+    fn heard(&mut self, candidates: &[Transcript], audio: &[i16], ended: Instant, start: Instant, from_draft: bool) {
         let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);
         // A translation usually drops the name, so a candidate that starts with the wake word is
         // the real transcript. Otherwise the most confident one.
@@ -779,6 +847,7 @@ impl Worker {
                 info!("wake word");
                 self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
                 self.emit(AssistantEvent::Listening);
+                self.hush();
                 self.play(&tts::wake_chime());
                 return;
             }
@@ -791,6 +860,13 @@ impl Worker {
             }
         };
         let (request, addressed) = request;
+        let request = match music_by_sound(&request, self.hushed.is_some()) {
+            Some(meant) if addressed || self.woken_at.is_some() => {
+                info!(heard = request, meant, "music request by its shape");
+                meant.to_owned()
+            }
+            _ => request,
+        };
         // Without the name, only act on something recognisable: in the follow-up window the
         // microphone also hears the room.
         // With a language model, it decides whether unrecognised words were meant for the assistant.
@@ -893,7 +969,10 @@ impl Worker {
         self.unhandled(Reason::NotUnderstood, text, Some(answer));
         self.busy.store(true, Relaxed);
         self.emit(AssistantEvent::Heard { text: text.to_owned() });
+        // The music stays paused for a second try; it plays on if none comes.
+        let hushed = self.hushed.take();
         self.say(answer.to_owned(), lang, start);
+        self.hushed = hushed.map(|h| Hushed { last_heard: Instant::now(), ..h });
     }
 
     fn transcribe_draft(&mut self, audio: Vec<i16>) {
@@ -929,11 +1008,23 @@ impl Worker {
                 self.finish(spoken, start);
             } else {
                 self.emit(AssistantEvent::Done);
+                self.unhush();
                 self.woken_at = None;
                 self.busy.store(false, Relaxed);
             }
             return;
         };
+        let failed = ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s));
+        if !failed && intent::split_commands(text).is_none() && heard_by_itself(&intent::parse(text)) {
+            info!(request = text, answer, after = ?start.elapsed(), "done without words");
+            self.history.push_back((Instant::now(), Turn { user: text.to_owned(), assistant: answer }));
+            self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
+            self.emit(AssistantEvent::Done);
+            self.unhush();
+            self.woken_at = None;
+            self.busy.store(false, Relaxed);
+            return;
+        }
         info!(request = text, answer, ?lang, after = ?start.elapsed(), "answering");
         // The rules' own fallback, or a skill that could not do it ("Sorry, I couldn't find ...").
         let fallback = ["Sorry, I can't help with that yet.", "Beklager, det kan jeg ikke hjelpe med ennå."];
@@ -1010,6 +1101,8 @@ impl Worker {
         let first_audio_after = spoken.first.map(|first| first - start);
         info!(?first_audio_after, ?after_speech, done_after = ?start.elapsed(), seconds, "spoken");
         self.emit(AssistantEvent::Spoken);
+        // After the answer is queued: the speaker's announcement ducks the music under it.
+        self.unhush();
         // The reply is queued faster than it plays; the window opens when it has been heard.
         self.follow_up_until = Some(Instant::now() + Duration::from_secs_f32(seconds) + FOLLOW_UP);
         self.busy.store(false, Relaxed);
@@ -1049,6 +1142,11 @@ impl Worker {
         let mut texts: Vec<String> =
             LEADS.iter().flat_map(|leads| leads.iter().map(|l| lead_sentence(l, honorific))).collect();
         texts.extend(self.persona.as_ref().map(Persona::phrases).unwrap_or_default());
+        let answers = voice_assistant::music::ENGLISH_ANSWERS.iter().chain(voice_assistant::tv::ENGLISH_ANSWERS);
+        match &self.persona {
+            Some(persona) => texts.extend(answers.flat_map(|a| persona.forms(a))),
+            None => texts.extend(answers.map(|a| a.to_string())),
+        }
         texts.extend(Jokes::english().iter().map(|j| j.to_string()));
         texts.extend(voice_assistant::smalltalk::all_english(self.config.wake.name()));
         texts.push("Sorry, I didn't catch that.".to_owned());
@@ -1203,7 +1301,16 @@ impl Worker {
             }
             Intent::Joke => self.jokes.tell(lang),
             Intent::Time => time_of_day(lang),
-            Intent::Music(command) => self.player.run(self.home_assistant.as_ref(), &command, lang),
+            Intent::Music(command) => {
+                // New music replaces what was paused for the request.
+                if matches!(
+                    command,
+                    MusicCommand::Pause | MusicCommand::Liked | MusicCommand::Playlist(_) | MusicCommand::Song(_)
+                ) {
+                    self.hushed = None;
+                }
+                self.player.run(self.home_assistant.as_ref(), &command, lang)
+            }
             Intent::Timer(command) => {
                 let (answer, notices) = self.timers.run(command, lang, Instant::now());
                 self.notify(notices);
@@ -1286,7 +1393,13 @@ impl Worker {
             Intent::Distance(query) => self.distance(&query, lang),
             Intent::Tv(command) => self.tv.run(self.home_assistant.as_ref(), &command, lang),
             Intent::House(command) => self.house(&command, lang),
-            Intent::Routine(routine) => self.routine(routine, lang),
+            Intent::Routine(routine) => {
+                // Leaving and bedtime pause the music themselves.
+                if routine != Routine::Home {
+                    self.hushed = None;
+                }
+                self.routine(routine, lang)
+            }
         })
     }
 
@@ -1827,6 +1940,37 @@ impl Worker {
         self.emit(AssistantEvent::Announcement { text: text.to_owned(), audio: audio.into(), timer_ring });
     }
 
+    /// Pauses the music for the request that follows a wake word.
+    fn hush(&mut self) {
+        if let Some(hushed) = &mut self.hushed {
+            hushed.last_heard = Instant::now();
+            return;
+        }
+        let Some(ha) = &mut self.home_assistant else { return };
+        // The Sonos itself can be playing while its Music Assistant player says idle, so both count.
+        let music = self.player.check(ha).ok().into_iter().collect::<Vec<_>>();
+        let players = match ha.playing(self.room.as_deref(), &music) {
+            Ok(players) if players.is_empty() => return,
+            Ok(players) => players,
+            Err(error) => return warn!(error = format!("{error:#}"), "could not see what is playing"),
+        };
+        if let Err(error) = ha.service("media_player", "media_pause", serde_json::json!({ "entity_id": players })) {
+            return warn!(error = format!("{error:#}"), "could not pause the music");
+        }
+        info!(?players, "music paused for a request");
+        let now = Instant::now();
+        self.hushed = Some(Hushed { players, at: now, last_heard: now });
+    }
+
+    fn unhush(&mut self) {
+        let Some(hushed) = self.hushed.take() else { return };
+        let Some(ha) = &self.home_assistant else { return };
+        match ha.service("media_player", "media_play", serde_json::json!({ "entity_id": hushed.players })) {
+            Ok(()) => info!(players = ?hushed.players, "music resumed after a request"),
+            Err(error) => warn!(error = format!("{error:#}"), "could not resume the music"),
+        }
+    }
+
     fn emit(&self, event: AssistantEvent) {
         // No satellite listening is fine.
         let _ = self.events.send(event);
@@ -2054,6 +2198,65 @@ fn routine_answer(
     Ok((parts.join(" "), switched_lights))
 }
 
+/// Whisper hears "pause" and "play" after the wake word as "please", "nice", "post": a short request
+/// that ends in "music" and is nothing else means pausing it when it was playing, else playing it.
+/// A prompt with the command words fixes some of these but makes up commands from room noise.
+fn music_by_sound(request: &str, playing: bool) -> Option<&'static str> {
+    let words: Vec<String> =
+        request.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
+    // "Stop" over music means the music, not "never mind".
+    let stop = matches!(words.as_slice(), [w] | [w, _] if ["stop", "stopp"].contains(&w.as_str()))
+        && intent::parse(request) == Intent::Cancel;
+    if stop && playing {
+        return Some("pause the music");
+    }
+    let music = words.last().is_some_and(|w| ["music", "musikk", "musikken"].contains(&w.as_str()));
+    (music && words.len() <= 4 && intent::parse(request) == Intent::Unknown).then_some(if playing {
+        "pause the music"
+    } else {
+        "play some music"
+    })
+}
+
+/// An action whose result is heard (the music stops, the next song starts) needs no words, which
+/// would only arrive a second or two later from the speaker.
+fn heard_by_itself(intent: &Intent) -> bool {
+    matches!(
+        intent,
+        Intent::Music(
+            MusicCommand::Pause
+                | MusicCommand::Resume
+                | MusicCommand::Next
+                | MusicCommand::Previous
+                | MusicCommand::Liked
+                | MusicCommand::Playlist(_)
+                | MusicCommand::Song(_)
+        ) | Intent::Tv(TvCommand::Pause | TvCommand::Resume)
+    )
+}
+
+/// Commands that nothing said after them could change, so a draft that is one is acted on. Not
+/// resume: "play" is also the start of "play Careless Whisper".
+fn complete_at_once(intent: &Intent) -> bool {
+    matches!(
+        intent,
+        Intent::Music(
+            MusicCommand::Pause
+                | MusicCommand::Next
+                | MusicCommand::Previous
+                | MusicCommand::Louder
+                | MusicCommand::Quieter
+        ) | Intent::Tv(
+            TvCommand::Pause
+                | TvCommand::Resume
+                | TvCommand::Power(_)
+                | TvCommand::Mute(_)
+                | TvCommand::Louder
+                | TvCommand::Quieter
+        ) | Intent::Time
+    )
+}
+
 /// "In here", "this room", "her inne", "dette rommet".
 fn mentions_this_room(request: &str) -> bool {
     let text = format!(" {} ", request.to_lowercase().replace(|c: char| !c.is_alphanumeric() && c != ' ', " "));
@@ -2131,6 +2334,32 @@ mod tests {
         // A pause that ran out is over without anyone resuming it.
         pause.until.store(unix_now() - 1, Relaxed);
         assert!(!pause.paused());
+    }
+
+    #[test]
+    fn misheard_music_requests() {
+        assert_eq!(music_by_sound("Nice music.", true), Some("pause the music"));
+        assert_eq!(music_by_sound("Please song music.", false), Some("play some music"));
+        assert_eq!(music_by_sound("Tyson music.", true), Some("pause the music"));
+        assert_eq!(music_by_sound("Pause the music.", false), None);
+        assert_eq!(music_by_sound("I really like this kind of music", true), None);
+        assert_eq!(music_by_sound("Nice weather.", true), None);
+        assert_eq!(music_by_sound("Stop.", true), Some("pause the music"));
+        assert_eq!(music_by_sound("stop it", true), Some("pause the music"));
+        assert_eq!(music_by_sound("Stop.", false), None);
+    }
+
+    #[test]
+    fn quick_commands() {
+        let parse = |text: &str| intent::parse(text);
+        assert!(heard_by_itself(&parse("pause the music")));
+        assert!(heard_by_itself(&parse("next song")));
+        assert!(!heard_by_itself(&parse("turn it up")));
+        assert!(heard_by_itself(&parse("play some music")));
+        assert!(complete_at_once(&parse("pause the music")));
+        assert!(complete_at_once(&parse("what time is it")));
+        assert!(!complete_at_once(&parse("turn off the lights")));
+        assert!(!complete_at_once(&parse("play")));
     }
 
     #[test]

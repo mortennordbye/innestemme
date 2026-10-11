@@ -26,6 +26,9 @@ struct Found {
     artist: String,
 }
 
+/// Fixed English answers, rendered ahead of time.
+pub const ENGLISH_ANSWERS: &[&str] = &["Okay, paused.", "Okay.", "Okay, next song.", "Okay, previous song."];
+
 pub struct Player {
     /// The speaker: a Music Assistant media player entity id, or its name ("Living Room"). `None`:
     /// the only player there is.
@@ -195,18 +198,23 @@ impl Player {
         if self.dry_run {
             return Ok(answer);
         }
-        // Before the start, so the queue is shuffled as it loads, first song included.
-        let shuffle = media_type != "track";
-        if let Err(error) =
-            ha.service("media_player", "shuffle_set", json!({ "entity_id": entity, "shuffle": shuffle }))
-        {
-            warn!(%error, "could not set shuffle");
-        }
-        ha.service(
-            "music_assistant",
-            "play_media",
-            json!({ "entity_id": entity, "media_id": found.uri, "media_type": media_type, "enqueue": "replace" }),
-        )?;
+        // Starting answers only once the speaker plays, over a second later; the music starting is
+        // the answer, so nothing waits for it.
+        let (ha, entity, uri, media_type) =
+            (ha.detached(), entity.to_owned(), found.uri.clone(), media_type.to_owned());
+        std::thread::spawn(move || {
+            // Before the start, so the queue is shuffled as it loads, first song included.
+            let shuffle = media_type != "track";
+            if let Err(error) =
+                ha.service("media_player", "shuffle_set", json!({ "entity_id": entity, "shuffle": shuffle }))
+            {
+                warn!(%error, "could not set shuffle");
+            }
+            let play = json!({ "entity_id": entity, "media_id": uri, "media_type": media_type, "enqueue": "replace" });
+            if let Err(error) = ha.service("music_assistant", "play_media", play) {
+                warn!(error = format!("{error:#}"), "could not start the music");
+            }
+        });
         Ok(answer)
     }
 
