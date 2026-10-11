@@ -852,7 +852,8 @@ impl Worker {
                 return;
             }
             Some(rest) => (rest, true),
-            None if follow_up => (heard.text.clone(), false),
+            // While the device's wake run lasts, a request counts however long the pause before it.
+            None if follow_up || self.woken_at.is_some() => (heard.text.clone(), false),
             None => {
                 info!(text = heard.text, "not addressed");
                 self.not_understood(&heard.text, audio, ended, heard.lang, start);
@@ -2236,7 +2237,8 @@ fn heard_by_itself(intent: &Intent) -> bool {
 }
 
 /// Commands that nothing said after them could change, so a draft that is one is acted on. Not
-/// resume: "play" is also the start of "play Careless Whisper".
+/// resume: "play" is also the start of "play Careless Whisper"; not louder or quieter: "increase
+/// the sound" may go on "by 25%".
 fn complete_at_once(intent: &Intent) -> bool {
     matches!(
         intent,
@@ -2244,8 +2246,8 @@ fn complete_at_once(intent: &Intent) -> bool {
             MusicCommand::Pause
                 | MusicCommand::Next
                 | MusicCommand::Previous
-                | MusicCommand::Louder
-                | MusicCommand::Quieter
+                | MusicCommand::VolumeBy(_)
+                | MusicCommand::VolumeTo(_)
         ) | Intent::Tv(
             TvCommand::Pause
                 | TvCommand::Resume

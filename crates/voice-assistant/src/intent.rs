@@ -294,6 +294,10 @@ pub enum MusicCommand {
     Previous,
     Louder,
     Quieter,
+    /// "Increase the sound by 25%": percentage points up (or down when negative).
+    VolumeBy(i8),
+    /// "Set the volume to 40 percent".
+    VolumeTo(u8),
 }
 
 const PLAY_WORDS: &[&str] = &["play", "spill"];
@@ -416,16 +420,39 @@ fn music(words: &[String]) -> Option<MusicCommand> {
     if has("previous") || has("forrige") {
         return Some(MusicCommand::Previous);
     }
-    let up = has("up") || has("opp");
-    let down = has("down") || has("ned");
-    let volume = ["volume", "volumet", "turn", "skru", "it", "music", "musikken"].iter().any(|w| has(w));
-    if has("louder") || has("høyere") || (volume && up) {
+    let up = ["up", "opp", "increase", "increased", "raise", "raised", "øk", "øke"].iter().any(|w| has(w));
+    let down = ["down", "ned", "decrease", "decreased", "reduce", "reduced", "lowered", "senk", "senke"]
+        .iter()
+        .any(|w| has(w));
+    let volume = ["volume", "volumet", "sound", "lyd", "lyden", "turn", "skru", "it", "music", "musikken"]
+        .iter()
+        .any(|w| has(w));
+    let louder = has("louder") || has("høyere") || (volume && up);
+    let quieter = ["quieter", "softer", "lower", "lavere"].iter().any(|w| has(w)) || (volume && down);
+    if let Some((to, amount)) = volume_amount(words).filter(|_| volume || louder || quieter) {
+        return Some(match (to, louder, quieter) {
+            (true, _, _) => MusicCommand::VolumeTo(amount),
+            (false, true, false) => MusicCommand::VolumeBy(amount as i8),
+            (false, false, true) => MusicCommand::VolumeBy(-(amount as i8)),
+            _ => return None,
+        });
+    }
+    if louder {
         return Some(MusicCommand::Louder);
     }
-    if ["quieter", "softer", "lower", "lavere"].iter().any(|w| has(w)) || (volume && down) {
+    if quieter {
         return Some(MusicCommand::Quieter);
     }
     None
+}
+
+/// A percentage in a volume request, and whether it is the level to set ("to 40") rather than a
+/// change ("by 25%", "20 percent up"). A transcriber writes "25%", which normalises to "25".
+fn volume_amount(words: &[String]) -> Option<(bool, u8)> {
+    let at = words.iter().position(|w| w.parse::<u8>().is_ok_and(|n| (1..=100).contains(&n)))?;
+    let amount = words[at].parse().ok()?;
+    let to = at > 0 && ["to", "til", "på"].contains(&words[at - 1].as_str());
+    Some((to, amount))
 }
 
 /// "What time is it (now)?", "what's the time", "hva/hvor mye er klokka (nå)?"; the local time
@@ -819,6 +846,13 @@ mod tests {
         assert_eq!(music("louder"), Some(Louder));
         assert_eq!(music("turn the music down"), Some(Quieter));
         assert_eq!(music("skru ned musikken"), Some(Quieter));
+        assert_eq!(music("increase the sound"), Some(Louder));
+        assert_eq!(music("Jarvis increased the sound"), Some(Louder));
+        assert_eq!(music("lower the volume"), Some(Quieter));
+        assert_eq!(music("Increase the sound by 25%."), Some(VolumeBy(25)));
+        assert_eq!(music("turn it down 10 percent"), Some(VolumeBy(-10)));
+        assert_eq!(music("set the volume to 40%"), Some(VolumeTo(40)));
+        assert_eq!(music("skru opp lyden med 20 prosent"), Some(VolumeBy(20)));
         // Not music.
         assert_eq!(music("turn off the light in my living room"), None);
         assert_eq!(music("turn up the lights"), None);
@@ -864,7 +898,7 @@ mod tests {
         assert!(matches!(parse("run movie time"), Intent::Script(_)));
         assert!(matches!(parse("kjør skriptet movie time"), Intent::Script(_)));
         assert!(matches!(parse("set a timer for ten minutes"), Intent::Timer(_)));
-        assert!(matches!(parse("set the volume to 20"), Intent::Unknown));
+        assert!(matches!(parse("set the volume to 20"), Intent::Music(MusicCommand::VolumeTo(20))));
         assert!(matches!(parse("add milk to the shopping list"), Intent::ShoppingList(_)));
         assert!(matches!(parse("what's on the shopping list"), Intent::ShoppingList(ListCommand::Read)));
         assert!(matches!(parse("play my shopping playlist"), Intent::Music(_)));

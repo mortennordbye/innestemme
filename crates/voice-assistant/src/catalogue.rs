@@ -243,7 +243,7 @@ pub const SKILLS: &[Skill] = &[
         does: "Plays liked songs, playlists or a song search, and controls playback and volume.",
         source: "Music Assistant through Home Assistant",
         calls: &["music_assistant.search", "music_assistant.play_media", "media_player.*"],
-        examples: &["Play my liked songs", "Play Hello by Adele", "Pause the music", "Next song", "Turn the music up"],
+        examples: &["Play my liked songs", "Play Hello by Adele", "Pause the music", "Next song", "Turn the music up", "Increase the sound by 20%"],
         norwegian: &["Spill musikk", "Neste sang"],
     },
     Skill {
