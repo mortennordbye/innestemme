@@ -298,6 +298,26 @@ pub enum MusicCommand {
     VolumeBy(i8),
     /// "Set the volume to 40 percent".
     VolumeTo(u8),
+    /// "Stop the music": ends it, where a bare "stop" pauses.
+    Stop,
+    /// Mute (true) or unmute the speaker, leaving the music playing.
+    Mute(bool),
+    /// "What's playing?"
+    NowPlaying,
+    Shuffle(bool),
+    Repeat(Repeat),
+    /// "Play music by Ghost", "play the artist Ghost".
+    Artist(String),
+    /// "Play the album Rumours".
+    Album(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repeat {
+    Off,
+    All,
+    /// The current song.
+    One,
 }
 
 const PLAY_WORDS: &[&str] = &["play", "spill"];
@@ -389,6 +409,25 @@ fn music(words: &[String]) -> Option<MusicCommand> {
         if rest.is_empty() {
             return Some(MusicCommand::Resume);
         }
+        if let Some(album) = after_any(&rest, &[&["the", "album"], &["album"], &["albumet"]]) {
+            return Some(MusicCommand::Album(album));
+        }
+        let by_artist: &[&[&str]] = &[
+            &["the", "artist"],
+            &["artist"],
+            &["artisten"],
+            &["music", "by"],
+            &["songs", "by"],
+            &["something", "by"],
+            &["some", "music", "by"],
+            &["some", "songs", "by"],
+            &["musikk", "av"],
+            &["noe", "av"],
+            &["litt", "musikk", "av"],
+        ];
+        if let Some(artist) = after_any(&rest, by_artist) {
+            return Some(MusicCommand::Artist(artist));
+        }
         if rest.iter().all(|w| GENERIC.contains(w)) {
             return Some(MusicCommand::Liked);
         }
@@ -408,7 +447,39 @@ fn music(words: &[String]) -> Option<MusicCommand> {
         return None;
     }
     let about_music = words.iter().any(|w| MUSIC_WORDS.contains(&w.as_str()));
-    if has("pause") || (about_music && ["stop", "stopp", "off", "av", "mute"].iter().any(|w| has(w))) {
+    let now_playing = (has("what") || has("what's") || has("whats") || has("who") || has("hva"))
+        && (has("playing")
+            || has("song")
+            || has("sings")
+            || has("singing")
+            || has("artist")
+            || has("spilles")
+            || has("sangen"));
+    if now_playing && !has("play") {
+        return Some(MusicCommand::NowPlaying);
+    }
+    let off = ["off", "av", "stop", "stopp", "disable"].iter().any(|w| has(w));
+    if has("shuffle") || has("shuffling") || has("tilfeldig") {
+        return Some(MusicCommand::Shuffle(!off));
+    }
+    if has("repeat") || has("repeating") || has("gjenta") {
+        let one = ["this", "song", "track", "one", "denne", "sangen"].iter().any(|w| has(w));
+        return Some(MusicCommand::Repeat(match (off, one) {
+            (true, _) => Repeat::Off,
+            (false, true) => Repeat::One,
+            (false, false) => Repeat::All,
+        }));
+    }
+    if has("unmute") || (has("demp") && has("ikke")) {
+        return Some(MusicCommand::Mute(false));
+    }
+    if (has("mute") || has("demp")) && (about_music || words.len() <= 2) {
+        return Some(MusicCommand::Mute(true));
+    }
+    if about_music && (has("stop") || has("stopp")) {
+        return Some(MusicCommand::Stop);
+    }
+    if has("pause") || (about_music && ["off", "av"].iter().any(|w| has(w))) {
         return Some(MusicCommand::Pause);
     }
     if has("resume") || has("unpause") || (about_music && ["continue", "fortsett", "start"].iter().any(|w| has(w))) {
@@ -444,6 +515,11 @@ fn music(words: &[String]) -> Option<MusicCommand> {
         return Some(MusicCommand::Quieter);
     }
     None
+}
+
+/// What follows one of these openings of a play request: "the album Rumours" gives "rumours".
+fn after_any(rest: &[&str], openings: &[&[&str]]) -> Option<String> {
+    openings.iter().find(|o| rest.len() > o.len() && rest.starts_with(o)).map(|o| rest[o.len()..].join(" "))
 }
 
 /// A percentage in a volume request, and whether it is the level to set ("to 40") rather than a
@@ -834,9 +910,24 @@ mod tests {
         assert_eq!(music("play the playlist called Chill Vibes"), Some(Playlist("chill vibes".into())));
         assert_eq!(music("play"), Some(Resume));
         assert_eq!(music("pause"), Some(Pause));
-        assert_eq!(music("stop the music"), Some(Pause));
+        assert_eq!(music("stop the music"), Some(Stop));
         assert_eq!(music("turn off the music"), Some(Pause));
-        assert_eq!(music("stopp musikken"), Some(Pause));
+        assert_eq!(music("stopp musikken"), Some(Stop));
+        assert_eq!(music("mute the music"), Some(Mute(true)));
+        assert_eq!(music("mute"), Some(Mute(true)));
+        assert_eq!(music("unmute the music"), Some(Mute(false)));
+        assert_eq!(music("what's playing"), Some(NowPlaying));
+        assert_eq!(music("What song is this?"), Some(NowPlaying));
+        assert_eq!(music("who sings this"), Some(NowPlaying));
+        assert_eq!(music("turn on shuffle"), Some(Shuffle(true)));
+        assert_eq!(music("stop shuffling"), Some(Shuffle(false)));
+        assert_eq!(music("repeat this song"), Some(Repeat(super::Repeat::One)));
+        assert_eq!(music("turn on repeat"), Some(Repeat(super::Repeat::All)));
+        assert_eq!(music("turn off repeat"), Some(Repeat(super::Repeat::Off)));
+        assert_eq!(music("play the album Rumours"), Some(Album("rumours".into())));
+        assert_eq!(music("play music by Ghost"), Some(Artist("ghost".into())));
+        assert_eq!(music("play some songs by Fleetwood Mac"), Some(Artist("fleetwood mac".into())));
+        assert_eq!(music("play the artist Kygo"), Some(Artist("kygo".into())));
         assert_eq!(music("continue the music"), Some(Resume));
         assert_eq!(music("next song"), Some(Next));
         assert_eq!(music("skip this one"), Some(Next));

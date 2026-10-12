@@ -21,7 +21,7 @@ use tracing::{info, warn};
 use voice_assistant::alerts::{self, Watch};
 use voice_assistant::dialog::{Action, Dialog, WakeWord};
 use voice_assistant::geo::{self, Location};
-use voice_assistant::ha::{self, HomeAssistant, Light, Target};
+use voice_assistant::ha::{self, HomeAssistant, Light, Playing, Target};
 use voice_assistant::house::{self, HouseCommand, Routine, Switch};
 use voice_assistant::intent::{self, Day, Intent, LightLevel, MusicCommand};
 use voice_assistant::jokes::Jokes;
@@ -601,7 +601,7 @@ fn lead_sentence(lead: &str, honorific: Option<&str>) -> String {
 
 /// Players paused for a request.
 struct Hushed {
-    players: Vec<String>,
+    players: Vec<Playing>,
     at: Instant,
     last_heard: Instant,
 }
@@ -722,8 +722,9 @@ impl Worker {
                 Job::Action(Action::Wake) => {
                     info!("wake word");
                     self.emit(AssistantEvent::Listening);
-                    self.hush();
+                    // The chime first: pausing the music takes Home Assistant round trips.
                     self.play(&tts::wake_chime());
+                    self.hush();
                 }
                 Job::Action(Action::GaveUp) => {
                     info!("nothing asked after the wake word");
@@ -1303,10 +1304,17 @@ impl Worker {
             Intent::Joke => self.jokes.tell(lang),
             Intent::Time => time_of_day(lang),
             Intent::Music(command) => {
-                // New music replaces what was paused for the request.
+                // New music replaces what was paused for the request, and "play" plays it itself.
                 if matches!(
                     command,
-                    MusicCommand::Pause | MusicCommand::Liked | MusicCommand::Playlist(_) | MusicCommand::Song(_)
+                    MusicCommand::Pause
+                        | MusicCommand::Resume
+                        | MusicCommand::Stop
+                        | MusicCommand::Liked
+                        | MusicCommand::Playlist(_)
+                        | MusicCommand::Song(_)
+                        | MusicCommand::Artist(_)
+                        | MusicCommand::Album(_)
                 ) {
                     self.hushed = None;
                 }
@@ -1951,14 +1959,18 @@ impl Worker {
         // The Sonos itself can be playing while its Music Assistant player says idle, so both count.
         let music = self.player.check(ha).ok().into_iter().collect::<Vec<_>>();
         let players = match ha.playing(self.room.as_deref(), &music) {
-            Ok(players) if players.is_empty() => return,
             Ok(players) => players,
             Err(error) => return warn!(error = format!("{error:#}"), "could not see what is playing"),
         };
-        if let Err(error) = ha.service("media_player", "media_pause", serde_json::json!({ "entity_id": players })) {
+        let players = players_to_hush(players, &music);
+        if players.is_empty() {
+            return;
+        }
+        let ids: Vec<&str> = players.iter().map(|p| p.id.as_str()).collect();
+        if let Err(error) = ha.service("media_player", "media_pause", serde_json::json!({ "entity_id": ids })) {
             return warn!(error = format!("{error:#}"), "could not pause the music");
         }
-        info!(?players, "music paused for a request");
+        info!(players = ?ids, "music paused for a request");
         let now = Instant::now();
         self.hushed = Some(Hushed { players, at: now, last_heard: now });
     }
@@ -1966,8 +1978,24 @@ impl Worker {
     fn unhush(&mut self) {
         let Some(hushed) = self.hushed.take() else { return };
         let Some(ha) = &self.home_assistant else { return };
-        match ha.service("media_player", "media_play", serde_json::json!({ "entity_id": hushed.players })) {
-            Ok(()) => info!(players = ?hushed.players, "music resumed after a request"),
+        // A speaker's own player resumes whatever its transport holds by then (a radio station, a
+        // stale stream), so only one still holding what was paused plays on.
+        let ids: Vec<&str> = hushed
+            .players
+            .iter()
+            .filter(|p| {
+                !p.sonos || ha.state(&p.id).is_ok_and(|s| s["attributes"]["media_content_id"] == p.content.as_str())
+            })
+            .map(|p| p.id.as_str())
+            .collect();
+        if ids.len() < hushed.players.len() {
+            info!(players = ?hushed.players.iter().map(|p| &p.id).collect::<Vec<_>>(), "a paused speaker changed source; not resuming it");
+        }
+        if ids.is_empty() {
+            return;
+        }
+        match ha.service("media_player", "media_play", serde_json::json!({ "entity_id": ids })) {
+            Ok(()) => info!(players = ?ids, "music resumed after a request"),
             Err(error) => warn!(error = format!("{error:#}"), "could not resume the music"),
         }
     }
@@ -2227,13 +2255,25 @@ fn heard_by_itself(intent: &Intent) -> bool {
         Intent::Music(
             MusicCommand::Pause
                 | MusicCommand::Resume
+                | MusicCommand::Stop
+                | MusicCommand::Mute(_)
                 | MusicCommand::Next
                 | MusicCommand::Previous
                 | MusicCommand::Liked
                 | MusicCommand::Playlist(_)
                 | MusicCommand::Song(_)
+                | MusicCommand::Artist(_)
+                | MusicCommand::Album(_)
         ) | Intent::Tv(TvCommand::Pause | TvCommand::Resume)
     )
+}
+
+/// The players to pause for a request. While Music Assistant plays on a speaker, the speaker's own
+/// player reports playing too; pausing and resuming it as well races Music Assistant's stream and
+/// can bring back the speaker's last radio station instead.
+fn players_to_hush(players: Vec<Playing>, music: &[String]) -> Vec<Playing> {
+    let assistant_plays = players.iter().any(|p| music.contains(&p.id));
+    players.into_iter().filter(|p| !(assistant_plays && p.sonos)).collect()
 }
 
 /// Commands that nothing said after them could change, so a draft that is one is acted on. Not
@@ -2244,6 +2284,11 @@ fn complete_at_once(intent: &Intent) -> bool {
         intent,
         Intent::Music(
             MusicCommand::Pause
+                | MusicCommand::Stop
+                | MusicCommand::Mute(_)
+                | MusicCommand::NowPlaying
+                | MusicCommand::Shuffle(_)
+                | MusicCommand::Repeat(_)
                 | MusicCommand::Next
                 | MusicCommand::Previous
                 | MusicCommand::VolumeBy(_)
@@ -2336,6 +2381,23 @@ mod tests {
         // A pause that ran out is over without anyone resuming it.
         pause.until.store(unix_now() - 1, Relaxed);
         assert!(!pause.paused());
+    }
+
+    #[test]
+    fn hushes_music_assistant_not_the_speaker_under_it() {
+        let playing = |id: &str, sonos| Playing { id: id.into(), sonos, content: String::new() };
+        let music = vec!["media_player.living_room_2".to_owned()];
+        let hushed = |players| players_to_hush(players, &music).into_iter().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!(
+            hushed(vec![
+                playing("media_player.living_room_2", false),
+                playing("media_player.living_room", true),
+                playing("media_player.tv", false),
+            ]),
+            ["media_player.living_room_2", "media_player.tv"]
+        );
+        // Spotify from a phone plays on the speaker alone: that is paused.
+        assert_eq!(hushed(vec![playing("media_player.living_room", true)]), ["media_player.living_room"]);
     }
 
     #[test]

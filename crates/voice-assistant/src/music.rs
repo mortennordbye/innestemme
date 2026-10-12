@@ -9,7 +9,7 @@ use tracing::{info, warn};
 
 use crate::dialog::normalize;
 use crate::ha::HomeAssistant;
-use crate::intent::MusicCommand;
+use crate::intent::{MusicCommand, Repeat};
 use crate::lang::Lang;
 use crate::names::Names;
 
@@ -27,7 +27,21 @@ struct Found {
 }
 
 /// Fixed English answers, rendered ahead of time.
-pub const ENGLISH_ANSWERS: &[&str] = &["Okay, paused.", "Okay.", "Okay, next song.", "Okay, previous song."];
+pub const ENGLISH_ANSWERS: &[&str] = &[
+    "Okay, paused.",
+    "Okay.",
+    "Okay, next song.",
+    "Okay, previous song.",
+    "Okay, stopped.",
+    "Okay, muted.",
+    "Okay, unmuted.",
+    "Okay, shuffle is on.",
+    "Okay, shuffle is off.",
+    "Okay, repeating this song.",
+    "Okay, repeat is on.",
+    "Okay, repeat is off.",
+    "Nothing is playing.",
+];
 
 pub struct Player {
     /// The speaker: a Music Assistant media player entity id, or its name ("Living Room"). `None`:
@@ -37,6 +51,8 @@ pub struct Player {
     resolved: Option<(String, String)>,
     /// Library artists, for spoken names the transcriber misspells; refreshed now and then.
     artists: Option<(std::time::Instant, Vec<Found>)>,
+    /// Liked Songs, found once: it is always the same playlist.
+    liked: Option<Found>,
     /// Find what to play but do not start it (testing against a real library).
     dry_run: bool,
 }
@@ -46,7 +62,7 @@ const LIBRARY_REFRESH: std::time::Duration = std::time::Duration::from_secs(600)
 
 impl Player {
     pub fn new(speaker: Option<String>) -> Self {
-        Self { speaker, resolved: None, artists: None, dry_run: false }
+        Self { speaker, resolved: None, artists: None, liked: None, dry_run: false }
     }
 
     pub fn dry_run(mut self) -> Self {
@@ -109,7 +125,12 @@ impl Player {
                 .into();
         };
         let result = match command {
-            MusicCommand::Liked | MusicCommand::Playlist(_) | MusicCommand::Song(_) => self.start(ha, command, no),
+            MusicCommand::Liked
+            | MusicCommand::Playlist(_)
+            | MusicCommand::Song(_)
+            | MusicCommand::Artist(_)
+            | MusicCommand::Album(_) => self.start(ha, command, no),
+            MusicCommand::NowPlaying => self.now_playing(ha, no),
             _ => self.control(ha, command, no),
         };
         result.unwrap_or_else(|error| {
@@ -161,6 +182,36 @@ impl Player {
                 };
                 (track, "track", answer)
             }
+            MusicCommand::Artist(request) => {
+                let artists = self.library_artists(ha, &entry)?;
+                let names = Names::new(artists.iter().map(|a| a.name.as_str()));
+                let mine = names.best(request).and_then(|m| artists.iter().find(|a| a.name == m.name)).cloned();
+                let Some(artist) = mine.map_or_else(|| search(ha, &entry, request, "artist"), |a| Ok(Some(a)))? else {
+                    return Ok(if no {
+                        format!("Jeg fant ikke {request}.")
+                    } else {
+                        format!("I couldn't find {request}.")
+                    });
+                };
+                let answer = if no { format!("Spiller {}.", artist.name) } else { format!("Playing {}.", artist.name) };
+                (artist, "artist", answer)
+            }
+            MusicCommand::Album(request) => {
+                let Some(album) = search(ha, &entry, request, "album")? else {
+                    return Ok(if no {
+                        format!("Jeg fant ikke albumet {request}.")
+                    } else {
+                        format!("I couldn't find the album {request}.")
+                    });
+                };
+                let answer = match (no, album.artist.is_empty()) {
+                    (false, false) => format!("Playing {} by {}.", album.name, album.artist),
+                    (false, true) => format!("Playing {}.", album.name),
+                    (true, false) => format!("Spiller {} av {}.", album.name, album.artist),
+                    (true, true) => format!("Spiller {}.", album.name),
+                };
+                (album, "album", answer)
+            }
             MusicCommand::Playlist(name) => {
                 let Some(list) = find_playlist(ha, &entry, name)? else {
                     return Ok(if no {
@@ -177,8 +228,12 @@ impl Player {
                 (list, "playlist", answer)
             }
             _ => {
-                let list = liked_songs(ha, &entry)?
-                    .ok_or_else(|| anyhow!("no Liked Songs playlist in Music Assistant (is Spotify added?)"))?;
+                let list = match &self.liked {
+                    Some(list) => list.clone(),
+                    None => liked_songs(ha, &entry)?
+                        .ok_or_else(|| anyhow!("no Liked Songs playlist in Music Assistant (is Spotify added?)"))?,
+                };
+                self.liked = Some(list.clone());
                 let answer = if no { "Spiller de likte sangene dine." } else { "Shuffling your liked songs." };
                 (list, "playlist", answer.to_owned())
             }
@@ -204,7 +259,7 @@ impl Player {
             (ha.detached(), entity.to_owned(), found.uri.clone(), media_type.to_owned());
         std::thread::spawn(move || {
             // Before the start, so the queue is shuffled as it loads, first song included.
-            let shuffle = media_type != "track";
+            let shuffle = !matches!(media_type.as_str(), "track" | "album");
             if let Err(error) =
                 ha.service("media_player", "shuffle_set", json!({ "entity_id": entity, "shuffle": shuffle }))
             {
@@ -239,18 +294,21 @@ impl Player {
                 ("media_previous_track", if no { "Ok, forrige." } else { "Okay, previous song." })
             }
             MusicCommand::Louder | MusicCommand::Quieter | MusicCommand::VolumeBy(_) | MusicCommand::VolumeTo(_) => {
-                let state = ha.state(&entity)?;
-                let now = state["attributes"]["volume_level"].as_f64().unwrap_or(0.3);
-                let level = match command {
-                    MusicCommand::Louder => now + VOLUME_STEP,
-                    MusicCommand::Quieter => now - VOLUME_STEP,
-                    MusicCommand::VolumeBy(points) => now + f64::from(*points) / 100.0,
-                    MusicCommand::VolumeTo(percent) => f64::from(*percent) / 100.0,
+                // A set level needs no reading of the current one first.
+                let now = match command {
+                    MusicCommand::VolumeTo(_) => None,
+                    _ => Some(ha.state(&entity)?["attributes"]["volume_level"].as_f64().unwrap_or(0.3)),
+                };
+                let level = match (command, now.unwrap_or(0.0)) {
+                    (MusicCommand::Louder, now) => now + VOLUME_STEP,
+                    (MusicCommand::Quieter, now) => now - VOLUME_STEP,
+                    (MusicCommand::VolumeBy(points), now) => now + f64::from(*points) / 100.0,
+                    (MusicCommand::VolumeTo(percent), _) => f64::from(*percent) / 100.0,
                     _ => unreachable!(),
                 }
                 .clamp(0.0, 1.0);
                 ha.service("media_player", "volume_set", json!({ "entity_id": entity, "volume_level": level }))?;
-                info!(from = now, to = level, "volume set");
+                info!(from = ?now, to = level, "volume set");
                 let percent = (level * 100.0).round();
                 return Ok(if no {
                     format!("Volumet er {percent} prosent.")
@@ -258,12 +316,75 @@ impl Player {
                     format!("Volume {percent} percent.")
                 });
             }
+            MusicCommand::Stop => ("media_stop", if no { "Ok, stoppet." } else { "Okay, stopped." }),
+            MusicCommand::Mute(mute) => {
+                ha.service("media_player", "volume_mute", json!({ "entity_id": entity, "is_volume_muted": mute }))?;
+                return Ok(match (mute, no) {
+                    (true, false) => "Okay, muted.",
+                    (false, false) => "Okay, unmuted.",
+                    (true, true) => "Ok, dempet.",
+                    (false, true) => "Ok, lyden er på.",
+                }
+                .into());
+            }
+            MusicCommand::Shuffle(on) => {
+                ha.service("media_player", "shuffle_set", json!({ "entity_id": entity, "shuffle": on }))?;
+                return Ok(match (on, no) {
+                    (true, false) => "Okay, shuffle is on.",
+                    (false, false) => "Okay, shuffle is off.",
+                    (true, true) => "Ok, tilfeldig rekkefølge.",
+                    (false, true) => "Ok, i rekkefølge.",
+                }
+                .into());
+            }
+            MusicCommand::Repeat(repeat) => {
+                let mode = match repeat {
+                    Repeat::Off => "off",
+                    Repeat::All => "all",
+                    Repeat::One => "one",
+                };
+                ha.service("media_player", "repeat_set", json!({ "entity_id": entity, "repeat": mode }))?;
+                return Ok(match (repeat, no) {
+                    (Repeat::One, false) => "Okay, repeating this song.",
+                    (Repeat::All, false) => "Okay, repeat is on.",
+                    (Repeat::Off, false) => "Okay, repeat is off.",
+                    (Repeat::One, true) => "Ok, gjentar denne sangen.",
+                    (Repeat::All, true) => "Ok, gjentar.",
+                    (Repeat::Off, true) => "Ok, gjentar ikke.",
+                }
+                .into());
+            }
             _ => unreachable!("start() handles play requests"),
         };
         ha.service("media_player", service, json!({ "entity_id": entity }))?;
         info!(service, entity, "speaker");
         Ok(answer.into())
     }
+
+    /// The song playing, from the player's state. The title is a sentence of its own: the rest of
+    /// what is said stays the same.
+    fn now_playing(&mut self, ha: &HomeAssistant, no: bool) -> Result<String> {
+        let (_, entity) = self.resolve(ha)?;
+        let state = ha.state(&entity)?;
+        let text = |key: &str| state["attributes"][key].as_str().unwrap_or_default().to_owned();
+        let (title, artist) = (text("media_title"), text("media_artist"));
+        if !matches!(state["state"].as_str(), Some("playing" | "paused")) || title.is_empty() {
+            return Ok(if no { "Ingenting spilles." } else { "Nothing is playing." }.into());
+        }
+        Ok(match (artist.is_empty(), no) {
+            (true, false) => format!("This is {title}."),
+            (false, false) => format!("This is {title} by {artist}."),
+            (true, true) => format!("Dette er {title}."),
+            (false, true) => format!("Dette er {title} av {artist}."),
+        })
+    }
+}
+
+/// The best catalogue match of a kind ("artist", "album") for a spoken name.
+fn search(ha: &HomeAssistant, entry: &str, name: &str, media_type: &str) -> Result<Option<Found>> {
+    let data = json!({ "config_entry_id": entry, "name": name, "media_type": [media_type], "limit": 5 });
+    let response = ha.service_response("music_assistant", "search", data)?;
+    Ok(response[format!("{media_type}s")].as_array().and_then(|items| items.first()).and_then(found))
 }
 
 /// The best match for a spoken song request. "X by Y" searches title and artist separately.

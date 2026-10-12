@@ -137,6 +137,16 @@ pub struct Light {
     pub group: bool,
 }
 
+/// A media player that is playing.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Playing {
+    pub id: String,
+    /// The speaker's own entity (the Sonos integration), not Music Assistant's player for it.
+    pub sonos: bool,
+    /// What it plays, to tell later whether it still holds the same thing.
+    pub content: String,
+}
+
 /// What a request resolved to: a label to speak and the entities to switch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
@@ -171,9 +181,10 @@ impl HomeAssistant {
         }
     }
 
-    /// A client of its own, for a call made on another thread.
+    /// A client for a call made on another thread. It shares the connection pool, so the call
+    /// reuses an open connection instead of opening one.
     pub fn detached(&self) -> Self {
-        Self::new(&self.base, &self.token)
+        Self { agent: self.agent.clone(), ..Self::new(&self.base, &self.token) }
     }
 
     fn post(&self, path: &str, body: serde_json::Value) -> Result<ureq::http::Response<ureq::Body>> {
@@ -284,7 +295,9 @@ impl HomeAssistant {
 
     /// Calls any service, e.g. `media_player.media_pause`.
     pub fn service(&self, domain: &str, service: &str, data: serde_json::Value) -> Result<()> {
+        let start = Instant::now();
         self.post_within(&format!("/api/services/{domain}/{service}"), data, SERVICE_TIMEOUT)?;
+        tracing::info!(domain, service, ms = start.elapsed().as_millis() as u64, "home assistant service");
         Ok(())
     }
 
@@ -321,9 +334,9 @@ impl HomeAssistant {
 
     /// Media players that are playing: those in `area`, and any of `also` (a Music Assistant player
     /// has no area of its own).
-    pub fn playing(&self, area: Option<&str>, also: &[String]) -> Result<Vec<String>> {
+    pub fn playing(&self, area: Option<&str>, also: &[String]) -> Result<Vec<Playing>> {
         let template = format!(
-            r#"{{% set area = {} %}}{{% set also = {} %}}[{{% for s in states.media_player if s.state == 'playing' and ((area and area_name(s.entity_id) == area) or s.entity_id in also) %}}{{{{ s.entity_id | tojson }}}}{{% if not loop.last %}},{{% endif %}}{{% endfor %}}]"#,
+            r#"{{% set area = {} %}}{{% set also = {} %}}{{% set sonos = integration_entities('sonos') %}}[{{% for s in states.media_player if s.state == 'playing' and ((area and area_name(s.entity_id) == area) or s.entity_id in also) %}}{{"id": {{{{ s.entity_id | tojson }}}}, "sonos": {{{{ (s.entity_id in sonos) | tojson }}}}, "content": {{{{ (s.attributes.media_content_id or '') | tojson }}}}}}{{% if not loop.last %}},{{% endif %}}{{% endfor %}}]"#,
             serde_json::to_string(&area)?,
             serde_json::to_string(also)?
         );

@@ -282,7 +282,11 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
         }
         "music" => {
             let command = match text("action").as_deref().unwrap_or("play") {
-                "pause" | "stop" => MusicCommand::Pause,
+                "pause" => MusicCommand::Pause,
+                "stop" => MusicCommand::Stop,
+                "mute" => MusicCommand::Mute(true),
+                "unmute" => MusicCommand::Mute(false),
+                "playing" => MusicCommand::NowPlaying,
                 "resume" => MusicCommand::Resume,
                 "next" => MusicCommand::Next,
                 "previous" => MusicCommand::Previous,
@@ -291,6 +295,8 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 _ => match (text("kind").as_deref(), text("query")) {
                     (Some("liked"), _) | (_, None) => MusicCommand::Liked,
                     (Some("playlist"), Some(q)) => MusicCommand::Playlist(q),
+                    (Some("artist"), Some(q)) => MusicCommand::Artist(q),
+                    (Some("album"), Some(q)) => MusicCommand::Album(q),
                     (_, Some(q)) => MusicCommand::Song(q),
                 },
             };
@@ -398,10 +404,10 @@ pub fn tools() -> Value {
         ),
         tool(
             "music",
-            "Play music (song, artist, playlist, liked songs) or control playback.",
+            "Play music (song, artist, album, playlist, liked songs), control playback, or say what is playing.",
             json!({ "type": "object", "required": ["action"], "properties": {
-            "action": { "type": "string", "enum": ["play", "pause", "resume", "next", "previous", "louder", "quieter"] },
-            "kind": { "type": "string", "enum": ["song", "artist", "playlist", "liked"] },
+            "action": { "type": "string", "enum": ["play", "pause", "stop", "resume", "next", "previous", "louder", "quieter", "mute", "unmute", "playing"] },
+            "kind": { "type": "string", "enum": ["song", "artist", "album", "playlist", "liked"] },
             "query": { "type": "string" }
         } })
         ),
@@ -537,7 +543,7 @@ mod tests {
         );
         assert_eq!(
             parse_reply(&call("music", r#"{"action":"play","kind":"artist","query":"Ghost"}"#)).unwrap(),
-            Decision::Act(Intent::Music(MusicCommand::Song("Ghost".into())))
+            Decision::Act(Intent::Music(MusicCommand::Artist("Ghost".into())))
         );
         assert_eq!(
             parse_reply(&call("music", r#"{"action":"next"}"#)).unwrap(),
