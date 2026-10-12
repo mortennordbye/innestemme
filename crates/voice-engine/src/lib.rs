@@ -6,6 +6,7 @@ pub mod hub;
 pub mod metrics;
 pub mod pipeline;
 pub mod satellite;
+pub mod screen;
 pub mod settings;
 pub mod transport;
 pub mod unhandled;

@@ -263,8 +263,9 @@ pub async fn serve_http(
                 return;
             }
             let target = std::str::from_utf8(path).unwrap_or_default();
-            if let Some(web) = web.as_ref().filter(|_| target == "/api/events") {
-                if web.events(&mut stream).await {
+            let events = target.split_once('?').map_or(target, |(path, _)| path) == "/api/events";
+            if let Some(web) = web.as_ref().filter(|_| events) {
+                if web.events(&mut stream, target.ends_with("?screen")).await {
                     return;
                 }
             }

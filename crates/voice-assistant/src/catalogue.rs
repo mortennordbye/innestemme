@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::house::{HouseCommand, Routine};
 use crate::intent::Intent;
+use crate::tv::TvCommand;
 
 #[derive(Debug, Serialize)]
 pub struct Skill {
@@ -102,6 +103,17 @@ pub const SKILLS: &[Skill] = &[
         calls: &["media_player.turn_on", "media_player.turn_off", "media_player.volume_set", "media_player.select_source"],
         examples: &["Turn off the TV", "Put Netflix on the TV", "Turn the TV down", "Mute the TV", "Pause the TV"],
         norwegian: &["Skru av TV-en"],
+    },
+    Skill {
+        id: "tv_screen",
+        name: "TV screen",
+        group: "Home",
+        icon: "tv",
+        does: "Opens the assistant's own screen on the TV and shows the weather, timers, music or departures on it. Scenes, lockdown, coming home and jokes show up there by themselves while it is open.",
+        source: "The engine's /tv page in the TV's web browser, opened through Home Assistant's LG webOS integration (the `screen-url` setting)",
+        calls: &["webostv.command (system.launcher/open)", "media_player.turn_on"],
+        examples: &["Show the weather on the TV", "Put the timers on the TV", "Show the bus times on the screen", "Close that"],
+        norwegian: &["Vis været på TV-en"],
     },
     Skill {
         id: "house_status",
@@ -419,6 +431,7 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
         Intent::Scene(_) => "scene",
         Intent::Script(_) => "script",
         Intent::Undo => "undo",
+        Intent::Tv(TvCommand::Show(_) | TvCommand::Hide) => "tv_screen",
         Intent::Tv(_) => "tv",
         Intent::Routine(Routine::Lockdown | Routine::StandDown) => "lockdown",
         Intent::Routine(_) => "routines",

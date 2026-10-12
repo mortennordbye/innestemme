@@ -182,6 +182,11 @@ struct Args {
     /// player that is a TV by its device class or name.
     #[arg(long, env = "VOICE_TV")]
     tv: Option<String>,
+    /// The engine's `/tv` page as the TV reaches it, e.g. https://voice.example.lan/tv. "Show the
+    /// weather on the TV" opens it in the TV's browser (LG webOS integration). Unset: only a page
+    /// already open shows it.
+    #[arg(long, env = "VOICE_SCREEN_URL")]
+    screen_url: Option<String>,
     /// Speak at once when a smoke, carbon monoxide, gas, water or breaking glass sensor in Home
     /// Assistant goes off, and every five minutes while it stays on.
     #[arg(long, env = "VOICE_ALERTS", default_value_t = true, action = clap::ArgAction::Set)]
@@ -486,6 +491,7 @@ fn main() -> Result<()> {
                     room: args.room.clone(),
                     honorific: args.honorific.clone(),
                     tv: args.tv.clone(),
+                    screen_url: args.screen_url.clone(),
                     alerts: args.alerts,
                     bedtime_light: args.bedtime_light,
                     home_room: args.home_room.clone(),

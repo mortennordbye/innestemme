@@ -15,7 +15,7 @@ use crate::power::{PowerQuery, When};
 use crate::shopping::ListCommand;
 use crate::timer::{TimerCommand, Which};
 use crate::transit::{Mode, TransitQuery};
-use crate::tv::TvCommand;
+use crate::tv::{Screen, TvCommand};
 
 #[derive(Clone)]
 pub struct Llm {
@@ -304,7 +304,17 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
         }
         "tv" => {
             let volume = args["volume"].as_f64().or_else(|| text("volume").and_then(|s| s.parse().ok()));
+            let screen = match text("show").as_deref() {
+                Some("weather") => Some(Screen::Weather),
+                Some("timers") => Some(Screen::Timers),
+                Some("music") => Some(Screen::Music),
+                Some("departures") => Some(Screen::Departures),
+                Some("jarvis") => Some(Screen::Jarvis),
+                _ => None,
+            };
             let command = match (text("action").as_deref().unwrap_or("on"), text("app")) {
+                _ if screen.is_some() => TvCommand::Show(screen.unwrap_or(Screen::Jarvis)),
+                ("hide", _) => TvCommand::Hide,
                 (_, Some(app)) => TvCommand::App(app),
                 _ if volume.is_some() => TvCommand::Volume(volume.unwrap_or(0.0).clamp(0.0, 100.0).round() as u8),
                 ("off", _) => TvCommand::Power(false),
@@ -458,9 +468,10 @@ pub fn tools() -> Value {
         ),
         tool(
             "tv",
-            "Control the TV: on, off, volume, mute, pause, or open an app.",
+            "Control the TV: on, off, volume, mute, pause, open an app, or show your screen on it.",
             json!({ "type": "object", "properties": {
-            "action": { "type": "string", "enum": ["on", "off", "louder", "quieter", "mute", "unmute", "pause", "resume"] },
+            "action": { "type": "string", "enum": ["on", "off", "louder", "quieter", "mute", "unmute", "pause", "resume", "hide"] },
+            "show": { "type": "string", "enum": ["jarvis", "weather", "timers", "music", "departures"] },
             "volume": { "type": "number", "description": "0-100" },
             "app": { "type": "string", "description": "e.g. Netflix" }
         } })
@@ -594,6 +605,10 @@ mod tests {
         assert_eq!(
             parse_reply(&call("tv", r#"{"action":"off"}"#)).unwrap(),
             Decision::Act(Intent::Tv(TvCommand::Power(false)))
+        );
+        assert_eq!(
+            parse_reply(&call("tv", r#"{"show":"departures"}"#)).unwrap(),
+            Decision::Act(Intent::Tv(TvCommand::Show(Screen::Departures)))
         );
         assert_eq!(
             parse_reply(&call("phone", r#"{"action":"find","name":"my"}"#)).unwrap(),

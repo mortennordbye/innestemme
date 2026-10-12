@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#08090c">
+<title>Jarvis TV</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=Anton&display=swap" rel="stylesheet">
+<style>
+/* One 1920x1080 stage scaled to the TV. The frame (face, clock, subtitles) stays put; one module at
+   a time fills the middle. The engine picks the module over /api/events?screen. */
+:root {
+  --bg: #08090c; --panel: #0e1015; --line: #1c2028; --text: #e8ebf0; --soft: #a3abb8; --dim: #6b7382;
+  --accent: #7cf5d4; --warm: #ffc46b; --good: #5fd38d; --bad: #ff5a5a; --rain: #6aa8ff;
+  --sans: "Geist", system-ui, sans-serif; --mono: "Geist Mono", ui-monospace, Menlo, monospace; --meme: "Anton", Impact, sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #000; cursor: none; }
+body { color: var(--text); font: 15px/1.45 var(--sans); }
+.stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; overflow: hidden;
+  background: radial-gradient(circle at 85% -10%, rgba(124,245,212,.07), transparent 45%), var(--bg); }
+/* An OLED keeps a ghost of what never moves: the whole picture drifts a few pixels now and then. */
+.drift { position: absolute; inset: 0; transition: transform 2s ease-in-out; }
+
+/* Frame */
+.chrome-top { position: absolute; z-index: 5; inset: 48px 64px auto 64px; display: flex; justify-content: space-between; align-items: center; }
+.who { display: flex; align-items: center; gap: 22px; }
+.bubble { position: relative; width: 96px; height: 96px; }
+.ph { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; }
+.bubble .ph { box-shadow: 0 0 0 2px var(--line); transition: box-shadow .3s; }
+.face-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .25s; }
+.stage[data-face="idle"] .face-img.idle, .stage[data-face="listening"] .face-img.listening,
+.stage[data-face="thinking"] .face-img.listening, .stage[data-face="speaking"] .face-img.speaking { opacity: 1; }
+.stage[data-face="listening"] .bubble .ph, .stage[data-face="thinking"] .bubble .ph { box-shadow: 0 0 0 4px var(--accent), 0 0 50px rgba(124,245,212,.5); }
+.stage[data-face="speaking"] .bubble .ph { animation: bounce .45s ease-in-out infinite; }
+.bubble .orbit { position: absolute; inset: -12px; border-radius: 50%; border: 2px dashed rgba(124,245,212,.45); opacity: 0; }
+.stage[data-face="thinking"] .bubble .orbit { opacity: 1; animation: spin 2.4s linear infinite; }
+.who .name { font-family: var(--mono); font-size: 22px; letter-spacing: .3em; color: var(--soft); }
+.who .state { font-family: var(--mono); font-size: 18px; color: var(--dim); margin-top: 4px; letter-spacing: .06em; }
+.stage:not([data-face="idle"]) .who .state { color: var(--accent); }
+.clock { font-family: var(--mono); font-size: 40px; color: var(--soft); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.subs { position: absolute; z-index: 5; left: 50%; bottom: 64px; transform: translateX(-50%); width: 1500px; text-align: center; display: flex; flex-direction: column; gap: 10px; }
+.subs .heard { font-size: 28px; color: var(--dim); min-height: 1.4em; }
+.subs .said { font-size: 40px; color: var(--text); min-height: 1.3em; text-wrap: balance; }
+.subs div:empty { visibility: hidden; }
+.stage[data-module="ambient"] .bubble, .stage[data-module="ambient"] .who .name, .stage[data-module="ambient"] .who .state,
+.stage[data-module="ambient"] .clock { visibility: hidden; }
+
+/* Module slot */
+.slot { position: absolute; inset: 0; }
+.mod { position: absolute; inset: 0; padding: 200px 120px 220px; display: flex; animation: enter .6s cubic-bezier(.2,.8,.2,1) both; }
+.mod.leaving { animation: leave .35s ease-in both; }
+.eyebrow { font-family: var(--mono); font-size: 22px; letter-spacing: .24em; text-transform: uppercase; color: var(--dim); }
+
+/* ambient */
+.m-ambient { align-items: center; justify-content: center; gap: 120px; padding-top: 120px; }
+.m-ambient .big-face { position: relative; width: 520px; height: 520px; flex: none; }
+.m-ambient .big-face .ph { box-shadow: 0 0 0 2px var(--line), 0 40px 100px rgba(0,0,0,.7); animation: float 4s ease-in-out infinite; }
+.m-ambient .big-face .ring { position: absolute; inset: 0; border-radius: 50%; border: 4px solid var(--accent); opacity: 0; }
+.stage[data-face="listening"] .m-ambient .ring { animation: ripple 1.7s ease-out infinite; }
+.stage[data-face="listening"] .m-ambient .ring:nth-child(2) { animation-delay: .55s; }
+.m-ambient .meme { position: absolute; left: -40px; right: -40px; bottom: -30px; font-family: var(--meme); text-transform: uppercase; color: #fff; text-align: center;
+  font-size: 58px; line-height: 1.02; -webkit-text-stroke: 3px #000; paint-order: stroke fill; text-shadow: 0 5px 0 #000; }
+.m-ambient .info { display: flex; flex-direction: column; gap: 18px; }
+.m-ambient .time { font-size: 240px; font-weight: 300; letter-spacing: -.05em; line-height: .9; font-variant-numeric: tabular-nums; }
+.m-ambient .date { font-size: 40px; color: var(--soft); }
+.m-ambient .wx { display: flex; gap: 22px; align-items: baseline; font-size: 34px; color: var(--soft); margin-top: 18px; min-height: 1.5em; }
+.m-ambient .wx b { font-size: 64px; font-weight: 400; color: var(--text); }
+.m-ambient .hint { font-family: var(--mono); font-size: 22px; color: var(--dim); margin-top: 36px; letter-spacing: .04em; }
+
+/* scene */
+.m-scene { flex-direction: column; justify-content: center; gap: 36px; }
+.m-scene .wash { position: absolute; inset: -20%; z-index: -1; filter: blur(90px); opacity: .55; }
+.m-scene .wash span { position: absolute; width: 900px; height: 900px; border-radius: 50%; animation: wander 14s ease-in-out infinite alternate; }
+.m-scene .wash span:nth-child(2) { animation-duration: 18s; animation-delay: -6s; }
+.m-scene .wash span:nth-child(3) { animation-duration: 22s; animation-delay: -11s; }
+.m-scene h2 { margin: 0; font-family: var(--meme); font-weight: 400; font-size: 220px; line-height: .92; text-transform: uppercase; letter-spacing: .01em; text-shadow: 0 10px 60px rgba(0,0,0,.5); text-wrap: balance; }
+
+/* lockdown */
+.stage[data-module="lockdown"] { background: #140405; }
+.stage[data-module="lockdown"] .who .name, .stage[data-module="lockdown"] .clock { color: #ffb3b3; }
+.m-lockdown { flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 30px; }
+.m-lockdown .pulse { position: absolute; inset: 0; z-index: -1; background: radial-gradient(circle at 50% 50%, rgba(255,40,40,.45), transparent 65%); animation: alarm 1.6s ease-in-out infinite; }
+.m-lockdown .stripes { position: absolute; left: 0; right: 0; height: 56px; z-index: -1; opacity: .9;
+  background: repeating-linear-gradient(-45deg, var(--bad) 0 40px, #140405 40px 80px); background-size: 226px 56px; animation: march 2s linear infinite; }
+.m-lockdown .stripes.top { top: 0; } .m-lockdown .stripes.bot { bottom: 0; animation-direction: reverse; }
+.m-lockdown h2 { margin: 0; font-family: var(--meme); font-weight: 400; font-size: 300px; line-height: .9; letter-spacing: .04em; color: #fff; text-shadow: 0 0 80px rgba(255,60,60,.8); }
+.m-lockdown .line { font-family: var(--mono); font-size: 34px; color: #ffd0d0; letter-spacing: .04em; }
+.m-lockdown .end { font-size: 36px; color: #fff; padding: 14px 32px; border: 2px solid rgba(255,255,255,.5); border-radius: 999px; margin-top: 20px; }
+
+/* music */
+.m-music { align-items: center; gap: 100px; }
+.m-music .cover { width: 600px; height: 600px; flex: none; border-radius: 28px; position: relative; overflow: hidden; box-shadow: 0 40px 120px rgba(0,0,0,.7); }
+.m-music .cover::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 30% 25%, rgba(255,255,255,.25), transparent 50%); }
+.m-music .cover b { position: absolute; left: 40px; right: 40px; bottom: 30px; font-family: var(--meme); font-weight: 400; font-size: 110px; line-height: .9; color: rgba(255,255,255,.92); text-transform: uppercase; overflow-wrap: anywhere; }
+.m-music .meta { display: flex; flex-direction: column; gap: 18px; min-width: 0; flex: 1; }
+.m-music h2 { margin: 0; font-size: 110px; font-weight: 500; letter-spacing: -.03em; line-height: 1; text-wrap: balance; }
+.m-music .artist { font-size: 48px; color: var(--soft); }
+.m-music .prog { display: flex; align-items: center; gap: 28px; margin-top: 40px; font-family: var(--mono); font-size: 26px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.m-music .bar { flex: 1; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.m-music .bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; transition: width 1s linear; }
+.m-music .viz { display: flex; gap: 8px; align-items: flex-end; height: 70px; margin-top: 20px; }
+.m-music .viz span { width: 10px; height: 70px; border-radius: 5px; background: var(--accent); opacity: .8; transform-origin: 50% 100%; animation: bar .9s ease-in-out infinite; }
+.m-music.paused .viz span { animation-play-state: paused; opacity: .3; }
+
+/* timers */
+.m-timers { align-items: center; justify-content: center; gap: 120px; }
+.m-timers .ring { position: relative; width: 640px; height: 640px; flex: none; }
+.m-timers svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.m-timers .ring .t { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--mono); font-size: 150px; font-variant-numeric: tabular-nums; letter-spacing: -.03em; }
+.m-timers .side { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.m-timers h2 { margin: 0; font-size: 110px; font-weight: 500; letter-spacing: -.02em; line-height: 1; }
+.m-timers .done { font-size: 40px; color: var(--soft); }
+.m-timers .others { display: flex; flex-direction: column; gap: 12px; margin-top: 30px; font-family: var(--mono); font-size: 28px; color: var(--dim); }
+
+/* weather */
+.m-weather { flex-direction: column; gap: 60px; justify-content: center; }
+.m-weather .now { display: flex; align-items: center; gap: 60px; }
+.m-weather .now svg { width: 220px; height: 180px; flex: none; }
+.m-weather .temp { font-size: 220px; font-weight: 300; letter-spacing: -.05em; line-height: .9; }
+.m-weather .desc { display: flex; flex-direction: column; gap: 10px; font-size: 44px; }
+.m-weather .desc span { color: var(--soft); font-size: 34px; }
+.m-weather .hours { display: grid; grid-template-columns: repeat(8, 1fr); gap: 20px; }
+.m-weather .h { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 24px 0; border-radius: 22px; background: var(--panel); border: 1px solid var(--line); }
+.m-weather .h .hr { font-family: var(--mono); font-size: 24px; color: var(--dim); }
+.m-weather .h .tc { font-size: 44px; }
+.m-weather .h .rain { width: 18px; height: 90px; border-radius: 9px; background: var(--line); display: flex; align-items: flex-end; overflow: hidden; }
+.m-weather .h .rain i { display: block; width: 100%; background: var(--rain); }
+.m-weather .h .mm { font-family: var(--mono); font-size: 20px; color: var(--dim); }
+.m-weather .src { font-family: var(--mono); font-size: 20px; color: var(--dim); }
+
+/* departures */
+.m-departures { flex-direction: column; gap: 34px; justify-content: center; }
+.m-departures .board { display: flex; flex-direction: column; gap: 14px; }
+.m-departures .row { display: grid; grid-template-columns: 130px 1fr 260px; align-items: center; gap: 36px; padding: 18px 30px; background: var(--panel); border: 1px solid var(--line); border-radius: 18px; }
+.m-departures .ln { font-family: var(--mono); font-weight: 500; font-size: 40px; text-align: center; padding: 6px 0; border-radius: 12px; color: #fff; }
+.m-departures .dest { font-size: 52px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.m-departures .min { font-family: var(--mono); font-size: 52px; text-align: right; font-variant-numeric: tabular-nums; }
+.m-departures .min.now { color: var(--warm); }
+.flap { display: inline-block; animation: flap .5s cubic-bezier(.3,1.4,.6,1) both; }
+
+/* joke */
+.m-joke { flex-direction: column; justify-content: center; gap: 50px; padding-inline: 220px; }
+.m-joke .q { font-size: 84px; font-weight: 500; letter-spacing: -.02em; line-height: 1.1; text-wrap: balance; }
+.m-joke .a { font-family: var(--meme); font-size: 130px; line-height: 1; text-transform: uppercase; color: var(--accent); text-wrap: balance;
+  opacity: 0; transform: translateY(30px); transition: opacity .5s, transform .6s cubic-bezier(.2,1.4,.4,1); }
+.m-joke .a.shown { opacity: 1; transform: none; }
+
+/* welcome */
+.m-welcome { flex-direction: column; justify-content: center; gap: 30px; }
+.m-welcome .glow { position: absolute; inset: 0; z-index: -1; background: radial-gradient(circle at 20% 60%, rgba(255,196,107,.22), transparent 55%); }
+.m-welcome h2 { margin: 0; font-size: 190px; font-weight: 300; letter-spacing: -.04em; line-height: .95; }
+.m-welcome h2 b { font-weight: 600; color: var(--warm); }
+.m-welcome .did { display: flex; flex-direction: column; gap: 16px; margin-top: 30px; font-size: 40px; color: var(--soft); }
+.m-welcome .did span::before { content: ""; display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: var(--good); margin-right: 22px; vertical-align: middle; }
+
+/* Popups over any module */
+.toasts { position: absolute; z-index: 8; top: 170px; right: 64px; display: flex; flex-direction: column; gap: 16px; }
+.toast { width: 620px; display: flex; gap: 26px; align-items: center; padding: 28px 32px; border-radius: 24px; background: rgba(14,16,21,.92); border: 1px solid rgba(255,196,107,.45);
+  box-shadow: 0 30px 80px rgba(0,0,0,.6); animation: slide .5s cubic-bezier(.2,1.2,.4,1) both; position: relative; overflow: hidden; }
+.toast.out { animation: slideout .4s ease-in both; }
+.toast svg { width: 64px; height: 64px; flex: none; stroke: var(--warm); fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.toast b { display: block; font-size: 36px; font-weight: 500; }
+.toast span { font-size: 28px; color: var(--soft); }
+.toast i { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--warm); animation: drain 8s linear both; }
+.offline { position: absolute; z-index: 9; left: 64px; bottom: 40px; font-family: var(--mono); font-size: 20px; color: var(--dim); }
+
+@keyframes enter { from { opacity: 0; transform: scale(1.03); filter: blur(6px); } }
+@keyframes leave { to { opacity: 0; transform: scale(.98); filter: blur(6px); } }
+@keyframes float { 50% { transform: translateY(-10px); } }
+@keyframes bounce { 50% { transform: translateY(-5px) scale(1.04); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes ripple { from { transform: scale(.96); opacity: .8; } to { transform: scale(1.3); opacity: 0; } }
+@keyframes bar { 0%, 100% { transform: scaleY(.2); } 50% { transform: scaleY(1); } }
+@keyframes wander { from { transform: translate(0,0) scale(1); } to { transform: translate(300px,-160px) scale(1.3); } }
+@keyframes alarm { 50% { opacity: .25; } }
+@keyframes march { to { background-position: 226px 0; } }
+@keyframes flap { from { transform: rotateX(90deg); opacity: 0; } }
+@keyframes slide { from { transform: translateX(120%); } }
+@keyframes slideout { to { transform: translateX(120%); opacity: 0; } }
+@keyframes drain { from { width: 100%; } to { width: 0; } }
+@media (prefers-reduced-motion: reduce) { .stage *, .stage *::before { animation-duration: .01s !important; animation-iteration-count: 1 !important; } }
+</style>
+</head>
+<body>
+<div class="stage" id="stage" data-face="idle" data-module="ambient">
+  <div class="drift" id="drift">
+    <div class="chrome-top">
+      <div class="who">
+        <div class="bubble"><div class="orbit"></div><div class="ph" id="faces">
+          <img class="face-img idle" alt="" src="hub/face-idle.jpg">
+          <img class="face-img listening" alt="" src="hub/face-listening.jpg">
+          <img class="face-img speaking" alt="" src="hub/face-speaking.jpg">
+        </div></div>
+        <div><div class="name">JARVIS</div><div class="state" id="state">listening for the wake word</div></div>
+      </div>
+      <div class="clock" id="clock"></div>
+    </div>
+    <div class="slot" id="slot"></div>
+    <div class="toasts" id="toasts"></div>
+    <div class="subs"><div class="heard" id="heard"></div><div class="said" id="said"></div></div>
+    <div class="offline" id="offline" hidden>reconnecting…</div>
+  </div>
+</div>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const stage = $("#stage"), slot = $("#slot");
+const pad = (n) => String(n).padStart(2, "0");
+const hhmm = (d = new Date()) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+const mmss = (s) => s >= 3600 ? `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}` : `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const faces = () => `<div class="ph">${$("#faces").innerHTML}</div>`;
+const hash = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7) >>> 0;
+const PALETTES = [["#6a3cff", "#ff3d8b", "#1fb6ff"], ["#ff8a3d", "#ffd36b", "#ff3d6e"], ["#1fd1a5", "#2a7bff", "#7cf5d4"],
+  ["#ff4f9a", "#8a5cff", "#ffb86b"], ["#3dd6ff", "#3d6bff", "#b46bff"], ["#ffcf5c", "#ff7a59", "#5cffb0"]];
+const MEMES = { idle: "waiting for<br>hey jarvis", listening: "…huh?", thinking: "hmm…", speaking: "very good,<br>sir" };
+const STATES = { idle: "listening for the wake word", listening: "listening", thinking: "thinking", speaking: "speaking" };
+const SKY = { clearsky: "Clear", "clear-night": "Clear", sunny: "Sunny", partlycloudy: "Partly cloudy", cloudy: "Cloudy", fog: "Fog",
+  rainy: "Rain", pouring: "Heavy rain", snowy: "Snow", "snowy-rainy": "Sleet", lightning: "Thunder", "lightning-rainy": "Thunder", windy: "Windy" };
+const timers = new Map();
+let hub = null;
+
+// Weather symbols by WMO code group.
+const ICONS = {
+  sun: '<circle cx="110" cy="90" r="42" stroke="#ffc46b" stroke-width="7" fill="#0e1015"/>',
+  cloud: '<path d="M60 120h110a36 36 0 0 0 0-72 52 52 0 0 0-98-8 40 40 0 0 0-12 80z" stroke="#a3abb8" stroke-width="7" fill="#0e1015"/>',
+  rain: '<path d="M80 140l-8 22M115 140l-8 22M150 140l-8 22" stroke="#6aa8ff" stroke-width="7"/>',
+  snow: '<path d="M80 150h1M115 156h1M150 150h1" stroke="#e8ebf0" stroke-width="12"/>',
+};
+const icon = (code) => code <= 1 ? ICONS.sun : code === 2 ? ICONS.sun.replace('cx="110" cy="90"', 'cx="70" cy="60"') + ICONS.cloud
+  : (code >= 71 && code <= 77) || code === 68 ? ICONS.cloud + ICONS.snow : code >= 51 ? ICONS.cloud + ICONS.rain : ICONS.cloud;
+
+// --- Modules: render(data) -> html, and optionally start(el, data) -> stop ----------------------
+const MODULES = {
+  ambient: {
+    render: () => `<div class="mod m-ambient">
+      <div class="big-face"><div class="ring"></div><div class="ring"></div>${faces()}<div class="meme">${MEMES[stage.dataset.face] || MEMES.idle}</div></div>
+      <div class="info"><div class="time" data-clock>${hhmm()}</div>
+        <div class="date">${new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</div>
+        <div class="wx" data-wx>${ambientWeather()}</div>
+        <div class="hint">say “hey jarvis, show …”</div></div></div>`,
+  },
+  scene: {
+    render: (d) => {
+      const colors = PALETTES[hash(d.name) % PALETTES.length];
+      return `<div class="mod m-scene">
+        <div class="wash">${colors.map((c, i) => `<span style="background:${c};left:${[5, 45, 25][i]}%;top:${[10, 0, 50][i]}%"></span>`).join("")}</div>
+        <div class="eyebrow">Scene</div><h2>${esc(d.name)}</h2></div>`;
+    },
+  },
+  lockdown: {
+    render: (d) => `<div class="mod m-lockdown"><div class="pulse"></div><div class="stripes top"></div><div class="stripes bot"></div>
+      <div class="eyebrow" style="color:#ffb3b3">Protocol engaged</div><h2>LOCKDOWN</h2>
+      <div class="line">Every light red${d.music ? " · " + esc(d.music) : ""}</div><div class="end">Say “stand down” to end</div></div>`,
+  },
+  music: {
+    render: (d) => {
+      const [a, b] = PALETTES[hash(d.album || d.title) % PALETTES.length];
+      return `<div class="mod m-music ${d.playing ? "" : "paused"}">
+        <div class="cover" style="background:linear-gradient(135deg, ${a}, ${b})"><b>${esc(d.album || d.title)}</b></div>
+        <div class="meta"><div class="eyebrow">${d.playing ? "Now playing" : "Paused"}</div><h2>${esc(d.title)}</h2><div class="artist">${esc([d.artist, d.album].filter(Boolean).join(" · "))}</div>
+          ${d.duration ? `<div class="prog"><span data-at></span><div class="bar"><i data-bar></i></div><span>${mmss(Math.round(d.duration))}</span></div>` : ""}
+          <div class="viz">${Array.from({ length: 28 }, (_, i) => `<span style="animation-delay:${(i * 37 % 90) / 100}s"></span>`).join("")}</div></div></div>`;
+    },
+    start(el, d) {
+      if (!d.duration) return null;
+      const from = (d.position || 0) * 1000, since = d.updated ? Date.parse(d.updated) : Date.now();
+      const draw = () => {
+        const at = Math.min(d.duration, Math.max(0, (from + (d.playing ? Date.now() - since : 0)) / 1000));
+        $("[data-at]", el).textContent = mmss(Math.round(at));
+        $("[data-bar]", el).style.width = (at / d.duration) * 100 + "%";
+      };
+      draw();
+      const id = setInterval(draw, 1000);
+      return () => clearInterval(id);
+    },
+  },
+  timers: {
+    render: () => `<div class="mod m-timers">
+      <div class="ring"><svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="46" fill="none" stroke="#1c2028" stroke-width="3"/>
+        <circle data-arc cx="50" cy="50" r="46" fill="none" stroke="#ffc46b" stroke-width="3" stroke-linecap="round" pathLength="100" stroke-dasharray="100"/></svg>
+        <div class="t" data-t></div></div>
+      <div class="side"><div class="eyebrow">Timer</div><h2 data-name></h2><div class="done" data-done></div><div class="others" data-others></div></div></div>`,
+    start(el) {
+      const draw = () => {
+        const list = [...timers.values()].map((t) => ({ ...t, now: timeLeft(t) })).sort((a, b) => a.now - b.now);
+        if (!list.length) { show(null); return; }
+        const [first, ...rest] = list;
+        $("[data-t]", el).textContent = mmss(first.now);
+        $("[data-arc]", el).setAttribute("stroke-dashoffset", 100 - (first.total ? (first.now / first.total) * 100 : 0));
+        $("[data-name]", el).textContent = first.name ? first.name[0].toUpperCase() + first.name.slice(1) : "Timer";
+        $("[data-done]", el).textContent = first.active ? "Done at " + hhmm(new Date(Date.now() + first.now * 1000)) : "Paused";
+        $("[data-others]", el).innerHTML = rest.map((t) => `<span>${esc(t.name || "Timer")} · ${mmss(t.now)}</span>`).join("");
+      };
+      draw();
+      const id = setInterval(draw, 1000);
+      return () => clearInterval(id);
+    },
+  },
+  weather: {
+    render: (d) => `<div class="mod m-weather">
+      <div class="now"><svg viewBox="0 0 220 180" fill="none" stroke-linecap="round">${icon(d.code)}</svg>
+        <div class="temp">${Math.round(d.temp)}°</div>
+        <div class="desc">${esc(d.sky[0].toUpperCase() + d.sky.slice(1))}<span>Wind ${d.wind} m/s</span><span>${esc(d.place || "")}</span></div></div>
+      <div class="hours">${d.hours.map((h) => `<div class="h"><span class="hr">${pad(h.hour)}</span><span class="tc">${h.temp == null ? "–" : Math.round(h.temp) + "°"}</span>
+        <span class="rain"><i style="height:${Math.min(100, h.rain * 50)}%"></i></span><span class="mm">${h.rain ? h.rain + " mm" : "–"}</span></div>`).join("")}</div>
+      <div class="src">MET Norway · next ${d.hours.length} hours</div></div>`,
+  },
+  departures: {
+    render: (d) => `<div class="mod m-departures"><div class="eyebrow">${esc(d.stop)} · Entur</div><div class="board">${d.rows.map((r, i) =>
+      `<div class="row"><span class="ln" style="background:${lineColor(r.mode)}">${esc(r.line)}</span>
+        <span class="dest flap" style="animation-delay:${i * .08}s">${esc(r.towards)}</span>
+        <span class="min flap" data-min="${r.minutes}" style="animation-delay:${i * .08 + .2}s"></span></div>`).join("")}</div></div>`,
+    start(el) {
+      const shown = Date.now();
+      const draw = () => el.querySelectorAll("[data-min]").forEach((m) => {
+        const left = Number(m.dataset.min) - Math.floor((Date.now() - shown) / 60000);
+        m.textContent = left <= 0 ? "now" : left + " min";
+        m.classList.toggle("now", left <= 1);
+        m.closest(".row").hidden = left < 0;
+      });
+      draw();
+      const id = setInterval(draw, 15000);
+      return () => clearInterval(id);
+    },
+  },
+  joke: {
+    render: (d) => {
+      const cut = d.text.indexOf("?");
+      const [q, a] = cut > 0 && cut < d.text.length - 1 ? [d.text.slice(0, cut + 1), d.text.slice(cut + 1).trim()] : [d.text, ""];
+      return `<div class="mod m-joke"><div class="eyebrow">Joke</div><div class="q">${esc(q)}</div>${a ? `<div class="a" data-a>${esc(a)}</div>` : ""}</div>`;
+    },
+    start(el) {
+      const a = $("[data-a]", el);
+      if (!a) return null;
+      const id = setTimeout(() => a.classList.add("shown"), 2600);
+      return () => clearTimeout(id);
+    },
+  },
+  welcome: {
+    render: (d) => {
+      const did = (d.text || "").split(/(?<=[.!])\s+/).map((s) => s.replace(/[.!]$/, "")).filter((s) => s && !/^welcome/i.test(s));
+      return `<div class="mod m-welcome"><div class="glow"></div><div class="eyebrow">Arrival</div>
+        <h2>Welcome <b>home</b>.</h2><div class="did">${did.map((x) => `<span>${esc(x)}</span>`).join("")}</div></div>`;
+    },
+  },
+};
+
+const lineColor = (mode) => ({ bus: "#e60000", tram: "#0b91ef", metro: "#ec700c", rail: "#00367e", water: "#682c88" })[mode] || "#a3abb8";
+const timeLeft = (t) => t.active ? Math.max(0, t.left - Math.floor((Date.now() - t.at) / 1000)) : t.left;
+function ambientWeather() {
+  const w = hub && hub.weather;
+  if (!w) return "";
+  return `<b>${Math.round(w.temp)}${w.unit && w.unit !== "°C" ? esc(w.unit) : "°"}</b> ${esc(SKY[w.condition] || w.condition || "")}`;
+}
+
+// --- show(): one entry point for {"show": ...} from the engine ---------------------------------
+let current = null, stopCurrent = null, backToFace = null, shownAt = 0;
+function show(message) {
+  const name = message && MODULES[message.module] ? message.module : "ambient";
+  const data = (message && message.data) || {};
+  if (name === "timers") (data.timers || []).forEach((t) => timers.set(t.id, { ...t, at: Date.now() }));
+  if (stopCurrent) stopCurrent();
+  stopCurrent = null;
+  clearTimeout(backToFace);
+  const old = current;
+  // The engine sends what is showing as soon as the page connects: no fade from the face first.
+  if (old && performance.now() - shownAt < 1500) old.remove();
+  else if (old) { old.classList.add("leaving"); setTimeout(() => old.remove(), 350); }
+  shownAt = performance.now();
+  stage.dataset.module = name;
+  try {
+    slot.insertAdjacentHTML("beforeend", MODULES[name].render(data));
+    current = slot.lastElementChild;
+    if (MODULES[name].start) stopCurrent = MODULES[name].start(current, data);
+  } catch (error) {
+    console.error(error);
+    if (name !== "ambient") return show(null);
+  }
+  if (message && message.ttl) backToFace = setTimeout(() => show(null), message.ttl * 1000);
+}
+
+// --- The frame: face state and subtitles --------------------------------------------------------
+let quiet = null;
+function face(state, heard, said) {
+  stage.dataset.face = state;
+  $("#state").textContent = STATES[state];
+  if (heard !== undefined) $("#heard").textContent = heard;
+  if (said !== undefined) $("#said").textContent = said;
+  const meme = $(".m-ambient .meme");
+  if (meme) meme.innerHTML = MEMES[state];
+  clearTimeout(quiet);
+  // Missed events must not leave the face stuck, nor old subtitles on screen.
+  if (state === "listening" || state === "thinking") quiet = setTimeout(() => face("idle", "", ""), 15000);
+}
+
+function toast(title, text) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.innerHTML = `<svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></svg><div><b>${esc(title)}</b><span>${esc(text)}</span></div><i></i>`;
+  $("#toasts").append(el);
+  setTimeout(() => { el.classList.add("out"); setTimeout(() => el.remove(), 400); }, 8000);
+}
+
+function onTimer(t) {
+  if (t.gone) {
+    timers.delete(t.id);
+    if (t.finished) toast(t.name ? `${t.name[0].toUpperCase()}${t.name.slice(1)} is done` : "Timer done", "Your timer finished");
+  } else {
+    timers.set(t.id, { ...t, at: Date.now() });
+  }
+}
+
+function connect() {
+  const events = new EventSource("api/events?screen");
+  events.onopen = () => { $("#offline").hidden = true; };
+  events.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.timer) { onTimer(m.timer); return; }
+    if ("show" in m) { show(m.show); return; }
+    switch (m.state) {
+      case "listening": face("listening", "", ""); break;
+      case "thinking": face("thinking", "“" + m.heard + "”"); break;
+      case "speaking": face("speaking", undefined, m.text); break;
+      // All audio is out; the speaker still plays it for about that long.
+      case "spoken": clearTimeout(quiet); quiet = setTimeout(() => face("idle", "", ""), m.seconds * 1000 + 2500); break;
+      case "idle": if (stage.dataset.face !== "speaking") face("idle", "", ""); break;
+    }
+  };
+  events.onerror = () => { $("#offline").hidden = false; events.close(); setTimeout(connect, 3000); };
+}
+
+async function refreshHub() {
+  try {
+    hub = await (await fetch("api/hub")).json();
+    const wx = $("[data-wx]");
+    if (wx) wx.innerHTML = ambientWeather();
+  } catch {}
+}
+
+// --- Fit the stage to the TV, tick the clocks, drift against burn-in ---------------------------
+const fit = () => {
+  const scale = Math.min(innerWidth / 1920, innerHeight / 1080);
+  stage.style.transform = `translate(${(innerWidth - 1920 * scale) / 2}px, ${(innerHeight - 1080 * scale) / 2}px) scale(${scale})`;
+};
+addEventListener("resize", fit);
+fit();
+const tick = () => { $("#clock").textContent = hhmm(); document.querySelectorAll("[data-clock]").forEach((el) => (el.textContent = hhmm())); };
+setInterval(tick, 5000);
+tick();
+setInterval(() => { $("#drift").style.transform = `translate(${Math.round(Math.random() * 16 - 8)}px, ${Math.round(Math.random() * 12 - 6)}px)`; }, 120000);
+show(null);
+refreshHub();
+setInterval(refreshHub, 300000);
+connect();
+</script>
+</body>
+</html>

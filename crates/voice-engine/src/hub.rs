@@ -159,13 +159,19 @@ fn rooms(lights: &[Light], on: &[Light]) -> Vec<Value> {
         .collect()
 }
 
-/// `/api/events`: what the assistant is doing, as server-sent events, for the face.
-pub async fn events(stream: &mut TcpStream, assistant: &AssistantHandle) -> std::io::Result<()> {
+/// `/api/events`: what the assistant is doing, as server-sent events, for the face. The TV screen
+/// (`screen`) also gets what it shows now, and counts as watching while connected.
+pub async fn events(stream: &mut TcpStream, assistant: &AssistantHandle, screen: bool) -> std::io::Result<()> {
     let mut events = assistant.subscribe();
+    let _viewer = screen.then(|| assistant.screen.watch());
     stream
         .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n")
         .await?;
     stream.write_all(b"data: {\"state\":\"idle\"}\n\n").await?;
+    if screen {
+        let now = json!({ "show": assistant.screen.current() });
+        stream.write_all(format!("data: {now}\n\n").as_bytes()).await?;
+    }
     // Audio sent for the current answer: the face keeps talking that long.
     let mut samples = 0usize;
     loop {
@@ -203,7 +209,9 @@ pub async fn events(stream: &mut TcpStream, assistant: &AssistantHandle) -> std:
                 "total": notice.total_seconds,
                 "active": notice.active,
                 "gone": matches!(notice.kind, NoticeKind::Cancelled | NoticeKind::Finished),
+                "finished": notice.kind == NoticeKind::Finished,
             } })],
+            AssistantEvent::Show(message) => vec![json!({ "show": message })],
         };
         for message in messages {
             stream.write_all(format!("data: {message}\n\n").as_bytes()).await?;

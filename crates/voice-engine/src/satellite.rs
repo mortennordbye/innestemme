@@ -564,6 +564,8 @@ impl Bridge<'_> {
                 info!(url, text, "announcement for the device");
                 self.device.announce(&Announce { media_id: url, text, ..Announce::default() }).await?;
             }
+            // For the TV screen only.
+            AssistantEvent::Show(_) => {}
         }
         Ok(())
     }

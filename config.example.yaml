@@ -59,6 +59,9 @@ whisper-size: base
 # room: Living Room
 # The TV's media player. Default: the media player that is a TV by its device class or name.
 # tv: media_player.living_room_tv
+# The engine's /tv page as the TV reaches it. "Show the weather on the TV" opens it in the TV's browser
+# through Home Assistant's LG webOS integration; scenes, lockdown and jokes show there while it is open.
+# screen-url: https://voice.example.lan/tv
 # Speak at once when a smoke, carbon monoxide, gas, water or breaking glass sensor goes off.
 # alerts: true
 # Bedtime ("good night"): the bedroom lights that are on dim to this percent, warm white.

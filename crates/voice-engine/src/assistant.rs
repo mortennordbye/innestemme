@@ -37,7 +37,7 @@ use voice_assistant::stt::SpeechToText;
 use voice_assistant::timer::{self, Notice, Timers};
 use voice_assistant::transit::Transit;
 use voice_assistant::tts::{self, Tts};
-use voice_assistant::tv::{Tv, TvCommand};
+use voice_assistant::tv::{self, Tv, TvCommand};
 use voice_assistant::vad::{self, Vad};
 use voice_assistant::weather::Weather;
 use voice_assistant::whisper::{Transcriber, Transcript};
@@ -46,6 +46,7 @@ use voice_rt::noalloc::permit_alloc;
 
 use crate::engine::{FrameProcessor, ProcessError};
 use crate::metrics::Metrics;
+use crate::screen::Screen;
 use crate::unhandled::{Reason, UnhandledLog};
 
 /// Covers the STT's 0.5 s delay plus the room's echo tail.
@@ -75,6 +76,12 @@ const WAKE_TAIL_LONGEST: Duration = Duration::from_millis(1600);
 const LONGEST_REQUEST_WORDS: usize = 12;
 /// How often Home Assistant's safety sensors are checked.
 const ALERT_POLL: Duration = Duration::from_secs(5);
+/// How long the TV screen shows asked-for data (weather, departures) before the face is back.
+const SCREEN_DATA: Duration = Duration::from_secs(120);
+/// Music shows longer: it is often left on while it plays.
+const SCREEN_MUSIC: Duration = Duration::from_secs(300);
+/// A scene, a joke or coming home: a moment, not something to read.
+const SCREEN_MOMENT: Duration = Duration::from_secs(25);
 
 pub struct AssistantConfig {
     /// Place used when a weather question names none; also the home's name in answers.
@@ -111,6 +118,8 @@ pub struct AssistantConfig {
     pub unhandled: Option<Arc<UnhandledLog>>,
     /// The TV's media player entity; default: the media player that is a TV.
     pub tv: Option<String>,
+    /// The `/tv` page as the TV reaches it, opened in its browser for "show ... on the TV".
+    pub screen_url: Option<String>,
     /// Speak at once when a smoke, gas, water or breaking glass sensor goes off.
     pub alerts: bool,
     /// Percent the bedroom lights that are on dim to at bedtime.
@@ -155,6 +164,8 @@ pub enum AssistantEvent {
     /// Speech outside a conversation (a timer ran out, a reminder), 24 kHz mono, chime included.
     /// `timer_ring`: a plain timer, which devices with their own timer display ring for instead.
     Announcement { text: String, audio: Arc<[i16]>, timer_ring: bool },
+    /// What the TV screen shows now (`Screen::show`'s message), or the face again.
+    Show(Option<serde_json::Value>),
 }
 
 /// Listening switched off from the web page (guests, a long conversation in the room), for a while
@@ -200,6 +211,7 @@ pub struct AssistantHandle {
     hear_now: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
     pub pause: Arc<Pause>,
+    pub screen: Arc<Screen>,
 }
 
 impl AssistantHandle {
@@ -288,6 +300,7 @@ pub struct AssistantProcessor {
     hear_now: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
     pause: Arc<Pause>,
+    screen: Arc<Screen>,
     was_busy: bool,
     frame: u64,
     deaf_until: u64,
@@ -313,6 +326,7 @@ impl AssistantProcessor {
         let busy = Arc::new(AtomicBool::new(false));
         let interrupted = Arc::new(AtomicBool::new(false));
         let pause = Arc::new(Pause::default());
+        let screen = Arc::new(Screen::default());
         let speaker = config.speaker.clone();
         let tv = Tv::new(config.tv.clone());
         let (events, _) = broadcast::channel(256);
@@ -362,6 +376,7 @@ impl AssistantProcessor {
             busy: busy.clone(),
             interrupted: interrupted.clone(),
             pause: pause.clone(),
+            screen: screen.clone(),
             tts,
             config,
             weather: Weather::new(&user_agent),
@@ -456,6 +471,7 @@ impl AssistantProcessor {
             hear_now,
             interrupted,
             pause,
+            screen,
             was_busy: false,
             frame: 0,
             deaf_until: 0,
@@ -469,6 +485,7 @@ impl AssistantProcessor {
             hear_now: self.hear_now.clone(),
             interrupted: self.interrupted.clone(),
             pause: self.pause.clone(),
+            screen: self.screen.clone(),
         }
     }
 }
@@ -632,6 +649,7 @@ struct Worker {
     /// Set by a satellite when the wake word is said over an answer.
     interrupted: Arc<AtomicBool>,
     pause: Arc<Pause>,
+    screen: Arc<Screen>,
     tts: Box<dyn Tts>,
     config: AssistantConfig,
     weather: Weather,
@@ -1332,7 +1350,13 @@ impl Worker {
                     }
                 }
             }
-            Intent::Joke => self.jokes.tell(lang),
+            Intent::Joke => {
+                let joke = self.jokes.tell(lang);
+                if self.screen.watched() {
+                    self.show("joke", serde_json::json!({ "text": joke }), Some(SCREEN_MOMENT));
+                }
+                joke
+            }
             Intent::Time => time_of_day(lang),
             Intent::Music(command) => {
                 // New music replaces what was paused for the request, and "play" plays it itself.
@@ -1431,6 +1455,11 @@ impl Worker {
                 None => return None,
             },
             Intent::Distance(query) => self.distance(&query, lang),
+            Intent::Tv(TvCommand::Show(screen)) => self.show_screen(screen, lang),
+            Intent::Tv(TvCommand::Hide) => {
+                self.hide();
+                if no { "Ok." } else { "Okay." }.into()
+            }
             Intent::Tv(command) => self.tv.run(self.home_assistant.as_ref(), &command, lang),
             Intent::House(command) => self.house(&command, lang),
             Intent::Routine(routine) => {
@@ -1473,6 +1502,7 @@ impl Worker {
         }
         let music = MusicCommand::Song(self.config.lockdown_music.clone());
         self.player.run(self.home_assistant.as_ref(), &music, lang);
+        self.show("lockdown", serde_json::json!({ "music": self.config.lockdown_music }), None);
         if no { "Nedstengning startet. Huset er forseglet." } else { "Lockdown initiated. The house is sealed." }.into()
     }
 
@@ -1504,6 +1534,9 @@ impl Worker {
             }
         }
         info!(restored, ?volume, "lockdown over");
+        if self.screen.showing("lockdown") {
+            self.hide();
+        }
         if no { "Avblåst. Alt er som før." } else { "Standing down. Everything is back as it was." }.into()
     }
 
@@ -1552,7 +1585,183 @@ impl Worker {
             answer = format!("{answer} {started}");
         }
         info!(?routine, answer, "routine");
+        if routine == Routine::Home {
+            self.show("welcome", serde_json::json!({ "text": answer }), Some(SCREEN_MOMENT));
+        }
         answer
+    }
+
+    /// The TV screen with `module` on it, for pages showing it now and any that open later.
+    fn show(&mut self, module: &str, data: serde_json::Value, ttl: Option<Duration>) {
+        let message = self.screen.show(module, data, ttl);
+        self.emit(AssistantEvent::Show(Some(message)));
+    }
+
+    fn hide(&mut self) {
+        self.screen.hide();
+        self.emit(AssistantEvent::Show(None));
+    }
+
+    /// "Show the weather on the TV": the data on the screen, and the screen opened in the TV's
+    /// browser when no page shows it yet.
+    fn show_screen(&mut self, screen: tv::Screen, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let shown = match screen {
+            tv::Screen::Jarvis => {
+                self.hide();
+                Ok(if no { "Ok, her er jeg." } else { "Okay, I'm on the TV." })
+            }
+            tv::Screen::Weather => self.screen_weather(no),
+            tv::Screen::Timers => self.screen_timers(no),
+            tv::Screen::Music => self.screen_music(no),
+            tv::Screen::Departures => self.screen_departures(no),
+        };
+        let done = match shown {
+            Ok(done) => done,
+            Err(answer) => return answer,
+        };
+        if self.screen.watched() {
+            return done.into();
+        }
+        let Some(url) = self.config.screen_url.clone() else {
+            return if no {
+                "TV-skjermen er ikke satt opp. Den trenger innstillingen screen-url."
+            } else {
+                "The TV screen isn't set up. It needs the screen-url setting."
+            }
+            .into();
+        };
+        let Some(ha) = &self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        match self.tv.open_page(ha, &url) {
+            Ok(()) => done.into(),
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "could not open the screen on the tv");
+                if no {
+                    "Beklager, jeg fikk ikke åpnet skjermen på TV-en."
+                } else {
+                    "Sorry, I couldn't open the screen on the TV."
+                }
+                .into()
+            }
+        }
+    }
+
+    fn screen_weather(&mut self, no: bool) -> Result<&'static str, String> {
+        let Some(home) = self.home_location.clone() else {
+            return Err(if no {
+                "Jeg vet ikke hvor hjemme er. Den trenger innstillingen address."
+            } else {
+                "I don't know where home is. It needs the address setting."
+            }
+            .into());
+        };
+        match self.weather.screen(&home) {
+            Ok(Some(data)) => {
+                self.show("weather", data, Some(SCREEN_DATA));
+                Ok(if no { "Ok, været er på TV-en." } else { "Okay, the weather is on the TV." })
+            }
+            Ok(None) => Err(if no { "Jeg fikk ingen værmelding." } else { "I got no forecast." }.into()),
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "weather for the screen failed");
+                Err(if no {
+                    "Beklager, jeg får ikke hentet været nå."
+                } else {
+                    "Sorry, I couldn't get the forecast right now."
+                }
+                .into())
+            }
+        }
+    }
+
+    fn screen_timers(&mut self, no: bool) -> Result<&'static str, String> {
+        let now = Instant::now();
+        let timers: Vec<serde_json::Value> = self
+            .timers
+            .list()
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": format!("timer-{}", t.id),
+                    "name": t.name.clone().or_else(|| t.reminder.clone()).unwrap_or_default(),
+                    "left": t.left(now).as_secs_f32().ceil() as u32,
+                    "total": t.total.as_secs(),
+                    "active": t.is_running(),
+                })
+            })
+            .collect();
+        if timers.is_empty() {
+            return Err(if no { "Ingen tidtakere går nå." } else { "There are no timers running." }.into());
+        }
+        // Until the last timer is gone: the page counts down and drops them as they end.
+        self.show("timers", serde_json::json!({ "timers": timers }), None);
+        Ok(if no { "Ok, tidtakerne er på TV-en." } else { "Okay, the timers are on the TV." })
+    }
+
+    fn screen_music(&mut self, no: bool) -> Result<&'static str, String> {
+        let not_connected = || -> String {
+            if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }.into()
+        };
+        let Some(ha) = &self.home_assistant else { return Err(not_connected()) };
+        let state = self.player.check(ha).and_then(|entity| ha.state(&entity));
+        let state = match state {
+            Ok(state) => state,
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "music for the screen failed");
+                return Err(if no {
+                    "Beklager, jeg finner ikke musikken nå."
+                } else {
+                    "Sorry, I couldn't find the music right now."
+                }
+                .into());
+            }
+        };
+        let a = &state["attributes"];
+        if !["playing", "paused"].contains(&state["state"].as_str().unwrap_or_default()) || a["media_title"].is_null() {
+            return Err(if no { "Ingenting spilles nå." } else { "Nothing is playing." }.into());
+        }
+        let data = serde_json::json!({
+            "title": a["media_title"],
+            "artist": a["media_artist"],
+            "album": a["media_album_name"],
+            "position": a["media_position"],
+            "updated": a["media_position_updated_at"],
+            "duration": a["media_duration"],
+            "playing": state["state"] == "playing",
+        });
+        self.show("music", data, Some(SCREEN_MUSIC));
+        Ok(if no { "Ok, musikken er på TV-en." } else { "Okay, the music is on the TV." })
+    }
+
+    fn screen_departures(&mut self, no: bool) -> Result<&'static str, String> {
+        if !self.transit.is_configured() {
+            return Err(if no {
+                "Jeg vet ikke hvor hjemme er. Den trenger innstillingen address."
+            } else {
+                "I don't know where home is. It needs the address setting."
+            }
+            .into());
+        }
+        match self.transit.board() {
+            Ok(Some(data)) => {
+                self.show("departures", data, Some(SCREEN_DATA));
+                Ok(if no { "Ok, avgangene er på TV-en." } else { "Okay, the departures are on the TV." })
+            }
+            Ok(None) => {
+                Err(if no { "Jeg fant ingen avganger i nærheten." } else { "I found no departures nearby." }.into())
+            }
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "departures for the screen failed");
+                Err(if no {
+                    "Beklager, jeg får ikke hentet avgangene nå."
+                } else {
+                    "Sorry, I couldn't get the departures right now."
+                }
+                .into())
+            }
+        }
     }
 
     /// A named place, else the home: the address when it is set, else the `home` place name.
@@ -1927,6 +2136,7 @@ impl Worker {
             return unreachable(&error, no);
         }
         info!(scene = scene.id, request, "scene activated");
+        self.show("scene", serde_json::json!({ "name": scene.name }), Some(SCREEN_MOMENT));
         let name = scene.name.to_lowercase();
         if no {
             format!("Ok, {name}.")

@@ -55,11 +55,11 @@ impl Web {
         self
     }
 
-    /// `/api/events`: the assistant's state as server-sent events, for the hub's face. `false` when
-    /// there is nothing to stream.
-    pub async fn events(&self, stream: &mut tokio::net::TcpStream) -> bool {
+    /// `/api/events`: the assistant's state as server-sent events, for the hub's face, and with
+    /// `?screen` what the TV screen shows. `false` when there is nothing to stream.
+    pub async fn events(&self, stream: &mut tokio::net::TcpStream, screen: bool) -> bool {
         let Some(assistant) = &self.assistant else { return false };
-        if let Err(error) = crate::hub::events(stream, assistant).await {
+        if let Err(error) = crate::hub::events(stream, assistant, screen).await {
             tracing::debug!(%error, "hub event stream closed");
         }
         true
@@ -131,6 +131,7 @@ impl Web {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         match path {
             "/" | "/hub" => Some(("200 OK", "text/html; charset=utf-8", crate::hub::PAGE.as_bytes().to_vec())),
+            "/tv" => Some(("200 OK", "text/html; charset=utf-8", crate::screen::PAGE.as_bytes().to_vec())),
             _ if path.starts_with("/hub/") => self.hub.as_ref()?.face(path),
             "/api/skills" => Some(json_response(&json!({ "about": self.about, "skills": SKILLS }))),
             "/api/unhandled" => {
@@ -221,6 +222,7 @@ mod tests {
         let body = web().route("/api/skills").unwrap().2;
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["skills"].as_array().unwrap().len(), SKILLS.len());
+        assert!(web().route("/tv").unwrap().2.starts_with(b"<!doctype html>"));
         assert!(web().route("/nothing").is_none());
     }
 

@@ -385,12 +385,26 @@ impl Transit {
         if let (Some(destination), Some(_)) = (&query.destination, &self.home) {
             return self.trip(destination, query.mode, lang);
         }
-        let stops = self.stops()?.to_vec();
-        if stops.is_empty() {
+        let Some(found) = self.calls()? else {
             return Ok(match lang {
                 Lang::English => "I found no stops near home.".into(),
                 Lang::Norwegian => "Jeg fant ingen holdeplasser i nærheten.".into(),
             });
+        };
+        Ok(answer(&found, query, jiff::Timestamp::now(), lang))
+    }
+
+    /// The nearest stop's next departures, for the TV screen: `None` without stops or departures.
+    pub fn board(&mut self) -> Result<Option<serde_json::Value>> {
+        let Some(found) = self.calls()? else { return Ok(None) };
+        Ok(board(&found, jiff::Timestamp::now()))
+    }
+
+    /// Departures from the stops, nearest first, each with its walk; `None` without stops.
+    fn calls(&mut self) -> Result<Option<Vec<Stop>>> {
+        let stops = self.stops()?.to_vec();
+        if stops.is_empty() {
+            return Ok(None);
         }
         let ids: Vec<String> = stops.iter().map(|s| format!("{:?}", s.id)).collect();
         let data = self.graphql(&format!(
@@ -399,14 +413,28 @@ impl Transit {
             ids.join(", ")
         ))?;
         let found: Vec<Option<Stop>> = serde_json::from_value(data["stopPlaces"].clone())?;
-        // Nearest first, each with its walk.
         let mut found: Vec<Stop> = found.into_iter().flatten().collect();
         for stop in &mut found {
             stop.walk = stops.iter().find(|s| s.id == stop.id).map_or(0, |s| s.walk);
         }
         found.sort_by_key(|stop| stops.iter().position(|s| s.id == stop.id));
-        Ok(answer(&found, query, jiff::Timestamp::now(), lang))
+        Ok(Some(found))
     }
+}
+
+/// Rows on the TV's departure board.
+const BOARD_ROWS: usize = 6;
+
+fn board(stops: &[Stop], now: jiff::Timestamp) -> Option<serde_json::Value> {
+    let any = TransitQuery { mode: Mode::Any, destination: None };
+    let found = departures(stops, &any, now);
+    let first = found.first()?;
+    let rows: Vec<serde_json::Value> = found
+        .iter()
+        .take(BOARD_ROWS)
+        .map(|d| json!({ "line": d.line, "mode": d.mode, "towards": d.towards, "minutes": d.minutes }))
+        .collect();
+    Some(json!({ "stop": first.stop, "rows": rows }))
 }
 
 fn departures(stops: &[Stop], query: &TransitQuery, now: jiff::Timestamp) -> Vec<Departure> {
@@ -601,6 +629,16 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn board_lists_the_nearest_stop() {
+        let now: jiff::Timestamp = "2026-09-24T18:00:00Z".parse().unwrap();
+        let stops = [stop("Wessels plass", &[("31", "bus", "Tonsenhagen", 7), ("31", "bus", "Snarøya", 4)])];
+        let value = board(&stops, now).unwrap();
+        assert_eq!(value["stop"], "Wessels plass");
+        assert_eq!(value["rows"][0], json!({ "line": "31", "mode": "bus", "towards": "Snarøya", "minutes": 4 }));
+        assert!(board(&[], now).is_none());
     }
 
     #[test]

@@ -34,6 +34,23 @@ impl Weather {
 
     /// A sentence to speak about `place`.
     pub fn report(&mut self, place: &Location, day: Day, lang: Lang) -> Result<String> {
+        let met = self.met(place)?;
+        Ok(match forecast(met, jiff::Timestamp::now(), &TimeZone::system()) {
+            Some(f) => describe(&place.label, &f, day, lang),
+            None => no_forecast(&place.label, lang),
+        })
+    }
+
+    /// Now and the next hours at `place`, for the TV screen: `None` without a forecast.
+    pub fn screen(&mut self, place: &Location) -> Result<Option<serde_json::Value>> {
+        let met = self.met(place)?;
+        Ok(screen(met, jiff::Timestamp::now(), &TimeZone::system()).map(|mut value| {
+            value["place"] = place.label.clone().into();
+            value
+        }))
+    }
+
+    fn met(&mut self, place: &Location) -> Result<&Met> {
         // MET wants at most four decimals; two (about a kilometre) also make a good cache key.
         let key = ((place.latitude * 100.0).round() as i64, (place.longitude * 100.0).round() as i64);
         if !self.cache.get(&key).is_some_and(|(at, _)| at.elapsed() < CACHE) {
@@ -49,12 +66,40 @@ impl Weather {
                 .context("reading the forecast")?;
             self.cache.insert(key, (Instant::now(), met));
         }
-        let met = &self.cache[&key].1;
-        Ok(match forecast(met, jiff::Timestamp::now(), &TimeZone::system()) {
-            Some(f) => describe(&place.label, &f, day, lang),
-            None => no_forecast(&place.label, lang),
-        })
+        Ok(&self.cache[&key].1)
     }
+}
+
+/// Hours shown on the TV after the current one.
+const SCREEN_HOURS: usize = 8;
+
+/// The current step and the next hours: temperature, WMO code and rain in millimetres.
+fn screen(met: &Met, now: jiff::Timestamp, tz: &TimeZone) -> Option<serde_json::Value> {
+    let steps = &met.properties.timeseries;
+    let current = steps.iter().rev().find(|s| s.time <= now).or(steps.first())?;
+    let code = current.data.symbol().map_or(3, symbol_to_code);
+    let hours: Vec<serde_json::Value> = steps
+        .iter()
+        .filter(|s| s.time > now)
+        .filter(|s| s.data.next_1_hours.is_some())
+        .take(SCREEN_HOURS)
+        .map(|s| {
+            let rain = s.data.next_1_hours.as_ref().and_then(|p| p.details.as_ref()?.precipitation_amount);
+            serde_json::json!({
+                "hour": s.time.to_zoned(tz.clone()).hour(),
+                "temp": s.data.instant.details.air_temperature.map(f64::round),
+                "code": s.data.symbol().map_or(3, symbol_to_code),
+                "rain": rain.unwrap_or(0.0),
+            })
+        })
+        .collect();
+    Some(serde_json::json!({
+        "temp": current.data.instant.details.air_temperature?.round(),
+        "code": code,
+        "sky": condition(code, Lang::English),
+        "wind": current.data.instant.details.wind_speed.unwrap_or(0.0).round(),
+        "hours": hours,
+    }))
 }
 
 // --- MET's format ------------------------------------------------------------------------------
@@ -108,6 +153,7 @@ struct Summary {
 #[derive(Deserialize)]
 struct PeriodDetails {
     probability_of_precipitation: Option<f64>,
+    precipitation_amount: Option<f64>,
 }
 
 impl StepData {
@@ -461,5 +507,19 @@ mod tests {
             describe("Oslo", &f, Day::Tomorrow, Lang::English),
             "Tomorrow in Oslo: partly cloudy, 10 to 16 degrees."
         );
+    }
+
+    #[test]
+    fn screen_shows_the_next_hours() {
+        let tz = TimeZone::get("Europe/Oslo").unwrap();
+        let met = met("2026-09-24T18:00:00Z");
+        let value = screen(&met, "2026-09-24T18:30:00Z".parse().unwrap(), &tz).unwrap();
+        assert_eq!(value["temp"], 10.0);
+        assert_eq!(value["sky"], "overcast");
+        let hours = value["hours"].as_array().unwrap();
+        assert_eq!(hours.len(), SCREEN_HOURS);
+        // 19:00 UTC is 21:00 in Oslo.
+        assert_eq!(hours[0]["hour"], 21);
+        assert_eq!(hours[0]["rain"], 0.0);
     }
 }

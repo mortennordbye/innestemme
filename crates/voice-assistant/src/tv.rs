@@ -1,6 +1,7 @@
-//! The TV through its Home Assistant media player: on and off, volume, mute, pause, and opening an
-//! app ("put Netflix on the TV"). The TV is the `tv` setting, else the media player that is a TV by
-//! its device class or name and not a Music Assistant player.
+//! The TV through its Home Assistant media player: on and off, volume, mute, pause, opening an app
+//! ("put Netflix on the TV"), and the assistant's own screen on it ("show the weather on the TV").
+//! The TV is the `tv` setting, else the media player that is a TV by its device class or name and
+//! not a Music Assistant player; one with the TV device class (LG webOS) before one that only casts.
 
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,13 @@ pub const ENGLISH_ANSWERS: &[&str] = &[
     "Okay, the TV sound is back on.",
     "Okay, paused.",
     "Okay.",
+    "Okay, I'm on the TV.",
+    "Okay, the weather is on the TV.",
+    "Okay, the timers are on the TV.",
+    "Okay, the music is on the TV.",
+    "Okay, the departures are on the TV.",
+    "There are no timers running.",
+    "Nothing is playing.",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,7 +45,55 @@ pub enum TvCommand {
     Resume,
     /// An app or input by name, as said.
     App(String),
+    /// The assistant's screen on the TV, with this on it.
+    Show(Screen),
+    /// Back to the assistant's face: "close that".
+    Hide,
 }
+
+/// What the assistant's screen on the TV shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    /// The face, clock and weather.
+    Jarvis,
+    Weather,
+    Timers,
+    Music,
+    Departures,
+}
+
+/// Words for each screen, longest phrase first where one contains another.
+const SCREENS: &[(&str, Screen)] = &[
+    ("what's playing", Screen::Music),
+    ("weather", Screen::Weather),
+    ("forecast", Screen::Weather),
+    ("været", Screen::Weather),
+    ("timer", Screen::Timers),
+    ("timers", Screen::Timers),
+    ("tidtaker", Screen::Timers),
+    ("tidtakeren", Screen::Timers),
+    ("tidtakerne", Screen::Timers),
+    ("music", Screen::Music),
+    ("song", Screen::Music),
+    ("musikken", Screen::Music),
+    ("sangen", Screen::Music),
+    ("departures", Screen::Departures),
+    ("bus", Screen::Departures),
+    ("buses", Screen::Departures),
+    ("bus times", Screen::Departures),
+    ("tram", Screen::Departures),
+    ("avganger", Screen::Departures),
+    ("avgangene", Screen::Departures),
+    ("bussen", Screen::Departures),
+    ("yourself", Screen::Jarvis),
+    ("your face", Screen::Jarvis),
+    ("deg", Screen::Jarvis),
+    ("deg selv", Screen::Jarvis),
+];
+const SHOW_WORDS: &[&str] = &["show", "put", "display", "bring", "vis", "sett"];
+const HIDE_WORDS: &[&str] = &["hide", "close", "clear", "dismiss", "skjul", "lukk", "fjern"];
+/// Where the assistant's screen is, besides the TV words.
+const SCREEN_WORDS: &[&str] = &["screen", "skjermen"];
 
 const TV_WORDS: &[&str] =
     &["tv", "tvs", "tv's", "television", "telly", "tellie", "fjernsyn", "fjernsynet", "tven", "teve", "teven"];
@@ -97,6 +153,9 @@ pub fn parse(words: &[String]) -> Option<TvCommand> {
     let any = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
     let tv = any(TV_WORDS);
     let text = format!(" {} ", words.join(" "));
+    if let Some(command) = screen(words, tv || any(SCREEN_WORDS), &text) {
+        return Some(command);
+    }
     let app = APPS.iter().find(|a| text.contains(&format!(" {a} "))).copied();
     if !tv && app.is_none() {
         return None;
@@ -154,14 +213,34 @@ pub fn parse(words: &[String]) -> Option<TvCommand> {
     None
 }
 
+/// "Show the weather on the TV", "put yourself on the screen", "close that", "vis været på TV-en".
+fn screen(words: &[String], on_screen: bool, text: &str) -> Option<TvCommand> {
+    let first = words.iter().map(String::as_str).find(|w| !POLITE.contains(w)).unwrap_or_default();
+    let rest: Vec<&str> = words.iter().map(String::as_str).filter(|w| !POLITE.contains(w)).collect();
+    // "Close that" alone: the screen is the thing most likely open. "Close the blinds" is not it.
+    if HIDE_WORDS.contains(&first) && (on_screen || matches!(rest[1..], ["that"] | ["it"] | ["det"])) {
+        return Some(TvCommand::Hide);
+    }
+    if !on_screen || !SHOW_WORDS.contains(&first) {
+        return None;
+    }
+    // The longest phrase that is there: "bus times" over "bus".
+    SCREENS
+        .iter()
+        .filter(|(phrase, _)| text.contains(&format!(" {phrase} ")))
+        .max_by_key(|(phrase, _)| phrase.len())
+        .map(|&(_, screen)| TvCommand::Show(screen))
+}
+
 /// TVs that are on, by entity id: what "everything off" turns off.
 pub fn on_tvs(ha: &HomeAssistant) -> Result<Vec<String>> {
     let found: Vec<(String, String)> = serde_json::from_str(&ha.template(TVS_TEMPLATE)?).context("parsing the TVs")?;
     Ok(found.into_iter().filter(|(_, state)| !["off", "standby"].contains(&state.as_str())).map(|(id, _)| id).collect())
 }
 
-/// Every TV that is not unavailable, as `[id, state]`.
-const TVS_TEMPLATE: &str = r#"[{% for s in states.media_player if s.state not in ['unavailable', 'unknown'] and s.attributes.mass_player_type is not defined and (s.attributes.device_class == 'tv' or 'tv' in (s.name | lower)) %}[{{ s.entity_id | tojson }}, {{ s.state | tojson }}]{% if not loop.last %},{% endif %}{% endfor %}]"#;
+/// Every TV that is not unavailable, as `[id, state]`: those with the TV device class first. A TV
+/// that only casts has the name but can neither start nor open apps.
+const TVS_TEMPLATE: &str = r#"{% set tvs = states.media_player | selectattr('state', 'not in', ['unavailable', 'unknown']) | rejectattr('attributes.mass_player_type', 'defined') | list %}{% set classed = tvs | selectattr('attributes.device_class', 'eq', 'tv') | list %}{% set named = tvs | rejectattr('attributes.device_class', 'eq', 'tv') | selectattr('name', 'search', '(?i)tv') | list %}[{% for s in classed + named %}[{{ s.entity_id | tojson }}, {{ s.state | tojson }}]{% if not loop.last %},{% endif %}{% endfor %}]"#;
 
 /// How long a TV that was off may take to start before an app is opened on it.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
@@ -255,6 +334,8 @@ impl Tv {
                     format!("Okay, opening {found}.")
                 }
             }
+            // The engine shows its own screen; this is only reached without one.
+            TvCommand::Show(_) | TvCommand::Hide => if no { "Ok." } else { "Okay." }.into(),
             _ if !on => off_answer.into(),
             TvCommand::Louder | TvCommand::Quieter => {
                 let now = state["attributes"]["volume_level"].as_f64().unwrap_or(0.2);
@@ -295,6 +376,23 @@ impl Tv {
                 if no { "Ok." } else { "Okay." }.into()
             }
         })
+    }
+
+    /// Opens `url` in the TV's web browser, starting the TV first if it is off. Only TVs with
+    /// Home Assistant's LG webOS integration can.
+    pub fn open_page(&mut self, ha: &HomeAssistant, url: &str) -> Result<()> {
+        let entity = self.find(ha)?.context("no TV in Home Assistant")?;
+        let state = ha.state(&entity)?;
+        if ["off", "standby"].contains(&state["state"].as_str().unwrap_or("off")) {
+            ha.service("media_player", "turn_on", json!({ "entity_id": entity }))?;
+            self.wait_until_on(ha, &entity)?;
+        }
+        info!(entity, url, "opening the screen on the tv");
+        ha.service(
+            "webostv",
+            "command",
+            json!({ "entity_id": entity, "command": "system.launcher/open", "payload": { "target": url } }),
+        )
     }
 
     fn wait_until_on(&self, ha: &HomeAssistant, entity: &str) -> Result<()> {
@@ -344,5 +442,24 @@ mod tests {
         assert_eq!(tv("what's on TV tonight"), None);
         assert_eq!(tv("play Careless Whisper"), None);
         assert_eq!(tv("turn off the kitchen lights"), None);
+    }
+
+    #[test]
+    fn screen_requests() {
+        use Screen::*;
+        use TvCommand::*;
+        assert_eq!(tv("show the weather on the TV"), Some(Show(Weather)));
+        assert_eq!(tv("can you put the timers on the telly"), Some(Show(Timers)));
+        assert_eq!(tv("show what's playing on the TV"), Some(Show(Music)));
+        assert_eq!(tv("put the bus times on the screen"), Some(Show(Departures)));
+        assert_eq!(tv("show yourself on the TV"), Some(Show(Jarvis)));
+        assert_eq!(tv("vis været på TV-en"), Some(Show(Weather)));
+        assert_eq!(tv("close that"), Some(Hide));
+        assert_eq!(tv("hide the screen"), Some(Hide));
+        assert_eq!(tv("lukk det"), Some(Hide));
+        // Still apps and power.
+        assert_eq!(tv("show Netflix on the TV"), Some(App("netflix".into())));
+        assert_eq!(tv("close the blinds"), None);
+        assert_eq!(tv("put the TV on"), Some(Power(true)));
     }
 }
