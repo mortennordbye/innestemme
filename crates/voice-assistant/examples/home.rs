@@ -3,6 +3,7 @@
 //! Assistant, without audio: `cargo run -p voice-assistant --example home -- "what's on the shopping list"`.
 //! Reads HA_URL and HA_TOKEN from the environment (`set -a; . ./.env`). Scenes and scripts are only
 //! looked up unless RUN=1 (light levels, phones and the TV too); shopping list changes are real. VOICE_ROOM plays the satellite's room.
+//! "Show ... on the TV" with RUN=1 and VOICE_SCREEN_URL opens that page in the TV's browser.
 
 use voice_assistant::ha::{self, HomeAssistant};
 use voice_assistant::house::{self, HouseCommand};
@@ -90,8 +91,12 @@ fn main() -> anyhow::Result<()> {
         }
         Intent::Tv(command) => {
             println!("{command:?}: TVs on {:?}", voice_assistant::tv::on_tvs(&ha)?);
-            if run {
-                println!("{}", voice_assistant::tv::Tv::new(None).run(Some(&ha), &command, lang));
+            let mut tv = voice_assistant::tv::Tv::new(None);
+            match (&command, std::env::var("VOICE_SCREEN_URL")) {
+                // The engine puts the data on its screen; here only the page is opened.
+                (voice_assistant::tv::TvCommand::Show(_), Ok(url)) if run => tv.open_page(&ha, &url)?,
+                _ if run => println!("{}", tv.run(Some(&ha), &command, lang)),
+                _ => {}
             }
         }
         Intent::LightsStatus { target } => {
