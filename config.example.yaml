@@ -70,7 +70,7 @@ whisper-size: base
 # starts: liked for Liked Songs, or a playlist's name. Unset: this room's lights after dark, no music.
 # home-room: Living Room
 # home-music: liked
-# "Initiate lockdown" (just for fun): every light red, this song at this volume. "Stand down" puts it all back.
+# "Initiate lockdown" (just for fun): every light blinking red, this song at this volume. "Stand down" puts it all back.
 # lockdown-music: Mombasa by Hans Zimmer
 # lockdown-volume: 50
 # Your own face images for the hub page (/hub): idle.jpg, listening.jpg, speaking.jpg.

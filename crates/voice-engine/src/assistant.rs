@@ -80,6 +80,10 @@ const ALERT_POLL: Duration = Duration::from_secs(5);
 const SCREEN_DATA: Duration = Duration::from_secs(120);
 /// Music shows longer: it is often left on while it plays.
 const SCREEN_MUSIC: Duration = Duration::from_secs(300);
+/// The Hue alert the lockdown's lights pulse with lasts about 15 seconds: started again before it ends.
+const ALARM_REPEAT: Duration = Duration::from_secs(14);
+/// A lockdown nobody stands down stops blinking after this and stays red.
+const ALARM_LONGEST: Duration = Duration::from_secs(30 * 60);
 /// A scene, a joke or coming home: a moment, not something to read.
 const SCREEN_MOMENT: Duration = Duration::from_secs(25);
 
@@ -413,6 +417,7 @@ impl AssistantProcessor {
             room: None,
             warmed_prompt: String::new(),
             lockdown_volume: None,
+            alarm: None,
         };
         worker.room = worker.config.room.clone();
         worker.persona = worker.config.honorific.as_deref().map(Persona::new);
@@ -635,6 +640,46 @@ fn lead_sentence(lead: &str, honorific: Option<&str>) -> String {
     }
 }
 
+/// The lockdown's red lights blinking, on a thread of their own with their own Home Assistant
+/// client, so answers are not held up.
+struct Alarm {
+    stop: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Alarm {
+    fn start(ha: HomeAssistant, red: Vec<String>) -> std::io::Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let thread = std::thread::Builder::new().name("alarm".into()).spawn(move || {
+            let start = Instant::now();
+            let targets = house::alarm_targets(&ha, &red).unwrap_or_else(|error| {
+                warn!(error = format!("{error:#}"), "no Hue rooms for the lockdown; each light alone");
+                red
+            });
+            info!(?targets, "lockdown blink");
+            while !stopped.load(Relaxed) && start.elapsed() < ALARM_LONGEST {
+                if let Err(error) = house::alarm_pulse(&ha, &targets) {
+                    warn!(error = format!("{error:#}"), "lockdown blink failed");
+                }
+                // In short sleeps, so standing down is not kept waiting.
+                let pulse = Instant::now();
+                while !stopped.load(Relaxed) && pulse.elapsed() < ALARM_REPEAT {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            info!(after = ?start.elapsed(), "lockdown blink stopped");
+        })?;
+        Ok(Self { stop, thread })
+    }
+
+    /// Waits for a pulse in flight, so nothing is started after this returns.
+    fn stop(self) {
+        self.stop.store(true, Relaxed);
+        let _ = self.thread.join();
+    }
+}
+
 /// Players paused for a request.
 struct Hushed {
     players: Vec<Playing>,
@@ -713,6 +758,8 @@ struct Worker {
     warmed_prompt: String,
     /// The music's volume before a lockdown raised it, for standing down.
     lockdown_volume: Option<f64>,
+    /// The lockdown's lights blinking.
+    alarm: Option<Alarm>,
 }
 
 impl Worker {
@@ -1484,7 +1531,16 @@ impl Worker {
                 .into();
         };
         match house::lockdown(ha) {
-            Ok(red) => info!(red, "lockdown"),
+            Ok(red) => {
+                info!(red = red.len(), "lockdown");
+                let blinking = self.alarm.as_ref().is_some_and(|a| !a.thread.is_finished());
+                if let (false, false, Some((url, token))) = (blinking, red.is_empty(), &self.config.home_assistant) {
+                    match Alarm::start(HomeAssistant::new(url, token), red) {
+                        Ok(alarm) => self.alarm = Some(alarm),
+                        Err(error) => warn!(%error, "could not start the lockdown's blink"),
+                    }
+                }
+            }
             Err(error) => return unreachable(&error, no),
         }
         if let Ok(entity) = self.player.check(ha) {
@@ -1512,6 +1568,10 @@ impl Worker {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
         };
+        // Stopped first: a step after the lights are restored would turn them red again.
+        if let Some(alarm) = self.alarm.take() {
+            alarm.stop();
+        }
         let restored = match house::stand_down(ha) {
             Ok(restored) => restored,
             Err(error) => return unreachable(&error, no),

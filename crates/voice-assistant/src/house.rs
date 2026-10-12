@@ -1134,8 +1134,8 @@ struct LockdownLight {
 }
 
 /// Every light that can go red goes full red, the rest go off; a snapshot of them all is kept
-/// first, for standing down. A second lockdown keeps the first snapshot. The number of red lights.
-pub fn lockdown(ha: &HomeAssistant) -> Result<usize> {
+/// first, for standing down. A second lockdown keeps the first snapshot. The red lights.
+pub fn lockdown(ha: &HomeAssistant) -> Result<Vec<String>> {
     let lights: Vec<LockdownLight> =
         serde_json::from_str(&ha.template(LOCKDOWN_LIGHTS_TEMPLATE)?).context("parsing the lockdown lights")?;
     let ids = |color: bool| lights.iter().filter(|l| l.color == color).map(|l| l.id.as_str()).collect::<Vec<_>>();
@@ -1150,7 +1150,46 @@ pub fn lockdown(ha: &HomeAssistant) -> Result<usize> {
     if !off.is_empty() {
         ha.service("light", "turn_off", json!({ "entity_id": off }))?;
     }
-    Ok(red.len())
+    Ok(red.into_iter().map(str::to_owned).collect())
+}
+
+/// Hue rooms and zones in Home Assistant, as `[{"id": ..., "members": [...]}]`.
+const HUE_GROUPS_TEMPLATE: &str = r#"[{% for s in states.light if s.attributes.is_hue_group %}{"id": {{ s.entity_id | tojson }}, "members": {{ (s.attributes.entity_id or []) | list | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
+
+#[derive(Deserialize)]
+struct HueGroup {
+    id: String,
+    members: Vec<String>,
+}
+
+/// What the lockdown's alert goes to: each Hue room whose lights are all red, as one command the
+/// bridge sends to them together, and the red lights in no such room one by one.
+pub fn alarm_targets(ha: &HomeAssistant, red: &[String]) -> Result<Vec<String>> {
+    let groups: Vec<HueGroup> =
+        serde_json::from_str(&ha.template(HUE_GROUPS_TEMPLATE)?).context("parsing the Hue rooms")?;
+    Ok(cover(&groups, red))
+}
+
+fn cover(groups: &[HueGroup], red: &[String]) -> Vec<String> {
+    let mut left: Vec<&String> = red.iter().collect();
+    let mut targets = Vec::new();
+    // Rooms before zones: a zone over several rooms would leave a room's own lights to it.
+    let mut groups: Vec<&HueGroup> = groups.iter().filter(|g| !g.members.is_empty()).collect();
+    groups.sort_by_key(|g| g.members.len());
+    for group in groups {
+        if group.members.iter().all(|m| left.contains(&m)) {
+            left.retain(|l| !group.members.contains(l));
+            targets.push(group.id.clone());
+        }
+    }
+    targets.extend(left.into_iter().cloned());
+    targets
+}
+
+/// The Hue bridge's own alert on the lockdown's lights: about 15 seconds of fast pulsing, in step
+/// across a room. Driving the blink from here instead (twice a second) queued up at the bridge.
+pub fn alarm_pulse(ha: &HomeAssistant, targets: &[String]) -> Result<()> {
+    ha.service("light", "turn_on", json!({ "entity_id": targets, "flash": "long" }))
 }
 
 /// The lights back as they were before the lockdown; false when there was none.
@@ -1196,6 +1235,22 @@ pub fn switched_answer(switched: &Switched, except: Option<&str>, lang: Lang) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alarm_covers_whole_red_rooms() {
+        let group = |id: &str, members: &[&str]| HueGroup {
+            id: id.into(),
+            members: members.iter().map(|m| (*m).to_owned()).collect(),
+        };
+        let groups = [
+            group("light.living_room", &["light.round", "light.fresh"]),
+            group("light.kitchen", &["light.plug"]),
+            group("light.bedroom", &["light.bed", "light.window"]),
+        ];
+        let red: Vec<String> = ["light.round", "light.fresh", "light.bed", "light.lamp"].map(String::from).to_vec();
+        // The bedroom's window light is not red, so its bed light goes alone.
+        assert_eq!(cover(&groups, &red), ["light.living_room", "light.bed", "light.lamp"]);
+    }
     use crate::dialog::normalize;
 
     fn words(text: &str) -> Vec<String> {

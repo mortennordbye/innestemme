@@ -3,6 +3,7 @@
 //! Assistant, without audio: `cargo run -p voice-assistant --example home -- "what's on the shopping list"`.
 //! Reads HA_URL and HA_TOKEN from the environment (`set -a; . ./.env`). Scenes and scripts are only
 //! looked up unless RUN=1 (light levels, phones and the TV too); shopping list changes are real. VOICE_ROOM plays the satellite's room.
+//! "Initiate lockdown" with RUN=1 pulses the lights for BLINK_SECONDS (10, at most one alert of 15), then stands down.
 //! "Show ... on the TV" with RUN=1 and VOICE_SCREEN_URL opens that page in the TV's browser.
 
 use voice_assistant::ha::{self, HomeAssistant};
@@ -88,6 +89,16 @@ fn main() -> anyhow::Result<()> {
             {
                 println!("{other:?}: {domain} {word:?} -> {:?}", house::entities(&ha, domain, word)?);
             }
+        }
+        Intent::Routine(house::Routine::Lockdown) if run => {
+            // The engine's lockdown lights and pulse, without the music; stood down after BLINK_SECONDS.
+            let red = house::lockdown(&ha)?;
+            let targets = house::alarm_targets(&ha, &red)?;
+            println!("{} red lights, pulsing {targets:?}", red.len());
+            house::alarm_pulse(&ha, &targets)?;
+            let seconds = std::env::var("BLINK_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+            std::thread::sleep(std::time::Duration::from_secs(seconds));
+            println!("stood down: {}", house::stand_down(&ha)?);
         }
         Intent::Tv(command) => {
             println!("{command:?}: TVs on {:?}", voice_assistant::tv::on_tvs(&ha)?);
