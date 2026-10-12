@@ -342,6 +342,8 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             Some("leaving") => Intent::Routine(Routine::Leaving),
             Some("home") => Intent::Routine(Routine::Home),
             Some("bedtime") => Intent::Routine(Routine::Bedtime),
+            Some("lockdown") => Intent::Routine(Routine::Lockdown),
+            Some("stand_down") => Intent::Routine(Routine::StandDown),
             _ => Intent::House(HouseCommand::Status),
         }),
         "ignore" => Decision::Ignore,
@@ -481,9 +483,9 @@ pub fn tools() -> Value {
         ),
         tool(
             "house",
-            "House check, or routine when leaving, coming home or going to bed.",
+            "House check, or routine when leaving, coming home, going to bed, lockdown (red lights) or standing it down.",
             json!({ "type": "object", "required": ["action"], "properties": {
-            "action": { "type": "string", "enum": ["status", "leaving", "home", "bedtime"] }
+            "action": { "type": "string", "enum": ["status", "leaving", "home", "bedtime", "lockdown", "stand_down"] }
         } })
         ),
         tool("joke", "Tell a joke.", none.clone()),

@@ -119,6 +119,10 @@ pub struct AssistantConfig {
     pub home_room: Option<String>,
     /// Music on coming home: "liked", or a playlist's name.
     pub home_music: Option<String>,
+    /// What a lockdown plays: a song search ("Mombasa by Hans Zimmer").
+    pub lockdown_music: String,
+    /// The music's volume during a lockdown, in percent.
+    pub lockdown_volume: u8,
 }
 
 pub enum Listener {
@@ -393,6 +397,7 @@ impl AssistantProcessor {
             last_audio: None,
             room: None,
             warmed_prompt: String::new(),
+            lockdown_volume: None,
         };
         worker.room = worker.config.room.clone();
         worker.persona = worker.config.honorific.as_deref().map(Persona::new);
@@ -688,6 +693,8 @@ struct Worker {
     /// The system prompt the language model last saw. It holds the date and the room; a new one
     /// costs seconds of prompt processing on a CPU, so it is sent ahead of the next question.
     warmed_prompt: String,
+    /// The music's volume before a lockdown raised it, for standing down.
+    lockdown_volume: Option<f64>,
 }
 
 impl Worker {
@@ -1162,7 +1169,10 @@ impl Worker {
         let mut texts: Vec<String> =
             LEADS.iter().flat_map(|leads| leads.iter().map(|l| lead_sentence(l, honorific))).collect();
         texts.extend(self.persona.as_ref().map(Persona::phrases).unwrap_or_default());
-        let answers = voice_assistant::music::ENGLISH_ANSWERS.iter().chain(voice_assistant::tv::ENGLISH_ANSWERS);
+        let answers = voice_assistant::music::ENGLISH_ANSWERS
+            .iter()
+            .chain(voice_assistant::tv::ENGLISH_ANSWERS)
+            .chain(house::LOCKDOWN_ANSWERS);
         match &self.persona {
             Some(persona) => texts.extend(answers.flat_map(|a| persona.forms(a))),
             None => texts.extend(answers.map(|a| a.to_string())),
@@ -1425,9 +1435,73 @@ impl Worker {
                 if routine != Routine::Home || self.config.home_music.is_some() {
                     self.hushed = None;
                 }
-                self.routine(routine, lang)
+                match routine {
+                    Routine::Lockdown => self.lockdown(lang),
+                    Routine::StandDown => self.stand_down(lang),
+                    _ => self.routine(routine, lang),
+                }
             }
         })
+    }
+
+    /// Every light red, the volume up and the lockdown music on. Just for fun: nothing is locked.
+    fn lockdown(&mut self, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let Some(ha) = &self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        match house::lockdown(ha) {
+            Ok(red) => info!(red, "lockdown"),
+            Err(error) => return unreachable(&error, no),
+        }
+        if let Ok(entity) = self.player.check(ha) {
+            let volume = ha.state(&entity).ok().and_then(|s| s["attributes"]["volume_level"].as_f64());
+            // A second lockdown keeps the volume from before the first.
+            self.lockdown_volume = self.lockdown_volume.or(volume);
+            let level = f64::from(self.config.lockdown_volume) / 100.0;
+            if let Err(error) = ha.service(
+                "media_player",
+                "volume_set",
+                serde_json::json!({ "entity_id": entity, "volume_level": level }),
+            ) {
+                warn!(error = format!("{error:#}"), "could not raise the volume for the lockdown");
+            }
+        }
+        let music = MusicCommand::Song(self.config.lockdown_music.clone());
+        self.player.run(self.home_assistant.as_ref(), &music, lang);
+        if no { "Nedstengning startet. Huset er forseglet." } else { "Lockdown initiated. The house is sealed." }.into()
+    }
+
+    fn stand_down(&mut self, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let Some(ha) = &self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        let restored = match house::stand_down(ha) {
+            Ok(restored) => restored,
+            Err(error) => return unreachable(&error, no),
+        };
+        let volume = self.lockdown_volume.take();
+        if !restored && volume.is_none() {
+            return if no { "Det er ingen nedstengning å avslutte." } else { "There is no lockdown to end." }.into();
+        }
+        self.player.run(self.home_assistant.as_ref(), &MusicCommand::Stop, lang);
+        if let (Some(volume), Some(ha)) = (volume, &self.home_assistant) {
+            let set = self.player.check(ha).and_then(|entity| {
+                ha.service(
+                    "media_player",
+                    "volume_set",
+                    serde_json::json!({ "entity_id": entity, "volume_level": volume }),
+                )
+            });
+            if let Err(error) = set {
+                warn!(error = format!("{error:#}"), "could not restore the volume after the lockdown");
+            }
+        }
+        info!(restored, ?volume, "lockdown over");
+        if no { "Avblåst. Alt er som før." } else { "Standing down. Everything is back as it was." }.into()
     }
 
     fn house(&mut self, command: &HouseCommand, lang: Lang) -> String {
@@ -2254,6 +2328,7 @@ fn routine_answer(
                 .into(),
             );
         }
+        Routine::Lockdown | Routine::StandDown => unreachable!("the worker runs these itself"),
         Routine::Home => {
             parts.push(if no { "Velkommen hjem." } else { "Welcome home." }.into());
             let room = match &config.home_room {

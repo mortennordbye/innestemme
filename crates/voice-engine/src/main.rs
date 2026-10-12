@@ -196,6 +196,12 @@ struct Args {
     /// Music that starts when you come home: "liked" for Liked Songs, or a playlist's name. Unset: none.
     #[arg(long, env = "VOICE_HOME_MUSIC")]
     home_music: Option<String>,
+    /// What "initiate lockdown" plays, as a song search.
+    #[arg(long, env = "VOICE_LOCKDOWN_MUSIC", default_value = "Mombasa by Hans Zimmer")]
+    lockdown_music: String,
+    /// The music's volume during a lockdown, in percent; standing down puts the old one back.
+    #[arg(long, env = "VOICE_LOCKDOWN_VOLUME", default_value_t = 50, value_parser = clap::value_parser!(u8).range(1..=100))]
+    lockdown_volume: u8,
     /// Full-size face images for the hub page (`idle.jpg`, `listening.jpg`, `speaking.jpg`); the
     /// built-in raccoon otherwise.
     #[arg(long, env = "VOICE_HUB_FACES")]
@@ -484,6 +490,8 @@ fn main() -> Result<()> {
                     bedtime_light: args.bedtime_light,
                     home_room: args.home_room.clone(),
                     home_music: args.home_music.clone(),
+                    lockdown_music: args.lockdown_music.clone(),
+                    lockdown_volume: args.lockdown_volume,
                     prerender: args.speech_cache.is_some(),
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");

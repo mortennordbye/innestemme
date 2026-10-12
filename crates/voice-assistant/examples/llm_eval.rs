@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
         user: "what's the weather in Bergen?".into(),
         assistant: "It's 12 degrees and rain in Bergen, with a high of 14.".into(),
     }];
-    let cases: [(&str, &[Turn], &str); 37] = [
+    let cases: [(&str, &[Turn], &str); 39] = [
         ("what's the capital of France?", &[], "say"),
         ("and what about tomorrow?", &weather, "weather Bergen tomorrow"),
         ("it's too dark in the kitchen", &[], "lights kitchen on"),
@@ -51,6 +51,8 @@ fn main() -> anyhow::Result<()> {
         ("I'm knackered, heading to bed now", &[], "house bedtime"),
         ("honey, daddy made it back from work", &[], "house home"),
         ("time to hit the hay", &[], "house bedtime"),
+        ("seal the place up, nobody gets in", &[], "house lockdown"),
+        ("okay the threat is gone, back to normal", &[], "house stand_down"),
         ("is the bedroom nice and toasty for tonight?", &[], "indoor_climate bedroom"),
         ("the air feels a bit stuffy in here, how's the moisture", &[], "indoor_climate here humidity"),
     ];

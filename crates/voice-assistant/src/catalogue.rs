@@ -4,7 +4,7 @@
 
 use serde::Serialize;
 
-use crate::house::HouseCommand;
+use crate::house::{HouseCommand, Routine};
 use crate::intent::Intent;
 
 #[derive(Debug, Serialize)]
@@ -124,6 +124,17 @@ pub const SKILLS: &[Skill] = &[
         calls: &["light.turn_off", "media_player.media_pause", "media_player.turn_off", "light.turn_on", "music_assistant.play_media"],
         examples: &["I'm leaving", "I'm home", "Daddy's home", "I'm going to bed", "Good night"],
         norwegian: &["Jeg drar nå", "Jeg er hjemme", "Jeg legger meg", "God natt"],
+    },
+    Skill {
+        id: "lockdown",
+        name: "Lockdown",
+        group: "Home",
+        icon: "shield",
+        does: "Just for fun: every colour light goes red, the others go off, and the lockdown-music plays at lockdown-volume. Standing down puts the lights, the volume and the music back. Nothing is locked.",
+        source: "Home Assistant, Music Assistant",
+        calls: &["scene.create", "light.turn_on", "light.turn_off", "media_player.volume_set", "music_assistant.play_media", "scene.turn_on"],
+        examples: &["Initiate lockdown", "Red alert", "Stand down", "End the lockdown"],
+        norwegian: &[],
     },
     Skill {
         id: "alerts",
@@ -409,6 +420,7 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
         Intent::Script(_) => "script",
         Intent::Undo => "undo",
         Intent::Tv(_) => "tv",
+        Intent::Routine(Routine::Lockdown | Routine::StandDown) => "lockdown",
         Intent::Routine(_) => "routines",
         Intent::House(command) => match command {
             HouseCommand::Status => "house_status",

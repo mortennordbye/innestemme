@@ -71,6 +71,10 @@ pub enum Routine {
     Home,
     /// "I'm going to bed": everything off except the bedroom.
     Bedtime,
+    /// "Initiate lockdown": every light red, and epic music. Just for fun; nothing is locked.
+    Lockdown,
+    /// "Stand down": the lights and volume back as they were before the lockdown.
+    StandDown,
 }
 
 /// Words before a request that do not change it: "okay, I'm leaving", "so, is everything okay".
@@ -452,12 +456,53 @@ const BEDTIME: &[&str] = &[
     "leggetid",
 ];
 
+const LOCKDOWN: &[&str] = &[
+    "lockdown",
+    "lock down",
+    "lockdown mode",
+    "initiate lockdown",
+    "initiate lock down",
+    "initiate the lockdown",
+    "activate lockdown",
+    "start lockdown",
+    "start the lockdown",
+    "lock down the house",
+    "lock the house down",
+    "red alert",
+];
+const STAND_DOWN: &[&str] = &[
+    "stand down",
+    "end lockdown",
+    "end the lockdown",
+    "stop lockdown",
+    "stop the lockdown",
+    "lift lockdown",
+    "lift the lockdown",
+    "cancel lockdown",
+    "cancel the lockdown",
+    "lockdown off",
+    "all clear",
+];
+
+/// Fixed English lockdown answers, rendered ahead of time.
+pub const LOCKDOWN_ANSWERS: &[&str] = &[
+    "Lockdown initiated. The house is sealed.",
+    "Standing down. Everything is back as it was.",
+    "There is no lockdown to end.",
+];
+
 pub fn routine(words: &[String]) -> Option<Routine> {
     if words.len() > 9 {
         return None;
     }
     let text = phrase(words);
     let starts = |list: &[&str]| list.iter().any(|p| text == *p || text.starts_with(&format!("{p} ")));
+    if starts(STAND_DOWN) {
+        return Some(Routine::StandDown);
+    }
+    if starts(LOCKDOWN) {
+        return Some(Routine::Lockdown);
+    }
     // Before leaving: "I'm off to bed" is bedtime.
     if starts(BEDTIME) {
         return Some(Routine::Bedtime);
@@ -1075,6 +1120,55 @@ pub fn everything_off(ha: &mut HomeAssistant, keep: impl Fn(&Light) -> bool) -> 
     Ok(Switched { lights, music: !snapshot.playing.is_empty(), tvs: !tvs.is_empty() })
 }
 
+/// The scene `scene.create` keeps the lights in while the house is locked down.
+const LOCKDOWN_SCENE: &str = "lockdown_restore";
+
+/// Lights in a room (a neighbour's light that shows up in Home Assistant has none), not room
+/// groups, and not status LEDs (network gear, the Voice PE's ring). `color`: it can go red.
+const LOCKDOWN_LIGHTS_TEMPLATE: &str = r#"[{% for s in states.light if area_name(s.entity_id) and s.attributes.entity_id is not defined and 'led' not in (s.name | lower).split(' ') %}{"id": {{ s.entity_id | tojson }}, "color": {{ ((s.attributes.supported_color_modes or []) | select('in', ['hs', 'xy', 'rgb', 'rgbw', 'rgbww']) | list | count > 0) | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
+
+#[derive(Deserialize)]
+struct LockdownLight {
+    id: String,
+    color: bool,
+}
+
+/// Every light that can go red goes full red, the rest go off; a snapshot of them all is kept
+/// first, for standing down. A second lockdown keeps the first snapshot. The number of red lights.
+pub fn lockdown(ha: &HomeAssistant) -> Result<usize> {
+    let lights: Vec<LockdownLight> =
+        serde_json::from_str(&ha.template(LOCKDOWN_LIGHTS_TEMPLATE)?).context("parsing the lockdown lights")?;
+    let ids = |color: bool| lights.iter().filter(|l| l.color == color).map(|l| l.id.as_str()).collect::<Vec<_>>();
+    let (red, off) = (ids(true), ids(false));
+    if !locked_down(ha) {
+        let all: Vec<&str> = lights.iter().map(|l| l.id.as_str()).collect();
+        ha.service("scene", "create", json!({ "scene_id": LOCKDOWN_SCENE, "snapshot_entities": all }))?;
+    }
+    if !red.is_empty() {
+        ha.service("light", "turn_on", json!({ "entity_id": red, "rgb_color": [255, 0, 0], "brightness_pct": 100 }))?;
+    }
+    if !off.is_empty() {
+        ha.service("light", "turn_off", json!({ "entity_id": off }))?;
+    }
+    Ok(red.len())
+}
+
+/// The lights back as they were before the lockdown; false when there was none.
+pub fn stand_down(ha: &HomeAssistant) -> Result<bool> {
+    if !locked_down(ha) {
+        return Ok(false);
+    }
+    let scene = format!("scene.{LOCKDOWN_SCENE}");
+    ha.service("scene", "turn_on", json!({ "entity_id": scene }))?;
+    ha.service("scene", "delete", json!({ "entity_id": scene }))?;
+    Ok(true)
+}
+
+/// A lockdown's snapshot exists. It outlives an engine restart, not a Home Assistant one.
+fn locked_down(ha: &HomeAssistant) -> bool {
+    ha.state(&format!("scene.{LOCKDOWN_SCENE}")).is_ok()
+}
+
 /// "Okay, the lights are off. The music is paused." for a routine; `except` names the room left lit.
 pub fn switched_answer(switched: &Switched, except: Option<&str>, lang: Lang) -> String {
     let no = lang == Lang::Norwegian;
@@ -1269,6 +1363,10 @@ mod tests {
         assert_eq!(routine("jeg legger meg"), Some(Routine::Bedtime));
         assert_eq!(routine("I'm leaving my old job at the end of the month for something new"), None);
         assert_eq!(routine("is Ingrid home"), None);
+        assert_eq!(routine("initiate lockdown"), Some(Routine::Lockdown));
+        assert_eq!(routine("red alert"), Some(Routine::Lockdown));
+        assert_eq!(routine("stand down"), Some(Routine::StandDown));
+        assert_eq!(routine("end the lockdown"), Some(Routine::StandDown));
     }
 
     fn phone(id: &str, owner: &str, location: &str) -> Phone {
