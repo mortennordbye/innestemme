@@ -411,7 +411,7 @@ const TAIL: &[&str] = &[
     "på",
     "høyttaleren",
 ];
-const GENERIC: &[&str] = &["music", "some", "musikk", "noe", "the", "litt", "something"];
+const GENERIC: &[&str] = &["music", "some", "musikk", "noe", "the", "litt", "something", "a", "song", "songs"];
 
 fn music(words: &[String]) -> Option<MusicCommand> {
     let has = |w: &str| words.iter().any(|x| x == w);
@@ -942,6 +942,7 @@ mod tests {
         assert_eq!(music("play my like playlist"), Some(Liked));
         assert_eq!(music("Can you play my favorite songs please"), Some(Liked));
         assert_eq!(music("play some music"), Some(Liked));
+        assert_eq!(music("play a song"), Some(Liked));
         assert_eq!(music("spill de likte sangene mine"), Some(Liked));
         assert_eq!(music("play Careless Whisper"), song("careless whisper"));
         assert_eq!(music("Play Hello by Adele on the Sonos."), song("hello by adele"));
