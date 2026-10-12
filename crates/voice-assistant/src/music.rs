@@ -368,7 +368,9 @@ impl Player {
         let state = ha.state(&entity)?;
         let text = |key: &str| state["attributes"][key].as_str().unwrap_or_default().to_owned();
         let (title, artist) = (text("media_title"), text("media_artist"));
-        if !matches!(state["state"].as_str(), Some("playing" | "paused")) || title.is_empty() {
+        // Paused for this very question, the player can say idle while it still holds the song.
+        info!(state = state["state"].as_str(), title, artist, "now playing");
+        if title.is_empty() || matches!(state["state"].as_str(), Some("off" | "unavailable" | "unknown")) {
             return Ok(if no { "Ingenting spilles." } else { "Nothing is playing." }.into());
         }
         Ok(match (artist.is_empty(), no) {

@@ -362,6 +362,7 @@ const LIKED_WORDS: &[&str] = &[
     "favorittsanger",
     "favorittsangene",
 ];
+const LIKED_HEARD_AS: &[&str] = &["light", "lights", "life", "life's", "lifes"];
 const LIKED_FILLER: &[&str] = &[
     "my",
     "the",
@@ -451,6 +452,15 @@ fn music(words: &[String]) -> Option<MusicCommand> {
         }
         if rest.iter().any(|w| LIKED_WORDS.contains(w))
             && rest.iter().all(|w| LIKED_WORDS.contains(w) || LIKED_FILLER.contains(w))
+        {
+            return Some(MusicCommand::Liked);
+        }
+        // Whisper's "liked": "play my light songs", "play my life's songs". Only with "songs", so
+        // "play Light" stays a song.
+        let songs = rest.iter().any(|w| ["song", "songs"].contains(w));
+        if songs
+            && rest.iter().any(|w| LIKED_HEARD_AS.contains(w))
+            && rest.iter().all(|w| LIKED_HEARD_AS.contains(w) || LIKED_FILLER.contains(w))
         {
             return Some(MusicCommand::Liked);
         }
@@ -926,6 +936,9 @@ mod tests {
         };
         let song = |s: &str| Some(Song(s.into()));
         assert_eq!(music("Play my liked songs."), Some(Liked));
+        assert_eq!(music("Play my light songs."), Some(Liked));
+        assert_eq!(music("play my life's songs"), Some(Liked));
+        assert_eq!(music("play Light My Love"), song("light my love"));
         assert_eq!(music("play my like playlist"), Some(Liked));
         assert_eq!(music("Can you play my favorite songs please"), Some(Liked));
         assert_eq!(music("play some music"), Some(Liked));
