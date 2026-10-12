@@ -240,7 +240,7 @@ pub fn on_tvs(ha: &HomeAssistant) -> Result<Vec<String>> {
 
 /// Every TV that is not unavailable, as `[id, state]`: those with the TV device class first. A TV
 /// that only casts has the name but can neither start nor open apps.
-const TVS_TEMPLATE: &str = r#"{% set tvs = states.media_player | selectattr('state', 'not in', ['unavailable', 'unknown']) | rejectattr('attributes.mass_player_type', 'defined') | list %}{% set classed = tvs | selectattr('attributes.device_class', 'eq', 'tv') | list %}{% set named = tvs | rejectattr('attributes.device_class', 'eq', 'tv') | selectattr('name', 'search', '(?i)tv') | list %}[{% for s in classed + named %}[{{ s.entity_id | tojson }}, {{ s.state | tojson }}]{% if not loop.last %},{% endif %}{% endfor %}]"#;
+const TVS_TEMPLATE: &str = r#"{% set tvs = states.media_player | rejectattr('state', 'in', ['unavailable', 'unknown']) | rejectattr('attributes.mass_player_type', 'defined') | list %}{% set classed = tvs | selectattr('attributes.device_class', 'eq', 'tv') | list %}{% set named = tvs | rejectattr('attributes.device_class', 'eq', 'tv') | selectattr('name', 'search', '(?i)tv') | list %}[{% for s in classed + named %}[{{ s.entity_id | tojson }}, {{ s.state | tojson }}]{% if not loop.last %},{% endif %}{% endfor %}]"#;
 
 /// How long a TV that was off may take to start before an app is opened on it.
 const START_TIMEOUT: Duration = Duration::from_secs(15);
