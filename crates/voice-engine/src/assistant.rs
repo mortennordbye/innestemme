@@ -887,7 +887,10 @@ impl Worker {
             }
         };
         let (request, addressed) = request;
-        let request = match music_by_sound(&request, self.hushed.is_some()) {
+        // A bare "stop" right after an answer comes before any pause for a wake word: ask whether
+        // music plays, as only then does it mean the music.
+        let playing = self.hushed.is_some() || (bare_stop(&request) && self.music_playing());
+        let request = match music_by_sound(&request, playing) {
             Some(meant) if addressed || self.woken_at.is_some() => {
                 info!(heard = request, meant, "music request by its shape");
                 meant.to_owned()
@@ -2051,6 +2054,13 @@ impl Worker {
         self.emit(AssistantEvent::Announcement { text: text.to_owned(), audio: audio.into(), timer_ring });
     }
 
+    /// Music Assistant's player is playing.
+    fn music_playing(&mut self) -> bool {
+        let Some(ha) = &self.home_assistant else { return false };
+        let Ok(entity) = self.player.check(ha) else { return false };
+        ha.state(&entity).is_ok_and(|s| s["state"] == "playing")
+    }
+
     /// Pauses the music for the request that follows a wake word.
     fn hush(&mut self) {
         if let Some(hushed) = &mut self.hushed {
@@ -2357,6 +2367,14 @@ fn routine_answer(
     Ok((parts.join(" "), switched_lights))
 }
 
+/// "Stop", "stop it": never mind, or the music when it plays.
+fn bare_stop(request: &str) -> bool {
+    let words: Vec<String> =
+        request.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
+    matches!(words.as_slice(), [w] | [w, _] if ["stop", "stopp"].contains(&w.as_str()))
+        && intent::parse(request) == Intent::Cancel
+}
+
 /// Whisper hears "pause" and "play" after the wake word as "please", "nice", "post": a short request
 /// that ends in "music" and is nothing else means pausing it when it was playing, else playing it.
 /// A prompt with the command words fixes some of these but makes up commands from room noise.
@@ -2364,9 +2382,7 @@ fn music_by_sound(request: &str, playing: bool) -> Option<&'static str> {
     let words: Vec<String> =
         request.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
     // "Stop" over music means the music, not "never mind".
-    let stop = matches!(words.as_slice(), [w] | [w, _] if ["stop", "stopp"].contains(&w.as_str()))
-        && intent::parse(request) == Intent::Cancel;
-    if stop && playing {
+    if bare_stop(request) && playing {
         return Some("pause the music");
     }
     // "Play my liked songs" comes out as "claim a light song", "they're my like songs", "clean

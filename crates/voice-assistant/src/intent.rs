@@ -523,6 +523,8 @@ fn music(words: &[String]) -> Option<MusicCommand> {
             (true, _, _) => MusicCommand::VolumeTo(amount),
             (false, true, false) => MusicCommand::VolumeBy(amount as i8),
             (false, false, true) => MusicCommand::VolumeBy(-(amount as i8)),
+            // "Volume 30", "music 30 percent": no direction is a level.
+            (false, false, false) => MusicCommand::VolumeTo(amount),
             _ => return None,
         });
     }
@@ -545,7 +547,7 @@ fn after_any(rest: &[&str], openings: &[&[&str]]) -> Option<String> {
 fn volume_amount(words: &[String]) -> Option<(bool, u8)> {
     let at = words.iter().position(|w| w.parse::<u8>().is_ok_and(|n| (1..=100).contains(&n)))?;
     let amount = words[at].parse().ok()?;
-    let to = at > 0 && ["to", "til", "på"].contains(&words[at - 1].as_str());
+    let to = at > 0 && ["to", "til", "på", "at"].contains(&words[at - 1].as_str());
     Some((to, amount))
 }
 
@@ -970,6 +972,8 @@ mod tests {
         assert_eq!(music("Increase the sound by 25%."), Some(VolumeBy(25)));
         assert_eq!(music("turn it down 10 percent"), Some(VolumeBy(-10)));
         assert_eq!(music("set the volume to 40%"), Some(VolumeTo(40)));
+        assert_eq!(music("put the music at 30%."), Some(VolumeTo(30)));
+        assert_eq!(music("volume 25"), Some(VolumeTo(25)));
         assert_eq!(music("skru opp lyden med 20 prosent"), Some(VolumeBy(20)));
         // Not music.
         assert_eq!(music("turn off the light in my living room"), None);
