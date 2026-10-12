@@ -113,6 +113,12 @@ pub struct AssistantConfig {
     pub tv: Option<String>,
     /// Speak at once when a smoke, gas, water or breaking glass sensor goes off.
     pub alerts: bool,
+    /// Percent the bedroom lights that are on dim to at bedtime.
+    pub bedtime_light: u8,
+    /// The room lit on coming home, whatever the time; else this room after dark.
+    pub home_room: Option<String>,
+    /// Music on coming home: "liked", or a playlist's name.
+    pub home_music: Option<String>,
 }
 
 pub enum Listener {
@@ -200,6 +206,12 @@ impl AssistantHandle {
         let _ = self.jobs.send(Job::Woken(Instant::now()));
     }
 
+    /// Nothing was asked after the satellite's wake word, likely the TV: the music plays on now
+    /// rather than once the room has been quiet a while.
+    pub fn gave_up(&self) {
+        let _ = self.jobs.send(Job::NothingAsked);
+    }
+
     /// The wake word was said over the answer: stop speaking it after the sentence being
     /// synthesized.
     pub fn interrupt(&self) {
@@ -245,6 +257,8 @@ enum Job {
     Ready,
     /// A satellite heard its wake word itself, at this time.
     Woken(Instant),
+    /// A satellite heard nothing after its wake word.
+    NothingAsked,
     /// Kyutai path: already transcribed, English.
     Action(Action),
     /// Whisper path: audio still to transcribe, and when it ended.
@@ -731,6 +745,10 @@ impl Worker {
                     self.emit(AssistantEvent::Done);
                     self.unhush();
                     self.play(&tts::give_up_chime());
+                }
+                Job::NothingAsked => {
+                    self.woken_at = None;
+                    self.unhush();
                 }
                 Job::Woken(at) => {
                     info!("device wake word");
@@ -1403,8 +1421,8 @@ impl Worker {
             Intent::Tv(command) => self.tv.run(self.home_assistant.as_ref(), &command, lang),
             Intent::House(command) => self.house(&command, lang),
             Intent::Routine(routine) => {
-                // Leaving and bedtime pause the music themselves.
-                if routine != Routine::Home {
+                // Leaving and bedtime pause the music themselves; coming home may start new music.
+                if routine != Routine::Home || self.config.home_music.is_some() {
                     self.hushed = None;
                 }
                 self.routine(routine, lang)
@@ -1438,16 +1456,26 @@ impl Worker {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
         };
-        match routine_answer(ha, routine, here.as_deref(), lang) {
+        let mut answer = match routine_answer(ha, routine, here.as_deref(), &self.config, lang) {
             Ok((answer, switched)) => {
-                info!(?routine, answer, "routine");
                 if let Some((target, on)) = switched {
                     self.last_lights = Some((target, on, Instant::now()));
                 }
                 answer
             }
-            Err(error) => unreachable(&error, no),
+            Err(error) => return unreachable(&error, no),
+        };
+        if let (Routine::Home, Some(music)) = (routine, &self.config.home_music) {
+            let command = if music.eq_ignore_ascii_case("liked") {
+                MusicCommand::Liked
+            } else {
+                MusicCommand::Playlist(music.clone())
+            };
+            let started = self.player.run(self.home_assistant.as_ref(), &command, lang);
+            answer = format!("{answer} {started}");
         }
+        info!(?routine, answer, "routine");
+        answer
     }
 
     /// A named place, else the home: the address when it is set, else the `home` place name.
@@ -2155,11 +2183,15 @@ fn house_answer(
     })
 }
 
+/// Bedtime light colour: warm white.
+const BEDTIME_KELVIN: u32 = 2700;
+
 /// A routine's answer, and the lights it switched for "undo".
 fn routine_answer(
     ha: &mut HomeAssistant,
     routine: Routine,
     here: Option<&str>,
+    config: &AssistantConfig,
     lang: Lang,
 ) -> anyhow::Result<(String, Option<(Target, bool)>)> {
     let no = lang == Lang::Norwegian;
@@ -2176,6 +2208,26 @@ fn routine_answer(
                 None
             };
             parts.push(house::switched_answer(&switched, except, lang));
+            if bedtime {
+                let bedroom: Vec<Light> = ha.lights_on()?.into_iter().filter(|l| keep(l)).collect();
+                // A Hue room is also its own lights: dim the lights, or the room when that is all there is.
+                let single: Vec<&Light> = bedroom.iter().filter(|l| !l.group).collect();
+                let ids: Vec<&str> = if single.is_empty() { bedroom.iter().collect() } else { single }
+                    .iter()
+                    .map(|l| l.id.as_str())
+                    .collect();
+                if !ids.is_empty() {
+                    let data = serde_json::json!({
+                        "entity_id": ids,
+                        "brightness_pct": config.bedtime_light,
+                        "color_temp_kelvin": BEDTIME_KELVIN,
+                    });
+                    ha.service("light", "turn_on", data)?;
+                    parts.push(
+                        if no { "Lyset på soverommet er dempet." } else { "The bedroom lights are dimmed." }.into(),
+                    );
+                }
+            }
             if !switched.lights.is_empty() {
                 let ids = switched.lights.iter().map(|l| l.id.clone()).collect();
                 let label = if no { "huset" } else { "house" }.to_owned();
@@ -2204,8 +2256,11 @@ fn routine_answer(
         }
         Routine::Home => {
             parts.push(if no { "Velkommen hjem." } else { "Welcome home." }.into());
-            let dark = ha.state("sun.sun")?["state"] == "below_horizon";
-            if let Some(target) = here.filter(|_| dark).map(|room| ha.find(room)).transpose()?.flatten() {
+            let room = match &config.home_room {
+                Some(room) => Some(room.as_str()),
+                None => here.filter(|_| ha.state("sun.sun").is_ok_and(|s| s["state"] == "below_horizon")),
+            };
+            if let Some(target) = room.map(|room| ha.find(room)).transpose()?.flatten() {
                 let on = ha.lights_on()?;
                 if !on.iter().any(|l| target.ids.contains(&l.id)) {
                     ha.set(&target, true)?;
@@ -2282,25 +2337,28 @@ fn players_to_hush(players: Vec<Playing>, music: &[String]) -> Vec<Playing> {
 fn complete_at_once(intent: &Intent) -> bool {
     matches!(
         intent,
-        Intent::Music(
-            MusicCommand::Pause
-                | MusicCommand::Stop
-                | MusicCommand::Mute(_)
-                | MusicCommand::NowPlaying
-                | MusicCommand::Shuffle(_)
-                | MusicCommand::Repeat(_)
-                | MusicCommand::Next
-                | MusicCommand::Previous
-                | MusicCommand::VolumeBy(_)
-                | MusicCommand::VolumeTo(_)
-        ) | Intent::Tv(
-            TvCommand::Pause
-                | TvCommand::Resume
-                | TvCommand::Power(_)
-                | TvCommand::Mute(_)
-                | TvCommand::Louder
-                | TvCommand::Quieter
-        ) | Intent::Time
+        Intent::Cancel
+            | Intent::Music(
+                MusicCommand::Pause
+                    | MusicCommand::Stop
+                    | MusicCommand::Mute(_)
+                    | MusicCommand::NowPlaying
+                    | MusicCommand::Shuffle(_)
+                    | MusicCommand::Repeat(_)
+                    | MusicCommand::Next
+                    | MusicCommand::Previous
+                    | MusicCommand::VolumeBy(_)
+                    | MusicCommand::VolumeTo(_)
+            )
+            | Intent::Tv(
+                TvCommand::Pause
+                    | TvCommand::Resume
+                    | TvCommand::Power(_)
+                    | TvCommand::Mute(_)
+                    | TvCommand::Louder
+                    | TvCommand::Quieter
+            )
+            | Intent::Time
     )
 }
 

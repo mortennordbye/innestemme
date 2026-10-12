@@ -1,5 +1,5 @@
 //! Small talk the rules answer at once, without the language model: "how are you?", "who are you?",
-//! "good night". Answers are plain; the persona adds the honorific. Each kind has a few answers
+//! "hello". Answers are plain; the persona adds the honorific. Each kind has a few answers
 //! that take turns, all fixed sentences, so they are rendered ahead of time.
 
 use crate::lang::Lang;
@@ -13,7 +13,6 @@ pub enum Chat {
     /// "Hello", "hi there"
     Hello,
     /// "Good night"
-    GoodNight,
     /// "Good job", "you're the best"
     Praise,
     /// "Are you there?", "are you listening?"
@@ -47,7 +46,6 @@ const PHRASES: &[(Chat, &[&str])] = &[
     ),
     (Chat::WhoAreYou, &["who are you", "what's your name", "what is your name", "hvem er du", "hva heter du"]),
     (Chat::Hello, &["hello", "hi", "hi there", "hey", "hey there", "good to see you", "hei", "hallo", "heisann"]),
-    (Chat::GoodNight, &["good night", "goodnight", "night night", "god natt", "natta"]),
     (
         Chat::Praise,
         &[
@@ -108,7 +106,6 @@ pub fn answers(chat: Chat, lang: Lang, name: &str) -> Vec<String> {
             &["I'm {name}, the house assistant. I look after the lights, the music, timers and the weather."]
         }
         Chat::Hello => &["Hello. What can I do for you?", "Hi there. How can I help?"],
-        Chat::GoodNight => &["Good night. Sleep well.", "Good night. I'll keep an eye on things."],
         Chat::Praise => &["Thank you. I do my best.", "Most kind. I aim to please."],
         Chat::AreYouThere => &["Always. What do you need?", "Right here. What can I do?"],
         Chat::WhatsUp => &[
@@ -128,7 +125,6 @@ pub fn answers(chat: Chat, lang: Lang, name: &str) -> Vec<String> {
         Chat::HowAreYou => &["Det går fint, takk som spør.", "Bare bra. Alt i huset er i orden."],
         Chat::WhoAreYou => &["Jeg er {name}, assistenten i huset. Jeg styrer lys, musikk, tidtakere og været."],
         Chat::Hello => &["Hei. Hva kan jeg hjelpe med?"],
-        Chat::GoodNight => &["God natt. Sov godt."],
         Chat::Praise => &["Takk. Jeg gjør mitt beste."],
         Chat::AreYouThere => &["Alltid. Hva trenger du?"],
         Chat::WhatsUp => &["Holder orden i huset. Hva kan jeg gjøre for deg?"],
@@ -159,7 +155,8 @@ mod tests {
         assert_eq!(chat("how's it going"), Some(Chat::HowAreYou));
         assert_eq!(chat("Hvordan går det?"), Some(Chat::HowAreYou));
         assert_eq!(chat("Who are you?"), Some(Chat::WhoAreYou));
-        assert_eq!(chat("Good night."), Some(Chat::GoodNight));
+        // The bedtime routine, not a chat.
+        assert_eq!(chat("Good night."), None);
         assert_eq!(chat("Hello."), Some(Chat::Hello));
         assert_eq!(chat("Are you there?"), Some(Chat::AreYouThere));
         assert_eq!(chat("You're the best!"), Some(Chat::Praise));

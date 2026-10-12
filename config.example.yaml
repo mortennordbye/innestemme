@@ -61,6 +61,12 @@ whisper-size: base
 # tv: media_player.living_room_tv
 # Speak at once when a smoke, carbon monoxide, gas, water or breaking glass sensor goes off.
 # alerts: true
+# Bedtime ("good night"): the bedroom lights that are on dim to this percent, warm white.
+# bedtime-light: 20
+# Coming home ("I'm home", "daddy's home"): this room's lights come on, whatever the time, and this music
+# starts: liked for Liked Songs, or a playlist's name. Unset: this room's lights after dark, no music.
+# home-room: Living Room
+# home-music: liked
 # Your own face images for the hub page (/hub): idle.jpg, listening.jpg, speaking.jpg.
 # hub-faces: /models/faces
 

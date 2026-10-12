@@ -186,6 +186,16 @@ struct Args {
     /// Assistant goes off, and every five minutes while it stays on.
     #[arg(long, env = "VOICE_ALERTS", default_value_t = true, action = clap::ArgAction::Set)]
     alerts: bool,
+    /// Brightness in percent the bedroom lights that are on dim to at bedtime ("good night"), warm white.
+    #[arg(long, env = "VOICE_BEDTIME_LIGHT", default_value_t = 20, value_parser = clap::value_parser!(u8).range(1..=100))]
+    bedtime_light: u8,
+    /// The room whose lights come on when you come home ("I'm home"), whatever the time. Unset:
+    /// the microphone's room, after dark only.
+    #[arg(long, env = "VOICE_HOME_ROOM")]
+    home_room: Option<String>,
+    /// Music that starts when you come home: "liked" for Liked Songs, or a playlist's name. Unset: none.
+    #[arg(long, env = "VOICE_HOME_MUSIC")]
+    home_music: Option<String>,
     /// Full-size face images for the hub page (`idle.jpg`, `listening.jpg`, `speaking.jpg`); the
     /// built-in raccoon otherwise.
     #[arg(long, env = "VOICE_HUB_FACES")]
@@ -471,6 +481,9 @@ fn main() -> Result<()> {
                     honorific: args.honorific.clone(),
                     tv: args.tv.clone(),
                     alerts: args.alerts,
+                    bedtime_light: args.bedtime_light,
+                    home_room: args.home_room.clone(),
+                    home_music: args.home_music.clone(),
                     prerender: args.speech_cache.is_some(),
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");

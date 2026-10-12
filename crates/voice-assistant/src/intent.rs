@@ -326,6 +326,24 @@ const POLITE: &[&str] = &[
     "can", "could", "would", "will", "you", "please", "just", "now", "ok", "okay", "kan", "du", "vil", "vær", "så",
     "snill",
 ];
+/// Replies that send the assistant back to sleep.
+const NOT_FOR_YOU: &[&str] = &[
+    "no",
+    "nope",
+    "not you",
+    "not now",
+    "go back to sleep",
+    "back to sleep",
+    "false alarm",
+    "wrong",
+    "nothing",
+    "ignore that",
+    "ignore me",
+    "nei",
+    "ikke deg",
+    "ikke nå",
+    "ingenting",
+];
 const MUSIC_WORDS: &[&str] =
     &["music", "musikk", "musikken", "song", "songs", "sang", "sangen", "låt", "låten", "track", "spotify"];
 /// Every word of a Liked Songs request comes from here ("my liked songs", "de likte sangene mine"),
@@ -738,6 +756,10 @@ fn rules(text: &str) -> Intent {
             if never_mind || ["nevermind", "cancel", "stop", "forget", "avbryt", "glem"].iter().any(|w| has(w)) {
                 return Intent::Cancel;
             }
+            // After a wake word the TV set off: whole replies only, so "no lights in here" is not one.
+            if NOT_FOR_YOU.contains(&words.join(" ").as_str()) {
+                return Intent::Cancel;
+            }
         }
         return Intent::Unknown;
     }
@@ -869,6 +891,11 @@ mod tests {
         assert_eq!(parse("Hva er nyhetene?"), Intent::News);
         assert_eq!(parse("thanks a lot"), Intent::Thanks);
         assert_eq!(parse("Never mind."), Intent::Cancel);
+        assert_eq!(parse("No."), Intent::Cancel);
+        assert_eq!(parse("Not you."), Intent::Cancel);
+        assert_eq!(parse("go back to sleep"), Intent::Cancel);
+        assert_eq!(parse("ikke deg"), Intent::Cancel);
+        assert_ne!(parse("no lights on in the kitchen"), Intent::Cancel);
         assert_eq!(parse("cancel"), Intent::Cancel);
         assert_eq!(parse("I wanted to thank my mother for the lovely dinner yesterday"), Intent::Unknown);
     }
@@ -1056,7 +1083,9 @@ mod tests {
         assert_eq!(parse("turn on the TV and dim the lights"), Intent::Tv(TvCommand::Power(true)));
         assert_eq!(parse("I'm leaving"), Intent::Routine(Routine::Leaving));
         assert_eq!(parse("I'm going to bed"), Intent::Routine(Routine::Bedtime));
-        assert_eq!(parse("good night"), Intent::SmallTalk(Chat::GoodNight));
+        assert_eq!(parse("good night"), Intent::Routine(Routine::Bedtime));
+        assert_eq!(parse("Goodnight, Jarvis."), Intent::Routine(Routine::Bedtime));
+        assert_eq!(parse("Daddy's home!"), Intent::Routine(Routine::Home));
         assert_eq!(parse("pause"), Intent::Music(MusicCommand::Pause));
         assert_eq!(parse("stop"), Intent::Cancel);
         assert!(matches!(parse("turn off the alarm"), Intent::Timer(_) | Intent::Unknown));

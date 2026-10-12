@@ -647,6 +647,7 @@ impl Bridge<'_> {
             }
             Run::Listening(since) if since.elapsed() > LISTEN_TIMEOUT => {
                 info!("no request after the wake word");
+                assistant.gave_up();
                 return self.end_run().await;
             }
             Run::Stopped(since) if since.elapsed() > LISTEN_TIMEOUT => {
