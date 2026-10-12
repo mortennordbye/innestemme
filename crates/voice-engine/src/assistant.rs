@@ -2369,6 +2369,15 @@ fn music_by_sound(request: &str, playing: bool) -> Option<&'static str> {
     if stop && playing {
         return Some("pause the music");
     }
+    // "Play my liked songs" comes out as "claim a light song", "they're my like songs", "clean
+    // my life's songs": the play is lost under the wake word's end and "liked" sounds like these.
+    let songs = words.last().is_some_and(|w| w == "song" || w == "songs");
+    let liked = words
+        .iter()
+        .any(|w| ["like", "liked", "likes", "light", "lights", "life", "life's", "lifes"].contains(&w.as_str()));
+    if songs && liked && words.len() <= 5 && intent::parse(request) == Intent::Unknown {
+        return Some("play my liked songs");
+    }
     let music = words.last().is_some_and(|w| ["music", "musikk", "musikken"].contains(&w.as_str()));
     (music && words.len() <= 4 && intent::parse(request) == Intent::Unknown).then_some(if playing {
         "pause the music"
@@ -2541,6 +2550,10 @@ mod tests {
         assert_eq!(music_by_sound("Pause the music.", false), None);
         assert_eq!(music_by_sound("I really like this kind of music", true), None);
         assert_eq!(music_by_sound("Nice weather.", true), None);
+        assert_eq!(music_by_sound("They're my like songs.", false), Some("play my liked songs"));
+        assert_eq!(music_by_sound("claim a light song.", false), Some("play my liked songs"));
+        assert_eq!(music_by_sound("Clean my life's songs.", true), Some("play my liked songs"));
+        assert_eq!(music_by_sound("I like songs about the sea and the long summer nights", false), None);
         assert_eq!(music_by_sound("Stop.", true), Some("pause the music"));
         assert_eq!(music_by_sound("stop it", true), Some("pause the music"));
         assert_eq!(music_by_sound("Stop.", false), None);
