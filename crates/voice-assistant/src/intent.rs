@@ -674,6 +674,7 @@ const MISHEARD: &[(&[&str], &[&str])] = &[
     (&["showed"], &["show"]),
     (&["close", "up"], &["close", "that"]),
     (&["cancel", "time"], &["cancel", "timer"]),
+    (&["set", "a", "towel"], &["set", "a", "timer"]),
 ];
 
 /// The request with known mishearings put right, as normalised words; unchanged when there are none.
@@ -909,6 +910,8 @@ mod tests {
             Intent::Tv(TvCommand::Show(Screen::Departures))
         );
         assert_eq!(parse("The bowling at 60%."), Intent::Music(MusicCommand::VolumeTo(60)));
+        assert!(matches!(parse("Set a towel for 10 minutes."), Intent::Timer(_)));
+        assert!(matches!(parse("Hello, guys."), Intent::SmallTalk(_)));
         assert_eq!(parse("I always do weather today."), weather(None, Day::Today));
         assert_eq!(parse("Show the dashboard on the TV."), Intent::Tv(TvCommand::Show(Screen::Jarvis)));
         assert_eq!(parse("Show the dashboard."), Intent::Tv(TvCommand::Show(Screen::Jarvis)));

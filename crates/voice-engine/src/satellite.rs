@@ -56,7 +56,8 @@ const RECONNECT_MAX: Duration = Duration::from_secs(30);
 const HELLO_WINDOW: Duration = Duration::from_secs(10);
 /// Wake word scores from here up to the threshold are logged as misses, to tune the threshold.
 const NEAR_MISS: f32 = 0.2;
-/// Audio kept from before the wake word, so a run's recording holds the wake word itself.
+/// Audio kept from before the wake word: the assistant checks it for the name when what follows is
+/// not understood, and a run's recording holds the wake word itself.
 const WAKE_PREROLL: usize = 2 * DEVICE_RATE as usize;
 /// From announcing an answer on the player to its first sound (fetch and start), a little over
 /// what the Sonos takes (0.41 s, "answer heard on the device"), so the follow-up does not hear the
@@ -193,7 +194,7 @@ struct Bridge<'a> {
     wake: Option<(WakeDetector, f32)>,
     /// The highest score of the current run of scores at or above `NEAR_MISS`.
     near_miss: f32,
-    /// The last `WAKE_PREROLL` of audio while waiting for the wake word, when dumping.
+    /// The last `WAKE_PREROLL` of audio while waiting for the wake word.
     preroll: VecDeque<i16>,
     /// The answer on the player: when it was announced, and its length so far (24 kHz samples).
     announced: Option<(Instant, usize)>,
@@ -603,11 +604,9 @@ impl Bridge<'_> {
 
     /// Scores the continuous stream; only audio after the wake word goes on to the engine.
     async fn listen_for_wake_word(&mut self, pcm: &[i16], assistant: &AssistantHandle) -> Result<()> {
-        if self.dump.is_some() {
-            self.preroll.extend(pcm);
-            let excess = self.preroll.len().saturating_sub(WAKE_PREROLL);
-            self.preroll.drain(..excess);
-        }
+        self.preroll.extend(pcm);
+        let excess = self.preroll.len().saturating_sub(WAKE_PREROLL);
+        self.preroll.drain(..excess);
         let Some((detector, threshold)) = &mut self.wake else { return Ok(()) };
         if assistant.pause.paused() {
             return Ok(());
@@ -631,9 +630,12 @@ impl Bridge<'_> {
         }
         self.device.event(Event::WakeWordEnd, &[]).await?;
         self.device.event(Event::SttStart, &[]).await?;
-        self.recording = self.preroll.drain(..).collect();
+        let wake: Vec<i16> = self.preroll.drain(..).collect();
+        if self.dump.is_some() {
+            self.recording.clone_from(&wake);
+        }
         self.run = Run::Listening(Instant::now());
-        assistant.woke();
+        assistant.woke_on(resample::to_24k(&wake, DEVICE_RATE));
         Ok(())
     }
 
@@ -670,7 +672,10 @@ impl Bridge<'_> {
                 info!("listening for a follow-up");
                 // The listening lights, without the wake sound.
                 self.device.event(Event::SttStart, &[]).await?;
-                self.recording = self.preroll.drain(..).collect();
+                let before: Vec<i16> = self.preroll.drain(..).collect();
+                if self.dump.is_some() {
+                    self.recording = before;
+                }
                 self.run = Run::FollowUp(Instant::now());
                 assistant.listen();
             }

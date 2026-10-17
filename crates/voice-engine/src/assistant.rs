@@ -233,7 +233,14 @@ impl AssistantHandle {
     /// is the request. The device has finished playing, so there is no echo to wait out.
     pub fn woke(&self) {
         self.hear_now.store(true, Relaxed);
-        let _ = self.jobs.send(Job::Woken(Instant::now()));
+        let _ = self.jobs.send(Job::Woken(Instant::now(), None));
+    }
+
+    /// A wake word heard in the satellite's stream, with its audio (24 kHz), to check for the name
+    /// if what follows is not understood.
+    pub fn woke_on(&self, wake: Vec<i16>) {
+        self.hear_now.store(true, Relaxed);
+        let _ = self.jobs.send(Job::Woken(Instant::now(), Some(wake)));
     }
 
     /// Nothing was asked after the satellite's wake word, likely the TV: the music plays on now
@@ -285,8 +292,9 @@ pub enum Preview {
 enum Job {
     /// A session started: tell the speaker they can talk.
     Ready,
-    /// A satellite heard its wake word itself, at this time.
-    Woken(Instant),
+    /// A satellite heard its wake word itself, at this time, with the wake word's audio when the
+    /// engine detected it.
+    Woken(Instant, Option<Vec<i16>>),
     /// A satellite heard nothing after its wake word.
     NothingAsked,
     /// Kyutai path: already transcribed, English.
@@ -408,6 +416,7 @@ impl AssistantProcessor {
             draft: None,
             follow_up_until: None,
             woken_at: None,
+            wake_audio: None,
             said: VecDeque::new(),
             answered_draft: None,
             hushed: None,
@@ -733,6 +742,8 @@ struct Worker {
     follow_up_until: Option<Instant>,
     /// A satellite woke on its own wake word and nothing has been answered since.
     woken_at: Option<Instant>,
+    /// The audio of that wake word, when the engine detected it.
+    wake_audio: Option<Vec<i16>>,
     /// Sentences spoken lately, to tell the answer coming back through the microphone from a request.
     said: VecDeque<(Instant, String)>,
     /// A command was acted on from its draft, of this many samples: the utterance it ends in is
@@ -817,7 +828,7 @@ impl Worker {
             // A wake word or request while paused is dropped; a give-up still ends a listening run.
             let heard = matches!(
                 job,
-                Job::Action(Action::Wake | Action::Request(_)) | Job::Woken(_) | Job::Utterance(..) | Job::Draft(_)
+                Job::Action(Action::Wake | Action::Request(_)) | Job::Woken(..) | Job::Utterance(..) | Job::Draft(_)
             );
             if heard && self.pause.paused() {
                 continue;
@@ -843,9 +854,10 @@ impl Worker {
                     self.woken_at = None;
                     self.unhush();
                 }
-                Job::Woken(at) => {
+                Job::Woken(at, wake) => {
                     info!("device wake word");
                     self.woken_at = Some(at);
+                    self.wake_audio = wake;
                     self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
                     self.emit(AssistantEvent::Listening);
                     self.hush();
@@ -1063,6 +1075,25 @@ impl Worker {
 
     /// A device woke on its wake word and the request was not understood: say so, once, rather
     /// than end the run in silence, which sounds as if the device never woke.
+    /// Whether the last wake word's audio holds the assistant's name; `None` without the audio or a
+    /// transcriber.
+    fn name_in_wake(&mut self) -> Option<bool> {
+        let audio = self.wake_audio.take()?;
+        let transcriber = self.transcriber.as_mut()?;
+        let start = Instant::now();
+        let heard = match transcriber.transcribe(&audio) {
+            Ok(candidates) => candidates.into_iter().next().map(|c| c.text).unwrap_or_default(),
+            Err(error) => {
+                warn!(%error, "could not transcribe the wake word");
+                return None;
+            }
+        };
+        let wake = &self.config.wake;
+        let named = heard.split_whitespace().any(|w| wake.matches(&voice_assistant::dialog::normalize(w)));
+        info!(heard, named, took = ?start.elapsed(), "wake word check");
+        Some(named)
+    }
+
     fn not_understood(&mut self, text: &str, audio: &[i16], ended: Instant, lang: Lang, start: Instant) {
         let Some(woken) = self.woken_at else {
             if self.follow_up_until.is_some_and(|until| Instant::now() < until) {
@@ -1079,6 +1110,19 @@ impl Worker {
         // over it.
         if text.split_whitespace().count() > LONGEST_REQUEST_WORDS {
             info!(text, "too long for a request; no reply");
+            self.unhandled(Reason::NotUnderstood, text, None);
+            return;
+        }
+        // "I'm not a fan of the music video.": the TV or the room after a false wake. A reply over
+        // it is worse than none; a real request said wrong is said again. Whether the name was in
+        // the wake word tells best; it is checked only here, so understood requests do not wait
+        // for it. It is no gate for requests: it misses the name in about one real wake in twenty.
+        let addressed = match self.name_in_wake() {
+            Some(named) => named,
+            None => sounds_like_a_request(text),
+        };
+        if !addressed {
+            info!(text, "not a request; no reply");
             self.unhandled(Reason::NotUnderstood, text, None);
             return;
         }
@@ -2783,6 +2827,114 @@ fn bare_stop(request: &str) -> bool {
         && intent::parse(request) == Intent::Cancel
 }
 
+/// How requests open, after any "hey", "please" or the name: a command or a question. Talk from
+/// the TV or the room mostly opens otherwise ("I'm...", "That's...", "The...").
+const REQUEST_OPENINGS: &[&str] = &[
+    "turn",
+    "switch",
+    "set",
+    "start",
+    "stop",
+    "pause",
+    "play",
+    "resume",
+    "cancel",
+    "add",
+    "remove",
+    "put",
+    "show",
+    "showed",
+    "tell",
+    "give",
+    "make",
+    "open",
+    "close",
+    "lock",
+    "unlock",
+    "dim",
+    "brighten",
+    "raise",
+    "lower",
+    "increase",
+    "decrease",
+    "mute",
+    "unmute",
+    "skip",
+    "next",
+    "previous",
+    "remind",
+    "find",
+    "ring",
+    "call",
+    "check",
+    "read",
+    "arm",
+    "disarm",
+    "activate",
+    "deactivate",
+    "enable",
+    "disable",
+    "shuffle",
+    "repeat",
+    "louder",
+    "quieter",
+    "volume",
+    "lights",
+    "light",
+    "timer",
+    "music",
+    "what",
+    "what's",
+    "whats",
+    "when",
+    "where",
+    "who",
+    "who's",
+    "whos",
+    "how",
+    "how's",
+    "hows",
+    "why",
+    "which",
+    "is",
+    "are",
+    "do",
+    "does",
+    "can",
+    "could",
+    "would",
+    "will",
+    "should",
+    "any",
+    "slå",
+    "skru",
+    "sett",
+    "spill",
+    "stopp",
+    "start",
+    "vis",
+    "fortell",
+    "legg",
+    "hva",
+    "hvor",
+    "hvem",
+    "hvordan",
+    "hvorfor",
+    "når",
+    "kan",
+    "er",
+];
+const REQUEST_FILLER: &[&str] =
+    &["hey", "hi", "ok", "okay", "please", "so", "um", "uh", "oh", "and", "now", "just", "hei", "kjære"];
+
+/// Whether unrecognised speech opens like a request at all.
+fn sounds_like_a_request(text: &str) -> bool {
+    text.split_whitespace()
+        .map(voice_assistant::dialog::normalize)
+        .find(|w| !w.is_empty() && !REQUEST_FILLER.contains(&w.as_str()))
+        .is_some_and(|w| REQUEST_OPENINGS.contains(&w.as_str()))
+}
+
 /// Whisper hears "pause" and "play" after the wake word as "please", "nice", "post": a short request
 /// that ends in "music" and is nothing else means pausing it when it was playing, else playing it.
 /// A prompt with the command words fixes some of these but makes up commands from room noise.
@@ -3012,6 +3164,37 @@ fn push(reply: &mut rtrb::Producer<i16>, pcm: &[i16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unrecognised speech after wakes in the living room (unhandled log, 12-17 October 2026).
+    #[test]
+    fn replies_only_to_what_sounds_like_a_request() {
+        for talk in [
+            "I'm not a fan of the music video.",
+            "Please allow me to sing.",
+            "welcome to Tune-In.",
+            "it's my one bike playlist.",
+            "And clap!",
+            "That's for you.",
+            "Peace out.",
+            "I can't hear you.",
+            "I'm a big brother.",
+            "Good attire in one minute.",
+            "Right.",
+            "",
+        ] {
+            assert!(!sounds_like_a_request(talk), "{talk}");
+        }
+        for request in [
+            "Why are you laughing?",
+            "Set a towel for 10 minutes.",
+            "Turn on the kitchen.",
+            "Hey, um, what's on tonight?",
+            "Please dim the hall.",
+            "Kan du skru på lyset?",
+        ] {
+            assert!(sounds_like_a_request(request), "{request}");
+        }
+    }
 
     #[test]
     fn asks_before_privacy_mode_and_the_alarm() {

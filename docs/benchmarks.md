@@ -212,3 +212,13 @@ was misheard often (9 of 20: "Stop the camera.", "Set a towel for 10 minutes", "
 benchmark above on real recordings is the better guide to accuracy. Hotwords (sherpa-onnx contextual biasing,
 with a `bpe.vocab` made from `tokens.txt`) and snapping unknown requests to catalogue phrases by sound key
 did not help on reverberant noisy command recordings, so neither is used.
+
+## The name in the wake word, 2026-10-17
+
+`examples/wake_text.rs`: Parakeet on the 1.5 s before the wake word's peak score and 0.2 s after,
+in the 138 Voice PE runs in `target/utterances` (about 120 ms each on an M4 Pro). Of the 70 runs where
+`hey_jarvis` scored 0.5 or more, 63 had "Jarvis" or a close spelling ("Jarris", "Jervis"). Of the other
+seven, two or three were the TV ("That's my parents.") and three or four were real requests heard
+without the name ("Hey Joe's, what's the time today?", "Stop the music."). So the check is no gate
+for requests (it would drop about one real wake in twenty); it only decides whether an unrecognised
+request gets "didn't catch that" or silence.
