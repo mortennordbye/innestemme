@@ -489,7 +489,8 @@ fn when_at(minutes: i64, clock: &str, lang: Lang) -> String {
     }
 }
 
-/// "The next bus, 31 to Snarøya, leaves Wessels plass in 4 minutes, and the one after in 12 minutes."
+/// "The next bus is the 31 to Snarøya, from Wessels plass. It leaves in 4 minutes. The one after
+/// leaves in 12 minutes."
 fn answer(stops: &[Stop], query: &TransitQuery, now: jiff::Timestamp, lang: Lang) -> String {
     let found = departures(stops, query, now);
     let what = query.mode.word(lang);
@@ -503,40 +504,51 @@ fn answer(stops: &[Stop], query: &TransitQuery, now: jiff::Timestamp, lang: Lang
             }
         };
     };
-    // "Any" says what kind it is: "the 31 bus".
+    // "Any" says what kind it is: "bus 31".
     let line = |d: &Departure| match query.mode {
         Mode::Any => {
             let kind = MODES.iter().find(|(_, m)| m.matches(&d.mode)).map_or(Mode::Any, |&(_, m)| m);
-            match lang {
-                Lang::English => format!("{} {}", kind.word(lang), d.line),
-                Lang::Norwegian => format!("{} {}", kind.word(lang), d.line),
-            }
+            format!("{} {}", kind.word(lang), d.line)
         }
+        _ if lang == Lang::English => format!("the {}", d.line),
         _ => d.line.clone(),
     };
-    let then = found.get(1).map(|second| match lang {
-        Lang::English => format!(", and the one after {}", when(second, lang)),
-        Lang::Norwegian => format!(", og den neste {}", when(second, lang)),
-    });
-    let then = then.unwrap_or_default();
     match lang {
-        Lang::English => format!(
-            "The next {what}, {} to {}, leaves {} {}{then}.",
-            line(first),
-            first.towards,
-            first.stop,
-            when(first, lang)
-        ),
-        Lang::Norwegian => {
+        // The line in a sentence of its own, then when: the times are few, so they are rendered
+        // ahead (`english_sentences`), and the line sentence is kept once said.
+        Lang::English => {
+            let then = found.get(1).map(|second| format!(" The one after leaves {}.", when(second, lang)));
             format!(
-                "Neste {what}, {} mot {}, går fra {} {}{then}.",
+                "The next {what} is {} to {}, from {}. It leaves {}.{}",
                 line(first),
                 first.towards,
                 first.stop,
-                when(first, lang)
+                when(first, lang),
+                then.unwrap_or_default()
+            )
+        }
+        Lang::Norwegian => {
+            let then = found.get(1).map(|second| format!(", og den neste {}", when(second, lang)));
+            format!(
+                "Neste {what}, {} mot {}, går fra {} {}{}.",
+                line(first),
+                first.towards,
+                first.stop,
+                when(first, lang),
+                then.unwrap_or_default()
             )
         }
     }
+}
+
+/// Every English sentence saying when a departure leaves within the hour, to render ahead.
+pub fn english_sentences() -> Vec<String> {
+    (0..60)
+        .flat_map(|m| {
+            let when = when_at(m, "", Lang::English);
+            [format!("It leaves {when}."), format!("The one after leaves {when}.")]
+        })
+        .collect()
 }
 
 /// "Tram 11 to Majorstuen leaves Wessels plass in 6 minutes; head out in 3 minutes. The one after
@@ -654,7 +666,8 @@ mod tests {
         let bus = TransitQuery { mode: Mode::Bus, destination: None };
         assert_eq!(
             answer(&stops, &bus, now, Lang::English),
-            "The next bus, 31 to Snarøya, leaves Wessels plass in 4 minutes, and the one after in 7 minutes."
+            "The next bus is the 31 to Snarøya, from Wessels plass. It leaves in 4 minutes. The one after leaves in 7 \
+             minutes."
         );
         let to = TransitQuery { mode: Mode::Bus, destination: Some("snarøya".into()) };
         assert_eq!(
@@ -664,10 +677,17 @@ mod tests {
         let metro = TransitQuery { mode: Mode::Metro, destination: None };
         assert_eq!(
             answer(&stops, &metro, now, Lang::English),
-            "The next metro, 5 to Sognsvann, leaves Stortinget in 2 minutes."
+            "The next metro is the 5 to Sognsvann, from Stortinget. It leaves in 2 minutes."
         );
+        for sentence in answer(&stops, &bus, now, Lang::English).split_inclusive('.').map(str::trim) {
+            assert!(crate::speech_cache::CachedTts::cacheable(sentence), "{sentence}");
+        }
+        let ahead = english_sentences();
+        assert!(ahead.contains(&"It leaves in 4 minutes.".to_string()));
+        assert!(ahead.contains(&"The one after leaves in 7 minutes.".to_string()));
         let any = TransitQuery { mode: Mode::Any, destination: None };
-        assert!(answer(&stops, &any, now, Lang::English).starts_with("The next departure, bus 31 to Snarøya"));
+        assert!(answer(&stops, &any, now, Lang::English)
+            .starts_with("The next departure is bus 31 to Snarøya, from Wessels plass."));
         // Four minutes' walk away: the bus in 4 minutes is still catchable, the metro in 2 is not.
         let mut far = stops;
         far[1].walk = 4;

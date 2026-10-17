@@ -81,9 +81,8 @@ English with Kyutai Pocket TTS on the CPU (natural voice, streamed as it is gene
 `say` (Nora) until there is a Norwegian Pocket TTS model. Answers are one short sentence ("It's 14 degrees and overcast in Oslo, with a high of 17 and rain is likely"),
 mentioning rain only from 30% and wind only from 8 m/s.
 
-Jokes: "Homie, tell me a joke" / "Hei Homie, fortell en vits". English jokes come live from icanhazdadjoke.com
-(with a built-in fallback), Norwegian ones from a built-in list; the last 8 are not repeated. The service's
-jokes are unfiltered dad jokes, and a few lean on stereotypes.
+Jokes: "Homie, tell me a joke" / "Hei Homie, fortell en vits". English jokes are dirty, Norwegian ones
+the classic kind, both from built-in lists that are told in turn from a random start.
 
 Departures from Entur (all of Norway, real time): "Homie, when's the next bus?", "next tram to Majorstuen",
 "når går neste trikk?", "neste tog til Lillestrøm". Without a destination: the next departures from the stops

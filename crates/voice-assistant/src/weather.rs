@@ -292,26 +292,24 @@ fn describe(name: &str, f: &Forecast, day: Day, lang: Lang) -> String {
     let windy = day == Day::Today && f.current.wind_speed_10m >= WINDY;
     // Late in the day the high is behind us: "a high of 10" when it is 10 now says nothing.
     let high_ahead = high.round() > f.current.temperature_2m.round();
-    let (high, low) = (number(high), number(low));
     match lang {
+        // A sentence for the number, one for the weather: the weather sentences are few and fixed
+        // and the number ones bounded, so both are rendered ahead (`english_sentences`).
         Lang::English => {
-            let rain = match (rain, day == Day::Tomorrow || high_ahead) {
-                (p, true) if p >= 60.0 => " and rain is likely",
-                (p, true) if p >= 30.0 => " and a chance of rain",
-                (p, false) if p >= 60.0 => ", and rain is likely",
-                (p, false) if p >= 30.0 => ", with a chance of rain",
-                _ => "",
-            };
+            let rain = rain_clause(rain);
             let wind = if windy { " It's windy." } else { "" };
-            let with_high = if high_ahead { format!(", with a high of {high}") } else { String::new() };
             match day {
-                Day::Today => format!(
-                    "It's {} and {} in {name}{with_high}{rain}.{wind}",
-                    degrees(f.current.temperature_2m, lang),
-                    condition(f.current.weather_code, lang),
-                ),
+                Day::Today => {
+                    let high =
+                        if high_ahead { format!(" The high today is {}.", degrees(high, lang)) } else { String::new() };
+                    format!(
+                        "{} {}{rain}.{high}{wind}",
+                        current(name, f.current.temperature_2m),
+                        capitalize(condition(f.current.weather_code, lang)),
+                    )
+                }
                 Day::Tomorrow => {
-                    format!("Tomorrow in {name}: {}, {low} to {high} degrees{rain}.", condition(code, lang))
+                    format!("Tomorrow in {name}: {}{rain}. {}", condition(code, lang), range(low, high))
                 }
             }
         }
@@ -322,7 +320,8 @@ fn describe(name: &str, f: &Forecast, day: Day, lang: Lang) -> String {
                 _ => "",
             };
             let wind = if windy { " Det blåser godt." } else { "" };
-            let with_high = if high_ahead { format!(", med opptil {high} grader i dag") } else { String::new() };
+            let with_high =
+                if high_ahead { format!(", med opptil {} grader i dag", number(high)) } else { String::new() };
             match day {
                 Day::Today => format!(
                     "Det er {} og {} i {name} nå{with_high}{rain}.{wind}",
@@ -330,11 +329,68 @@ fn describe(name: &str, f: &Forecast, day: Day, lang: Lang) -> String {
                     condition(f.current.weather_code, lang),
                 ),
                 Day::Tomorrow => {
-                    format!("I morgen i {name}: {}, {low} til {high} grader{rain}.", condition(code, lang))
+                    format!(
+                        "I morgen i {name}: {}, {} til {} grader{rain}.",
+                        condition(code, lang),
+                        number(low),
+                        number(high)
+                    )
                 }
             }
         }
     }
+}
+
+/// The rain clause after the condition, by the chance of rain in percent.
+fn rain_clause(chance: f64) -> &'static str {
+    match chance {
+        p if p >= 60.0 => ", and rain is likely",
+        p if p >= 30.0 => ", with a chance of rain",
+        _ => "",
+    }
+}
+
+/// "It's 4 degrees in Oslo."
+fn current(name: &str, t: f64) -> String {
+    format!("It's {} in {name}.", degrees(t, Lang::English))
+}
+
+/// "Minus 3 to 12 degrees."
+fn range(low: f64, high: f64) -> String {
+    capitalize(&format!("{} to {} degrees.", number(low), number(high)))
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
+/// Every English weather sentence for a place with temperatures in a usual range, to render ahead:
+/// the weather for today and tomorrow, and the numbers.
+pub fn english_sentences(name: &str) -> Vec<String> {
+    let codes = [0, 1, 2, 3, 45, 51, 68, 61, 63, 65, 66, 71, 73, 75, 77, 95, 96, 4];
+    let rains = [0.0, 30.0, 60.0];
+    let mut sentences = Vec::new();
+    for code in codes {
+        let condition = condition(code, Lang::English);
+        for rain in rains {
+            let rain = if wet(code) { "" } else { rain_clause(rain) };
+            sentences.push(format!("{}{rain}.", capitalize(condition)));
+            sentences.push(format!("Tomorrow in {name}: {condition}{rain}."));
+        }
+    }
+    sentences.push("It's windy.".into());
+    for t in -25..=35 {
+        sentences.push(current(name, t as f64));
+        sentences.push(format!("The high today is {}.", degrees(t as f64, Lang::English)));
+    }
+    // Tomorrow's low and high: a day's spread is seldom more than fifteen degrees.
+    for low in -20..=25 {
+        sentences.extend((low..=low + 15).map(|high| range(low as f64, high as f64)));
+    }
+    sentences.sort();
+    sentences.dedup();
+    sentences
 }
 
 /// A rounded temperature without the unit, "minus 3" for negatives.
@@ -416,11 +472,11 @@ mod tests {
         let f = sample();
         assert_eq!(
             describe("Oslo", &f, Day::Today, Lang::English),
-            "It's 12 degrees and partly cloudy in Oslo, with a high of 14 and a chance of rain."
+            "It's 12 degrees in Oslo. Partly cloudy, with a chance of rain. The high today is 14 degrees."
         );
         assert_eq!(
             describe("Oslo", &f, Day::Tomorrow, Lang::English),
-            "Tomorrow in Oslo: overcast, minus 3 to 12 degrees."
+            "Tomorrow in Oslo: overcast. Minus 3 to 12 degrees."
         );
         assert_eq!(
             describe("Oslo", &f, Day::Today, Lang::Norwegian),
@@ -433,13 +489,30 @@ mod tests {
     }
 
     #[test]
+    fn english_sentences_are_rendered_ahead() {
+        let ahead = english_sentences("Oslo");
+        let mut f = sample();
+        for (rain, wind) in [(Some(10.0), 2.0), (Some(40.0), 11.0), (Some(90.0), 2.0)] {
+            f.daily.precipitation_probability_max = vec![rain, rain];
+            f.current.wind_speed_10m = wind;
+            for day in [Day::Today, Day::Tomorrow] {
+                let said = describe("Oslo", &f, day, Lang::English);
+                for sentence in said.split_inclusive('.').map(str::trim) {
+                    assert!(ahead.iter().any(|a| a == sentence), "{sentence}");
+                    assert!(crate::speech_cache::CachedTts::cacheable(sentence), "{sentence}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn mentions_wind_only_when_windy_and_rain_only_when_likely() {
         let mut f = sample();
         f.current.wind_speed_10m = 11.0;
         f.daily.precipitation_probability_max[0] = Some(80.0);
         assert_eq!(
             describe("Bergen", &f, Day::Today, Lang::English),
-            "It's 12 degrees and partly cloudy in Bergen, with a high of 14 and rain is likely. It's windy."
+            "It's 12 degrees in Bergen. Partly cloudy, and rain is likely. The high today is 14 degrees. It's windy."
         );
         // Rain as the condition is not repeated as a chance of rain.
         f.daily.weather_code[1] = 63;
@@ -452,14 +525,14 @@ mod tests {
         f.current.wind_speed_10m = 2.0;
         assert_eq!(
             describe("Bergen", &f, Day::Today, Lang::English),
-            "It's 12 degrees and partly cloudy in Bergen, with a high of 14."
+            "It's 12 degrees in Bergen. Partly cloudy. The high today is 14 degrees."
         );
         // In the evening the high is behind: not mentioned.
         f.daily.temperature_2m_max[0] = 11.8;
         f.daily.precipitation_probability_max[0] = Some(70.0);
         assert_eq!(
             describe("Bergen", &f, Day::Today, Lang::English),
-            "It's 12 degrees and partly cloudy in Bergen, and rain is likely."
+            "It's 12 degrees in Bergen. Partly cloudy, and rain is likely."
         );
         assert_eq!(
             describe("Bergen", &f, Day::Today, Lang::Norwegian),
@@ -505,7 +578,7 @@ mod tests {
         assert_eq!(symbol_to_code("lightsleet"), 68);
         assert_eq!(
             describe("Oslo", &f, Day::Tomorrow, Lang::English),
-            "Tomorrow in Oslo: partly cloudy, 10 to 16 degrees."
+            "Tomorrow in Oslo: partly cloudy. 10 to 16 degrees."
         );
     }
 

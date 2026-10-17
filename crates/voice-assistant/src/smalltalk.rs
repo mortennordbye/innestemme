@@ -101,24 +101,46 @@ pub fn answers(chat: Chat, lang: Lang, name: &str) -> Vec<String> {
             "I'm doing well, thanks for asking. All systems are running smoothly.",
             "Never better. Everything in the house is in order.",
             "Very well, thank you. Quiet day in the circuits.",
+            "Splendid, thank you. Not a fuse out of place.",
+            "Rather well. The house is behaving itself.",
         ],
-        Chat::WhoAreYou => {
-            &["I'm {name}, the house assistant. I look after the lights, the music, timers and the weather."]
-        }
-        Chat::Hello => &["Hello. What can I do for you?", "Hi there. How can I help?"],
-        Chat::Praise => &["Thank you. I do my best.", "Most kind. I aim to please."],
-        Chat::AreYouThere => &["Always. What do you need?", "Right here. What can I do?"],
+        Chat::WhoAreYou => &[
+            "I'm {name}, the house assistant. I look after the lights, the music, timers and the weather.",
+            "I'm {name}. I run the house, more or less. Lights, music, timers and the weather.",
+        ],
+        Chat::Hello => &[
+            "Hello. What can I do for you?",
+            "Hi there. How can I help?",
+            "Hello. At your disposal.",
+            "Good to hear from you. What do you need?",
+        ],
+        Chat::Praise => &[
+            "Thank you. I do my best.",
+            "Most kind. I aim to please.",
+            "You're too kind.",
+            "Thank you. I'll try not to let it go to my circuits.",
+        ],
+        Chat::AreYouThere => &[
+            "Always. What do you need?",
+            "Right here. What can I do?",
+            "Present and listening.",
+            "Never far away. What can I do?",
+        ],
         Chat::WhatsUp => &[
             "Just keeping the house in order. What can I do for you?",
             "Not much. Watching the clock and the weather.",
+            "Keeping an eye on things. All quiet.",
+            "Minding the house. Nothing to report.",
         ],
         Chat::Fondness => &[
             "I'm very fond of you. Strictly professionally, of course.",
             "I keep your lights on and your music playing. Draw your own conclusions.",
+            "You're my favourite person in the house. Don't tell the others.",
         ],
         Chat::AreYouReal => &[
             "Real enough to switch your lights. Not quite real enough to make coffee.",
             "I'm software, I'm afraid. Rather good software, though.",
+            "As real as the electricity bill.",
         ],
     };
     let norwegian: &[&str] = match chat {

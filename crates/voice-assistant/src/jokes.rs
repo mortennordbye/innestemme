@@ -1,49 +1,57 @@
-//! Jokes: English ones live from icanhazdadjoke.com (no key), with a built-in fallback, or only the
-//! built-in ones when speech is rendered ahead of time (`built_in_only`); Norwegian ones from a
-//! built-in list, since there is no free Norwegian joke service. The last few are not repeated.
-
-use std::collections::VecDeque;
-use std::time::Duration;
-
-use serde::Deserialize;
-use tracing::warn;
+//! Jokes: English ones dirty, Norwegian ones the classic kind, both from built-in lists so their
+//! speech can be rendered ahead of time. The list is walked from a random start, so nothing repeats
+//! until every joke has been told. Numbers are written as words: a sentence with digits is not kept
+//! in the speech cache.
 
 use crate::lang::Lang;
 
-const TIMEOUT: Duration = Duration::from_secs(3);
-const REMEMBER: usize = 8;
-
 const ENGLISH: &[&str] = &[
-    "Why don't skeletons fight each other? They don't have the guts.",
-    "I'm reading a book about anti-gravity. It's impossible to put down.",
-    "What do you call a fake noodle? An impasta.",
-    "Why did the scarecrow win an award? Because he was outstanding in his field.",
-    "I told my wife she was drawing her eyebrows too high. She looked surprised.",
-    "What do you call a bear with no teeth? A gummy bear.",
-    "Why can't a bicycle stand up by itself? It's two tired.",
-    "What did the ocean say to the beach? Nothing, it just waved.",
-    "Why do cows wear bells? Because their horns don't work.",
-    "What do you call a factory that makes okay products? A satisfactory.",
-    "Why did the coffee file a police report? It got mugged.",
-    "I used to hate facial hair, but then it grew on me.",
-    "What do you call a pile of cats? A meowntain.",
-    "Why don't eggs tell jokes? They'd crack each other up.",
-    "How does a penguin build its house? Igloos it together.",
-    "What do you call a fish wearing a bowtie? Sofishticated.",
-    "Why did the math book look so sad? Because it had too many problems.",
-    "I would tell you a construction joke, but I'm still working on it.",
-    "What did the grape do when it got stepped on? It let out a little wine.",
-    "Why couldn't the leopard play hide and seek? Because he was always spotted.",
-    "What do you call cheese that isn't yours? Nacho cheese.",
-    "Why did the golfer bring two pairs of trousers? In case he got a hole in one.",
-    "I only know twenty five letters of the alphabet. I don't know y.",
-    "What do you call an alligator in a vest? An investigator.",
-    "Why are elevator jokes so classic? They work on many levels.",
-    "Did you hear about the claustrophobic astronaut? He just needed a little space.",
-    "What did one wall say to the other? I'll meet you at the corner.",
-    "Why don't scientists trust atoms? Because they make up everything.",
-    "I'm afraid for the calendar. Its days are numbered.",
-    "What do you call a sleeping bull? A bulldozer.",
+    "I tried to tell a premature ejaculation joke. It came out too early.",
+    "Why do men give their privates a name? So a stranger isn't making ninety percent of their decisions.",
+    "Sex is like maths. Add the bed, subtract the clothes, divide the legs, and pray you don't multiply.",
+    "What's long, hard and full of seamen? A submarine.",
+    "My partner said we need more foreplay. So I bought a second controller.",
+    "What did the toaster say to the slice of bread? I want you inside me.",
+    "What did the banana say to the vibrator? Why are you shaking? She's going to eat me.",
+    "What's the difference between a tyre and three hundred used condoms? One's a Goodyear. The other's a great year.",
+    "Why did the condom fly across the room? It got pissed off.",
+    "What do you call a nun in a wheelchair? Virgin Mobile.",
+    "What's the difference between your job and your partner? After five years, your job still sucks.",
+    "What did the elephant say to the naked man? How do you breathe through something that small?",
+    "How is a push-up bra like a bag of crisps? You open it, and it's half air.",
+    "What's the best part of gardening? Getting down and dirty with your hoes.",
+    "Viagra sales are up again. Analysts call it a very firm market.",
+    "My partner says I'm terrible in bed. Strong opinion for someone with two minutes of evidence.",
+    "I asked my date what she wanted for dessert. She said, something long and hard. So I took her to a two hour opera.",
+    "Why did the snowman pull down his trousers? He heard the snowblower coming.",
+    "What's the difference between a G-spot and a golf ball? A man will actually look for a golf ball.",
+    "Why did the bra go to jail? It was holding up two suspects.",
+    "I don't have a dirty mind. I have a sexy imagination.",
+    "What's the difference between being hungry and being horny? Where you put the cucumber.",
+    "Why do women fake orgasms? Because men fake foreplay.",
+    "How do you make your partner scream during sex? Call them and tell them about it.",
+    "What's the difference between a pickpocket and a peeping Tom? One snatches your watch. The other watches your snatch.",
+    "Why is sex like a game of bridge? With a good enough hand, you don't need a partner.",
+    "What's the speed limit for sex? Sixty eight. At sixty nine, you have to turn around.",
+    "What did the hurricane say to the coconut tree? Hold on to your nuts. This is no ordinary blow job.",
+    "What do you call a cheap circumcision? A rip-off.",
+    "How is a man like a microwave? Thirty seconds, and he's done.",
+    "How is sex like air? It's no big deal, unless you're not getting any.",
+    "What's the difference between kinky and perverted? Kinky is using a feather. Perverted is using the whole chicken.",
+    "What's six inches long, two inches wide, and drives women wild? A hundred dollar bill.",
+    "Why do men struggle with eye contact? Breasts don't have eyes.",
+    "What do you call a man with a small one? Justin. Just in.",
+    "Why don't witches wear knickers? To get a better grip on the broom.",
+    "Want to hear a joke about my penis? Never mind. It's too long.",
+    "What do you call a herd of cows masturbating? Beef strokin' off.",
+    "Why did the cucumber blush? It saw the salad dressing.",
+    "What do a lollipop and a one night stand have in common? Once you've licked it, you can't give it back.",
+    "My ex called me a condom. Always there for protection, gone the morning after.",
+    "What's the difference between a hormone and a vitamin? You can't make a vitamin.",
+    "I'm like a firefighter in bed. I come fast and leave the place soaking wet.",
+    "Why did the sperm cross the road? Because I put on the wrong sock this morning.",
+    "Why is a laptop like a lover? The moment you think it's working, it goes soft and wants a rest.",
+    "What's the one thing a man and a beer bottle have in common? They're both empty from the neck up.",
 ];
 
 const NORWEGIAN: &[&str] = &[
@@ -59,16 +67,7 @@ const NORWEGIAN: &[&str] = &[
     "Vet du forskjellen på en god vits og en dårlig vits? Denne var den dårlige.",
 ];
 
-#[derive(Deserialize)]
-struct DadJoke {
-    joke: String,
-}
-
 pub struct Jokes {
-    agent: ureq::Agent,
-    /// Only the built-in jokes: their speech can be rendered ahead of time.
-    built_in_only: bool,
-    recent: VecDeque<String>,
     next: usize,
 }
 
@@ -77,75 +76,20 @@ impl Default for Jokes {
         // Start somewhere different on each run.
         let next =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as usize);
-        Self {
-            agent: ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).build().into(),
-            built_in_only: false,
-            recent: VecDeque::new(),
-            next,
-        }
+        Self { next }
     }
 }
 
 impl Jokes {
-    pub fn built_in_only(self) -> Self {
-        Self { built_in_only: true, ..self }
-    }
-
-    /// Every built-in English joke, to render ahead of time.
+    /// Every English joke, to render ahead of time.
     pub fn english() -> &'static [&'static str] {
         ENGLISH
     }
 
     pub fn tell(&mut self, lang: Lang) -> String {
-        let joke = match lang {
-            Lang::English if self.built_in_only => self.built_in(ENGLISH),
-            Lang::English => self.fetch().unwrap_or_else(|| self.built_in(ENGLISH)),
-            Lang::Norwegian => self.built_in(NORWEGIAN),
-        };
-        self.remember(&joke);
-        joke
-    }
-
-    /// A fresh joke from the service, or `None` when it fails or repeats a recent one.
-    fn fetch(&self) -> Option<String> {
-        let response = self
-            .agent
-            .get("https://icanhazdadjoke.com/")
-            .header("Accept", "application/json")
-            .header("User-Agent", "innestemme voice assistant (https://github.com/mortennordbye/innestemme)")
-            .call();
-        match response.map(|mut r| r.body_mut().read_json::<DadJoke>()) {
-            Ok(Ok(DadJoke { joke })) if !self.recent.contains(&joke) => {
-                Some(joke.split_whitespace().collect::<Vec<_>>().join(" "))
-            }
-            Ok(Ok(_)) => None,
-            Ok(Err(error)) => {
-                warn!(%error, "joke service returned something unexpected");
-                None
-            }
-            Err(error) => {
-                warn!(%error, "joke service unreachable");
-                None
-            }
-        }
-    }
-
-    fn built_in(&mut self, list: &[&str]) -> String {
-        for _ in 0..list.len() {
-            self.next = self.next.wrapping_add(1);
-            let joke = list[self.next % list.len()];
-            if !self.recent.iter().any(|r| r == joke) {
-                return joke.to_owned();
-            }
-        }
+        let list = if lang == Lang::Norwegian { NORWEGIAN } else { ENGLISH };
+        self.next = self.next.wrapping_add(1);
         list[self.next % list.len()].to_owned()
-    }
-
-    fn remember(&mut self, joke: &str) {
-        self.recent.push_back(joke.to_owned());
-        if self.recent.len() > REMEMBER {
-            self.recent.pop_front();
-        }
     }
 }
 
@@ -154,10 +98,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn built_in_jokes_do_not_repeat_within_the_window() {
+    fn nothing_repeats_until_every_joke_is_told() {
         let mut jokes = Jokes::default();
-        let told: Vec<String> = (0..REMEMBER).map(|_| jokes.tell(Lang::Norwegian)).collect();
-        let unique: std::collections::HashSet<&String> = told.iter().collect();
-        assert_eq!(unique.len(), told.len());
+        for (lang, list) in [(Lang::English, ENGLISH), (Lang::Norwegian, NORWEGIAN)] {
+            let told: std::collections::HashSet<String> = (0..list.len()).map(|_| jokes.tell(lang)).collect();
+            assert_eq!(told.len(), list.len());
+        }
+    }
+
+    #[test]
+    fn english_jokes_have_no_digits() {
+        assert!(ENGLISH.iter().all(|j| !j.chars().any(|c| c.is_ascii_digit())));
     }
 }

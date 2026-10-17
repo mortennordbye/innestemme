@@ -10,9 +10,39 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
 /// Each followed by ", sir."
-const OPENERS: &[&str] =
-    &["As you wish", "Very good", "Right away", "Of course", "Certainly", "Consider it done", "Yes"];
-const WELCOME: &[&str] = &["At your service", "Always a pleasure", "Anytime", "Happy to help"];
+const OPENERS: &[&str] = &[
+    "As you wish",
+    "Very good",
+    "Right away",
+    "Of course",
+    "Certainly",
+    "Consider it done",
+    "Yes",
+    "At once",
+    "With pleasure",
+    "Absolutely",
+    "Straight away",
+    "Very well",
+];
+const WELCOME: &[&str] = &[
+    "At your service",
+    "Always a pleasure",
+    "Anytime",
+    "Happy to help",
+    "My pleasure",
+    "Not at all",
+    "Glad to be of use",
+    "Don't mention it",
+];
+/// For "Sorry, I didn't catch that."; `{h}` is the honorific.
+const MISSED: &[&str] = &[
+    "I'm afraid I didn't catch that, {h}.",
+    "Pardon me, {h}, I missed that.",
+    "Could you say that again, {h}?",
+    "I didn't quite get that, {h}.",
+    "Once more, {h}?",
+    "Forgive me, {h}, I didn't follow.",
+];
 /// "Okay, paused." becomes "Paused, sir." up to this many words; longer ones get an opener.
 const SHORT_WORDS: usize = 2;
 /// Questions up to this many words get the honorific ("Which room, sir?").
@@ -24,19 +54,34 @@ const QUIP_MAX_SENTENCES: usize = 3;
 /// The first answer after this long may open with "Good evening".
 const GREETING_GAP: Duration = Duration::from_secs(3 * 3600);
 const GREETING_CHANCE: f64 = 0.5;
+/// Remarks for the first request after a quiet spell in the small hours, when no other remark fits.
+const LATE: &[&str] = &["Burning the midnight oil, I see.", "Do try to get some sleep.", "The house is fast asleep."];
+const LATE_HOURS: std::ops::RangeInclusive<u8> = 0..=4;
 
 /// Remarks by what the answer says: any of the words (lowercase), then the remarks to pick from.
 const QUIPS: &[(&[&str], &[&str])] = &[
     (&["rain", "showers", "drizzle"], &["You may want an umbrella.", "Not a day for the bicycle, I suspect."]),
     (&["snow", "sleet"], &["Do wrap up warm.", "Perhaps the sensible boots today."]),
     (&["minus"], &["Rather chilly, I'm afraid.", "I'd recommend a coat."]),
-    (&["clear sky", "sunny", "fair"], &["A fine day for it.", "Splendid weather, for once."]),
+    (&["clear sky", "sunny", "fair"], &["A fine day for it.", "Splendid weather, for once.", "Sunglasses weather."]),
+    (&["fog"], &["Mind how you go.", "Rather atmospheric."]),
+    (&["thunder"], &["Best stay indoors.", "Quite dramatic."]),
     (&["lights are off", "light is off", "lights off"], &["Darkness it is.", "Lights out."]),
     (&["lights are on", "light is on", "lights on"], &["Much better.", "Let there be light."]),
-    (&["paused"], &["Enjoy the silence."]),
-    (&["next song"], &["Let's hope this one is better."]),
-    (&["remind you", "timer set"], &["I'll keep an eye on the clock.", "I'll let you know."]),
-    (&["on the list"], &["Noted.", "It won't be forgotten."]),
+    (&["paused"], &["Enjoy the silence.", "Peace and quiet."]),
+    (&["next song"], &["Let's hope this one is better.", "Moving swiftly on."]),
+    (&["previous song"], &["A classic, then.", "Once more, with feeling."]),
+    (&["okay, muted", "tv is muted"], &["Blissful quiet.", "Silence is golden."]),
+    (&["remind you", "timer set"], &["I'll keep an eye on the clock.", "I'll let you know.", "The clock is ticking."]),
+    (&["timer is done"], &["Time's up.", "Right on schedule."]),
+    (&["on the list"], &["Noted.", "It won't be forgotten.", "Consider it remembered."]),
+    (&["off the list"], &["One less thing.", "Crossed off."]),
+    (&["the tv is off"], &["Back to the real world.", "Enough screen time."]),
+    (&["the tv is on"], &["Enjoy the show.", "Showtime."]),
+    (&["good night."], &["Sleep well.", "Sweet dreams."]),
+    (&["see you later."], &["I'll hold the fort.", "Safe travels."]),
+    (&["lockdown initiated"], &["Nobody gets in.", "Fortress mode."]),
+    (&["standing down"], &["Crisis averted.", "Back to normal."]),
     (
         &["in 1 minute", "in 2 minutes", "in 3 minutes", "in 4 minutes"],
         &["You may want to hurry.", "Best get your shoes on."],
@@ -48,6 +93,7 @@ pub struct Persona {
     honorific: String,
     rng: StdRng,
     last_quip: Option<&'static str>,
+    last_opener: Option<&'static str>,
     last_spoke: Option<Instant>,
 }
 
@@ -62,6 +108,7 @@ impl Persona {
             honorific: honorific.trim().to_owned(),
             rng: StdRng::seed_from_u64(seed),
             last_quip: None,
+            last_opener: None,
             last_spoke: None,
         }
     }
@@ -91,10 +138,15 @@ impl Persona {
             }
             _ => self.addressed(answer),
         };
-        match self.quip(answer) {
+        let late = long_quiet && LATE_HOURS.contains(&hour);
+        match self.quip(answer).or_else(|| if late { self.late() } else { None }) {
             Some(quip) if !styled.ends_with('?') => format!("{styled} {quip}"),
             _ => styled,
         }
+    }
+
+    fn late(&mut self) -> Option<&'static str> {
+        self.rng.random_bool(QUIP_CHANCE).then(|| self.pick(LATE))
     }
 
     /// The answer with the honorific worked in once.
@@ -104,15 +156,10 @@ impl Persona {
             return format!("{}, {h}.", self.pick(WELCOME));
         }
         if answer == "Sorry, I didn't catch that." {
-            let options = [
-                format!("I'm afraid I didn't catch that, {h}."),
-                format!("Pardon me, {h}, I missed that."),
-                format!("Could you say that again, {h}?"),
-            ];
-            return options[self.rng.random_range(0..options.len())].clone();
+            return self.pick(MISSED).replace("{h}", &h);
         }
         if answer == "Okay." {
-            return format!("{}, {h}.", self.pick(OPENERS));
+            return format!("{}, {h}.", self.opener());
         }
         if let Some(rest) = answer.strip_prefix("Okay, ") {
             let (first, tail) = split_first(rest);
@@ -120,7 +167,7 @@ impl Persona {
             if words <= SHORT_WORDS && first.ends_with('.') {
                 return format!("{}{tail}", with_honorific(&capitalize(first), &h));
             }
-            return format!("{}, {h}. {}", self.pick(OPENERS), capitalize(rest));
+            return format!("{}, {h}. {}", self.opener(), capitalize(rest));
         }
         if let Some(rest) = answer.strip_prefix("Sorry, ") {
             let (first, tail) = split_first(rest);
@@ -155,21 +202,22 @@ impl Persona {
         let h = &self.honorific;
         let mut phrases: Vec<String> = OPENERS.iter().chain(WELCOME).map(|o| format!("{o}, {h}.")).collect();
         phrases.extend(["Good morning", "Good afternoon", "Good evening"].map(|g| format!("{g}, {h}.")));
-        phrases.extend([
-            format!("I'm afraid I didn't catch that, {h}."),
-            format!("Pardon me, {h}, I missed that."),
-            format!("Could you say that again, {h}?"),
-            format!("My apologies, {h}."),
-        ]);
+        phrases.extend(MISSED.iter().map(|m| m.replace("{h}", h)));
+        phrases.push(format!("My apologies, {h}."));
         phrases.extend(QUIPS.iter().flat_map(|(_, quips)| quips.iter().map(|q| q.to_string())));
+        phrases.extend(LATE.iter().map(|q| q.to_string()));
         phrases
     }
 
     /// Every way [`Persona::style`] can put a fixed answer, without greetings and remarks (those
     /// are in [`Persona::phrases`]), for rendering ahead of time.
     pub fn forms(&self, answer: &str) -> Vec<String> {
+        let answer = answer.trim();
+        // Only these are worded at random; the rest have one form, and the time alone is 1440 answers.
+        let varies = answer.starts_with("Okay") || answer.starts_with("Sorry, ") || answer == "You're welcome.";
+        let seeds = if varies { 256 } else { 1 };
         let mut forms: Vec<String> =
-            (0..64).map(|seed| Persona::with_seed(&self.honorific, seed).addressed(answer.trim())).collect();
+            (0..seeds).map(|seed| Persona::with_seed(&self.honorific, seed).addressed(answer)).collect();
         forms.sort();
         forms.dedup();
         forms
@@ -189,6 +237,14 @@ impl Persona {
         let quip = *fresh.get(self.rng.random_range(0..fresh.len().max(1)))?;
         self.last_quip = Some(quip);
         Some(quip)
+    }
+
+    /// An opener, never the same one twice running.
+    fn opener(&mut self) -> &'static str {
+        let fresh: Vec<&'static str> = OPENERS.iter().copied().filter(|o| Some(*o) != self.last_opener).collect();
+        let opener = fresh[self.rng.random_range(0..fresh.len())];
+        self.last_opener = Some(opener);
+        opener
     }
 
     fn pick(&mut self, options: &[&'static str]) -> &'static str {
@@ -307,6 +363,33 @@ mod tests {
             .collect();
         assert!(!quips.is_empty());
         assert!(quips.windows(2).all(|w| w[0] != w[1]), "{quips:?}");
+    }
+
+    #[test]
+    fn openers_do_not_repeat() {
+        let mut p = Persona::with_seed("sir", 5);
+        let said: Vec<String> = (0..40).map(|_| p.style("Okay.", NIGHT)).collect();
+        assert!(said.windows(2).all(|w| w[0] != w[1]), "{said:?}");
+    }
+
+    #[test]
+    fn remarks_on_the_small_hours_once() {
+        let late = |text: &str| LATE.iter().any(|q| text.ends_with(q));
+        assert!((0..50).any(|seed| late(&Persona::with_seed("sir", seed).style("Okay, stopped.", 2))));
+        assert!((0..50).all(|seed| !late(&Persona::with_seed("sir", seed).style("Okay, stopped.", 14))));
+        for seed in 0..50 {
+            let mut p = Persona::with_seed("sir", seed);
+            p.style("Okay, stopped.", 2);
+            assert!(!late(&p.style("Okay, stopped.", 2)));
+        }
+    }
+
+    #[test]
+    fn unmuted_gets_no_mute_remark() {
+        for seed in 0..50 {
+            let styled = Persona::with_seed("sir", seed).style("Okay, unmuted.", NIGHT);
+            assert!(!styled.contains("quiet") && !styled.contains("Silence"), "{styled}");
+        }
     }
 
     #[test]

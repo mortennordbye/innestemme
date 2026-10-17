@@ -120,8 +120,8 @@ pub struct AssistantConfig {
     pub room: Option<String>,
     /// English answers in a butler's words, addressing the user this way ("sir").
     pub honorific: Option<String>,
-    /// Speech is kept once rendered: fixed sentences are rendered ahead of time, jokes come from
-    /// the built-in list, and slow answers open with a lead-in.
+    /// Speech is kept once rendered: fixed sentences are rendered ahead of time, and slow answers
+    /// open with a lead-in.
     pub prerender: bool,
     /// Directory for a wav of every utterance (debugging recognition).
     pub dump_utterances: Option<std::path::PathBuf>,
@@ -434,7 +434,6 @@ impl AssistantProcessor {
         worker.room = worker.config.room.clone();
         worker.persona = worker.config.honorific.as_deref().map(Persona::new);
         if worker.config.prerender {
-            worker.jokes = Jokes::default().built_in_only();
             worker.prerender = worker.fixed_sentences().into();
             info!(sentences = worker.prerender.len(), "rendering speech ahead");
         }
@@ -618,15 +617,17 @@ struct Spoken {
     first: Option<Instant>,
 }
 
-const LEADS_WEATHER: &[&str] = &["Checking the forecast", "Let me look at the weather"];
-const LEADS_TRANSIT: &[&str] = &["Checking the departures", "Let me look up the next departures"];
-const LEADS_POWER: &[&str] = &["Checking the electricity prices"];
-const LEADS_LIGHTS: &[&str] = &["Let me check the lights"];
-const LEADS_HOME: &[&str] = &["Let me see who's in"];
-const LEADS_THINK: &[&str] = &["Let me think"];
-const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news"];
-const LEADS_LOOKUP: &[&str] = &["Let me look that up", "One moment"];
-const LEADS_HOUSE: &[&str] = &["Let me check the house", "Checking the house"];
+const LEADS_WEATHER: &[&str] = &["Checking the forecast", "Let me look at the weather", "Consulting the skies"];
+const LEADS_TRANSIT: &[&str] =
+    &["Checking the departures", "Let me look up the next departures", "Checking the timetable"];
+const LEADS_POWER: &[&str] =
+    &["Checking the electricity prices", "Let me look at the power prices", "Checking the price of power"];
+const LEADS_LIGHTS: &[&str] = &["Let me check the lights", "Checking the lights", "Looking around the house"];
+const LEADS_HOME: &[&str] = &["Let me see who's in", "Checking who's home", "Let me take a head count"];
+const LEADS_THINK: &[&str] = &["Let me think", "Give me a moment", "Let me consider that"];
+const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news", "Checking the papers"];
+const LEADS_LOOKUP: &[&str] = &["Let me look that up", "One moment", "Let me find out"];
+const LEADS_HOUSE: &[&str] = &["Let me check the house", "Checking the house", "Doing the rounds"];
 const LEADS: &[&[&str]] = &[
     LEADS_WEATHER,
     LEADS_TRANSIT,
@@ -1309,19 +1310,37 @@ impl Worker {
         for seconds in [10, 15, 20, 30, 45, 90] {
             numbered.push(format!("Timer set for {}.", timer::say_duration(seconds, Lang::English)));
         }
-        // Every time of day, from now on: the next hour is ready soon after a start, the rest in
+        // Every time of day, from now on: the next hours are ready soon after a start, the rest in
         // idle time over a day, and then kept on disk.
         let now = jiff::Zoned::now();
         let minute = u32::from(now.hour() as u8) * 60 + u32::from(now.minute() as u8);
-        numbered.extend((0..24 * 60).map(|i| {
-            let m = (minute + i) % (24 * 60);
-            format!("It's {:02}:{:02}.", m / 60, m % 60)
-        }));
+        let mut times: Vec<String> = (0..24 * 60)
+            .map(|i| {
+                let m = (minute + i) % (24 * 60);
+                format!("It's {:02}:{:02}.", m / 60, m % 60)
+            })
+            .collect();
+        let later = times.split_off(120);
+        numbered.extend(times);
         let numbered = numbered.into_iter().flat_map(|a| match &self.persona {
             Some(persona) => persona.forms(&a),
             None => vec![a],
         });
-        sentences.extend(numbered.filter(|s| voice_assistant::speech_cache::CachedTts::cacheable(s)));
+        sentences.extend(numbered);
+        // Answers after a lead-in are spoken as they are, without the persona's opener: the weather,
+        // departures and electricity prices, a sentence at a time.
+        let home = self.home_location.as_ref().map(|l| l.label.clone()).or_else(|| self.config.home.clone());
+        if let Some(home) = home {
+            sentences.extend(voice_assistant::weather::english_sentences(&home));
+        }
+        sentences.extend(voice_assistant::transit::english_sentences());
+        sentences.extend(voice_assistant::power::english_sentences());
+        let later = later.into_iter().flat_map(|a| match &self.persona {
+            Some(persona) => persona.forms(&a),
+            None => vec![a],
+        });
+        sentences.extend(later);
+        sentences.retain(|s| voice_assistant::speech_cache::CachedTts::cacheable(s));
         sentences
     }
 
