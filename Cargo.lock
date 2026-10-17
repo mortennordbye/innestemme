@@ -2241,9 +2241,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.37"
+version = "0.2.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ab1baf72f08796de0260609515130699b890ac25f30e610ad894bc5856cafdb"
+checksum = "b2b005715dcbeb0089a3c0dab99f2ff1cc3b2525323552703d648585d342a383"
 dependencies = [
  "defmt",
  "jiff-core",
@@ -2269,9 +2269,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.37"
+version = "0.2.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "378268a1116ad67ae6228701118ac9f491d78fda38a40a1f1a9e1348de6f7212"
+checksum = "2cc9817253cf7c7ee4684451bd327e88d6f3658014e54a29198625590650695c"
 dependencies = [
  "jiff-core",
  "proc-macro2",
@@ -2281,9 +2281,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-tzdb"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "142bd39932ad231f10513df9ab62661fead8719872150b7ad02a2df79f4e141e"
+checksum = "fa8377070c6bae868759445e5a77f66d84f0b72f3a054bfb00e6d038b8282da7"
 
 [[package]]
 name = "jiff-tzdb-platform"
@@ -2381,9 +2381,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "libloading"
@@ -3886,9 +3886,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.151"
+version = "1.0.152"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+checksum = "1741ab7a6cc54a03a89b5d563ed60075c277d9e3cfa73ad0c1f23f23974703c6"
 dependencies = [
  "itoa",
  "memchr",
@@ -4352,9 +4352,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -5615,9 +5615,9 @@ dependencies = [
 
 [[package]]
 name = "xn"
-version = "0.2.5"
+version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae11f676f05298d1d70e3df3a79e2e411815354a42758a1d1808f0b6031cc09c"
+checksum = "ebefe8131b0d4d40eae5f9371bc3085ded1df0f788fd42b1015f1023e587c27f"
 dependencies = [
  "byteorder",
  "half",
@@ -5631,16 +5631,15 @@ dependencies = [
  "safetensors 0.7.0",
  "thiserror 2.0.21",
  "tracing",
- "tracing-subscriber",
  "xn-gemm",
  "yoke 0.8.3",
 ]
 
 [[package]]
 name = "xn-gemm"
-version = "0.20.1"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42f9870e23208b830b4776ad5fa1d75fc53a59cfdad9e9e92a79d31d14613512"
+checksum = "0f5bcb177032cca83eb7aae3de9d6fa9cc5cbb29a0090bb07ef8880cf82e3c7d"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -5658,9 +5657,9 @@ dependencies = [
 
 [[package]]
 name = "xn-gemm-c32"
-version = "0.20.1"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c397f4ceb91ecd9847579d27ea8cec7dedc9a7b0b0f1e69aae636ce1da43feb"
+checksum = "9137ec88a81f5510045a45b1d5fce27b67f9748b8d83400b39163a51ecae6f04"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -5673,9 +5672,9 @@ dependencies = [
 
 [[package]]
 name = "xn-gemm-c64"
-version = "0.20.1"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d4dc98f425aa3c1047099d5d0407d4efb3e5e7aa6e85bd4343b0c7eaa1e57cc"
+checksum = "e9ab9a0de939c339098e4b20da0aa863f66dfbf1a4b0396dff9a13645443d510"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -5688,9 +5687,9 @@ dependencies = [
 
 [[package]]
 name = "xn-gemm-common"
-version = "0.20.1"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48c99ef04320b4dc583814dd67b10dff68cc2db60d927770ddee590ac31f4577"
+checksum = "c22f986c37636c5cbc0a6b4e120a5315ef8ba25615504c554a075e3b3286f642"
 dependencies = [
  "bytemuck",
  "dyn-stack",
@@ -5709,9 +5708,9 @@ dependencies = [
 
 [[package]]
 name = "xn-gemm-f16"
-version = "0.20.1"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33b73379c0fe9c9986dcc1ab7a579a0f9b67f08964b44f08acb5956adfd94002"
+checksum = "c971a82caab9a5960a7c3a6c32bf0c5b6bf5b76492f403997825a4d308b7f233"
 dependencies = [
  "dyn-stack",
  "half",
@@ -5727,9 +5726,9 @@ dependencies = [
 
 [[package]]
 name = "xn-gemm-f32"
-version = "0.20.1"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b629f3b55e84af9b98faff68bdb2a596c6a39a75356d639e89a803e4b8da9a6e"
+checksum = "56b8b45a6a11b6d9fedcea8be60bb175c1278170484e7956b29bae507e3c3039"
 dependencies = [
  "dyn-stack",
  "num-complex",
@@ -5742,9 +5741,9 @@ dependencies = [
 
 [[package]]
 name = "xn-gemm-f64"
-version = "0.20.1"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e266576fc0829ea63da4fe795bf79b2f959591a8cdea3bbb64cb673452674a3a"
+checksum = "2be9f43b557116575751164c7ce2c9e1a7a5bde9e944843bf87ca3314da7eb41"
 dependencies = [
  "dyn-stack",
  "num-complex",
