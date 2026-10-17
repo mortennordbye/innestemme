@@ -120,8 +120,8 @@ pub struct AssistantConfig {
     pub room: Option<String>,
     /// English answers in a butler's words, addressing the user this way ("sir").
     pub honorific: Option<String>,
-    /// Speech is kept once rendered: fixed sentences are rendered ahead of time, jokes come from
-    /// the built-in list, and slow answers open with a lead-in.
+    /// Speech is kept once rendered: fixed sentences are rendered ahead of time, and slow answers
+    /// open with a lead-in.
     pub prerender: bool,
     /// Directory for a wav of every utterance (debugging recognition).
     pub dump_utterances: Option<std::path::PathBuf>,
@@ -434,7 +434,6 @@ impl AssistantProcessor {
         worker.room = worker.config.room.clone();
         worker.persona = worker.config.honorific.as_deref().map(Persona::new);
         if worker.config.prerender {
-            worker.jokes = Jokes::default().built_in_only();
             worker.prerender = worker.fixed_sentences().into();
             info!(sentences = worker.prerender.len(), "rendering speech ahead");
         }
@@ -618,15 +617,17 @@ struct Spoken {
     first: Option<Instant>,
 }
 
-const LEADS_WEATHER: &[&str] = &["Checking the forecast", "Let me look at the weather"];
-const LEADS_TRANSIT: &[&str] = &["Checking the departures", "Let me look up the next departures"];
-const LEADS_POWER: &[&str] = &["Checking the electricity prices"];
-const LEADS_LIGHTS: &[&str] = &["Let me check the lights"];
-const LEADS_HOME: &[&str] = &["Let me see who's in"];
-const LEADS_THINK: &[&str] = &["Let me think"];
-const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news"];
-const LEADS_LOOKUP: &[&str] = &["Let me look that up", "One moment"];
-const LEADS_HOUSE: &[&str] = &["Let me check the house", "Checking the house"];
+const LEADS_WEATHER: &[&str] = &["Checking the forecast", "Let me look at the weather", "Consulting the skies"];
+const LEADS_TRANSIT: &[&str] =
+    &["Checking the departures", "Let me look up the next departures", "Checking the timetable"];
+const LEADS_POWER: &[&str] =
+    &["Checking the electricity prices", "Let me look at the power prices", "Checking the price of power"];
+const LEADS_LIGHTS: &[&str] = &["Let me check the lights", "Checking the lights", "Looking around the house"];
+const LEADS_HOME: &[&str] = &["Let me see who's in", "Checking who's home", "Let me take a head count"];
+const LEADS_THINK: &[&str] = &["Let me think", "Give me a moment", "Let me consider that"];
+const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news", "Checking the papers"];
+const LEADS_LOOKUP: &[&str] = &["Let me look that up", "One moment", "Let me find out"];
+const LEADS_HOUSE: &[&str] = &["Let me check the house", "Checking the house", "Doing the rounds"];
 const LEADS: &[&[&str]] = &[
     LEADS_WEATHER,
     LEADS_TRANSIT,
