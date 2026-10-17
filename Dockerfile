@@ -4,6 +4,7 @@
 
 # Runs on the build machine's own architecture and cross-compiles to x86-64, so a build on an
 # arm64 host does not go through emulation.
+# sherpa-onnx (the Parakeet listener) is a static C++ library: linking it needs the target's libstdc++.
 FROM --platform=$BUILDPLATFORM rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS chef
 ARG BUILDARCH
 WORKDIR /src
@@ -13,7 +14,7 @@ COPY rust-toolchain.toml ./
 COPY .cargo .cargo
 RUN if [ "$BUILDARCH" != "amd64" ]; then \
       apt-get update \
-      && apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu libc6-dev-amd64-cross \
+      && apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu libc6-dev-amd64-cross \
       && rm -rf /var/lib/apt/lists/*; \
     fi \
     && rustup target add x86_64-unknown-linux-gnu \

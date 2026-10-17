@@ -33,6 +33,10 @@ norwegian: false
 pocket-voice: cosette
 # f32, or q8 (smaller and usually faster on weak CPUs).
 pocket-precision: f32
+# How requests are turned into text: whisper (English and Norwegian), or parakeet (NVIDIA Parakeet TDT
+# 0.6B, 640 MB, English only): about 8x faster than whisper-base on a CPU and more accurate on the
+# Voice PE's recordings (docs/benchmarks.md).
+# listener: parakeet
 # whisper-size: base (290 MB) or small (970 MB, more accurate).
 whisper-size: base
 # Whisper encodes the request and 3 s of silence (8 s at the least). true: its full 30 s window,
@@ -66,6 +70,9 @@ whisper-size: base
 # alerts: true
 # Bedtime ("good night"): the bedroom lights that are on dim to this percent, warm white.
 # bedtime-light: 20
+# Lights or switches bedtime turns off and, a few seconds later, on again: a smart plug in front of lights
+# that need a power cut to reset.
+# bedtime-power-cycle: [light.kitchen_plug]
 # Coming home ("I'm home", "daddy's home"): this room's lights come on, whatever the time, and this music
 # starts: liked for Liked Songs, or a playlist's name. Unset: this room's lights after dark, no music.
 # home-room: Living Room

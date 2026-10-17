@@ -87,13 +87,16 @@ const SCREENS: &[(&str, Screen)] = &[
     ("bussen", Screen::Departures),
     ("yourself", Screen::Jarvis),
     ("your face", Screen::Jarvis),
+    ("dashboard", Screen::Jarvis),
+    ("dashbord", Screen::Jarvis),
+    ("dashbordet", Screen::Jarvis),
     ("deg", Screen::Jarvis),
     ("deg selv", Screen::Jarvis),
 ];
 const SHOW_WORDS: &[&str] = &["show", "put", "display", "bring", "vis", "sett"];
 const HIDE_WORDS: &[&str] = &["hide", "close", "clear", "dismiss", "skjul", "lukk", "fjern"];
 /// Where the assistant's screen is, besides the TV words.
-const SCREEN_WORDS: &[&str] = &["screen", "skjermen"];
+const SCREEN_WORDS: &[&str] = &["screen", "skjermen", "dashboard", "dashbord", "dashbordet"];
 
 const TV_WORDS: &[&str] =
     &["tv", "tvs", "tv's", "television", "telly", "tellie", "fjernsyn", "fjernsynet", "tven", "teve", "teven"];

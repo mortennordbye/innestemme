@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, ValueEnum};
-use tracing::info;
+use tracing::{info, warn};
 use voice_assistant::dialog::WakeWord;
 use voice_assistant::ha::HomeAssistant;
 use voice_assistant::lang::Lang;
+use voice_assistant::parakeet::{Parakeet, ParakeetFiles};
 use voice_assistant::pocket::PocketFiles;
 use voice_assistant::stt::{SpeechToText, SttFiles};
 use voice_assistant::whisper::{Transcriber, WakePrompt, WhisperFiles, Window};
@@ -94,6 +95,9 @@ enum ListenerKind {
     Whisper,
     /// Kyutai STT-1B streaming: English (and French) only, lower latency.
     Kyutai,
+    /// NVIDIA Parakeet TDT 0.6B per utterance (int8, sherpa-onnx): English only. About 8x faster
+    /// than whisper-base on a CPU and more accurate on the Voice PE's recordings.
+    Parakeet,
 }
 
 #[derive(Parser)]
@@ -172,6 +176,9 @@ struct Args {
     /// or NbAiLab/nb-whisper-* with Norwegian on).
     #[arg(long, env = "VOICE_WHISPER_REPO")]
     whisper_repo: Option<String>,
+    /// Hugging Face repo of the Parakeet model (sherpa-onnx export: encoder, decoder, joiner, tokens).
+    #[arg(long, env = "VOICE_PARAKEET_REPO", default_value = voice_assistant::parakeet::DEFAULT_REPO)]
+    parakeet_repo: String,
     /// Run the assistant's STT on the Apple GPU. Needs a build with `--features metal`.
     #[arg(long, env = "VOICE_STT_GPU")]
     stt_gpu: bool,
@@ -194,6 +201,10 @@ struct Args {
     /// Brightness in percent the bedroom lights that are on dim to at bedtime ("good night"), warm white.
     #[arg(long, env = "VOICE_BEDTIME_LIGHT", default_value_t = 20, value_parser = clap::value_parser!(u8).range(1..=100))]
     bedtime_light: u8,
+    /// Lights or switches that bedtime turns off and, a few seconds later, on again, comma-separated:
+    /// a smart plug in front of lights that need a power cut to reset.
+    #[arg(long, env = "VOICE_BEDTIME_POWER_CYCLE", value_delimiter = ',')]
+    bedtime_power_cycle: Vec<String>,
     /// The room whose lights come on when you come home ("I'm home"), whatever the time. Unset:
     /// the microphone's room, after dark only.
     #[arg(long, env = "VOICE_HOME_ROOM")]
@@ -405,7 +416,15 @@ fn main() -> Result<()> {
                     if !args.norwegian {
                         transcriber.restrict(Lang::English);
                     }
-                    Listener::Whisper(Box::new(transcriber))
+                    Listener::Utterances(Box::new(transcriber))
+                }
+                ListenerKind::Parakeet => {
+                    if args.norwegian {
+                        warn!("Parakeet understands English only; Norwegian requests will not be understood");
+                    }
+                    let files = ParakeetFiles::fetch(&args.parakeet_repo)?;
+                    info!(model = %files.encoder.display(), threads, "loading parakeet");
+                    Listener::Utterances(Box::new(Parakeet::load(&files, threads)?))
                 }
                 ListenerKind::Kyutai => {
                     let files = SttFiles::fetch()?;
@@ -494,6 +513,7 @@ fn main() -> Result<()> {
                     screen_url: args.screen_url.clone(),
                     alerts: args.alerts,
                     bedtime_light: args.bedtime_light,
+                    bedtime_power_cycle: args.bedtime_power_cycle.clone(),
                     home_room: args.home_room.clone(),
                     home_music: args.home_music.clone(),
                     lockdown_music: args.lockdown_music.clone(),

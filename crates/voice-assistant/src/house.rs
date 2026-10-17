@@ -503,6 +503,14 @@ pub fn routine(words: &[String]) -> Option<Routine> {
     if starts(LOCKDOWN) {
         return Some(Routine::Lockdown);
     }
+    // The transcriber mangles the words around it ("Initially lockdown.", "In the shape, lock
+    // down."), but the word itself in a short request is enough. A question about it is not one.
+    let lockdown = text.contains("lockdown") || text.contains("lock down");
+    let asks =
+        words.first().is_some_and(|w| ["is", "are", "what", "what's", "why", "when", "how"].contains(&w.as_str()));
+    if lockdown && words.len() <= 6 && !asks {
+        return Some(Routine::Lockdown);
+    }
     // Before leaving: "I'm off to bed" is bedtime.
     if starts(BEDTIME) {
         return Some(Routine::Bedtime);

@@ -40,7 +40,7 @@ use voice_assistant::tts::{self, Tts};
 use voice_assistant::tv::{self, Tv, TvCommand};
 use voice_assistant::vad::{self, Vad};
 use voice_assistant::weather::Weather;
-use voice_assistant::whisper::{Transcriber, Transcript};
+use voice_assistant::whisper::{Transcribe, Transcript};
 use voice_proto::{FRAME_SAMPLES, SAMPLE_RATE};
 use voice_rt::noalloc::permit_alloc;
 
@@ -63,6 +63,9 @@ const HISTORY_TURNS: usize = 4;
 const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// After a bare name or an answer, speech within this time needs no name.
 const FOLLOW_UP: Duration = Duration::from_secs(8);
+/// Speech without the name that repeats what was said this recently is the answer coming back from
+/// the speaker: the player starts late, so the end of an answer can reach the follow-up window.
+const ECHO_WINDOW: Duration = Duration::from_secs(30);
 /// Music paused for a request plays on after this long with nothing heard (a wake with no request,
 /// speech that was not speech), and at the latest after `HUSH_CAP`, so talk in the room cannot
 /// keep it paused.
@@ -86,6 +89,8 @@ const ALARM_REPEAT: Duration = Duration::from_secs(14);
 const ALARM_LONGEST: Duration = Duration::from_secs(30 * 60);
 /// A scene, a joke or coming home: a moment, not something to read.
 const SCREEN_MOMENT: Duration = Duration::from_secs(25);
+/// How long bedtime keeps a power-cycled plug off: long enough for the lights behind it to lose power.
+const POWER_CYCLE_OFF: Duration = Duration::from_secs(3);
 
 pub struct AssistantConfig {
     /// Place used when a weather question names none; also the home's name in answers.
@@ -128,6 +133,8 @@ pub struct AssistantConfig {
     pub alerts: bool,
     /// Percent the bedroom lights that are on dim to at bedtime.
     pub bedtime_light: u8,
+    /// Lights or switches bedtime turns off and, after a moment, on again.
+    pub bedtime_power_cycle: Vec<String>,
     /// The room lit on coming home, whatever the time; else this room after dark.
     pub home_room: Option<String>,
     /// Music on coming home: "liked", or a playlist's name.
@@ -139,7 +146,8 @@ pub struct AssistantConfig {
 }
 
 pub enum Listener {
-    Whisper(Box<Transcriber>),
+    /// Whisper or Parakeet, one call per utterance the energy detector cuts.
+    Utterances(Box<dyn Transcribe>),
     Kyutai(Box<SpeechToText>),
 }
 
@@ -313,7 +321,7 @@ pub struct AssistantProcessor {
 impl AssistantProcessor {
     pub fn new(listener: Listener, tts: Box<dyn Tts>, config: AssistantConfig) -> anyhow::Result<Self> {
         let (ear, transcriber) = match listener {
-            Listener::Whisper(transcriber) => (Ear::Vad(Vad::default()), Some(transcriber)),
+            Listener::Utterances(transcriber) => (Ear::Vad(Vad::default()), Some(transcriber)),
             Listener::Kyutai(mut stt) => {
                 // The first steps compile GPU kernels or fault in the weights.
                 let start = Instant::now();
@@ -398,6 +406,7 @@ impl AssistantProcessor {
             draft: None,
             follow_up_until: None,
             woken_at: None,
+            said: VecDeque::new(),
             answered_draft: None,
             hushed: None,
             speech_ended: None,
@@ -712,7 +721,7 @@ struct Worker {
     home_assistant: Option<HomeAssistant>,
     player: Player,
     tv: Tv,
-    transcriber: Option<Box<Transcriber>>,
+    transcriber: Option<Box<dyn Transcribe>>,
     /// The latest draft and its transcripts.
     draft: Option<(Vec<i16>, Vec<Transcript>)>,
     /// Until then, speech counts without the name: after a bare name, and for a while after each
@@ -720,6 +729,8 @@ struct Worker {
     follow_up_until: Option<Instant>,
     /// A satellite woke on its own wake word and nothing has been answered since.
     woken_at: Option<Instant>,
+    /// Sentences spoken lately, to tell the answer coming back through the microphone from a request.
+    said: VecDeque<(Instant, String)>,
     /// A command was acted on from its draft, of this many samples: the utterance it ends in is
     /// not answered again.
     answered_draft: Option<usize>,
@@ -952,6 +963,10 @@ impl Worker {
             }
         };
         let (request, addressed) = request;
+        if !addressed && self.echo(&request) {
+            info!(text = heard.text, "own answer heard");
+            return;
+        }
         // A bare "stop" right after an answer comes before any pause for a wake word: ask whether
         // music plays, as only then does it mean the music.
         let playing = self.hushed.is_some() || (bare_stop(&request) && self.music_playing());
@@ -1144,6 +1159,13 @@ impl Worker {
         self.finish(spoken, start);
     }
 
+    /// Whether words heard without the name are an answer spoken lately.
+    fn echo(&self, heard: &str) -> bool {
+        let recent: Vec<&str> =
+            self.said.iter().filter(|(at, _)| at.elapsed() < ECHO_WINDOW).map(|(_, text)| text.as_str()).collect();
+        is_echo(&recent, heard)
+    }
+
     /// Speaks an answer and opens the follow-up window.
     fn say(&mut self, answer: String, lang: Lang, start: Instant) {
         self.interrupted.store(false, Relaxed);
@@ -1159,6 +1181,8 @@ impl Worker {
 
     /// Audio goes to the speaker as it is synthesized, a sentence at a time.
     fn speak(&mut self, text: &str, lang: Lang, spoken: &mut Spoken) {
+        self.said.retain(|(at, _)| at.elapsed() < ECHO_WINDOW);
+        self.said.push_back((Instant::now(), text.to_owned()));
         let (reply, events, tts, live, interrupted) =
             (&mut self.reply, &self.events, &mut self.tts, &self.live, &self.interrupted);
         for sentence in text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {
@@ -1257,6 +1281,22 @@ impl Worker {
             .collect();
         sentences.sort();
         sentences.dedup();
+        // Then the answers with numbers that come up most, which the cache keeps too.
+        let mut numbered: Vec<String> = (0..=100).map(|n| format!("Volume {n} percent.")).collect();
+        for minutes in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20, 25, 30, 40, 45, 60, 90, 120] {
+            numbered.push(format!("Timer set for {}.", timer::say_duration(minutes * 60, Lang::English)));
+            if minutes < 60 {
+                numbered.push(format!("The {minutes} minute timer is cancelled."));
+            }
+        }
+        for seconds in [10, 15, 20, 30, 45, 90] {
+            numbered.push(format!("Timer set for {}.", timer::say_duration(seconds, Lang::English)));
+        }
+        let numbered = numbered.into_iter().flat_map(|a| match &self.persona {
+            Some(persona) => persona.forms(&a),
+            None => vec![a],
+        });
+        sentences.extend(numbered.filter(|s| voice_assistant::speech_cache::CachedTts::cacheable(s)));
         sentences
     }
 
@@ -1883,6 +1923,13 @@ impl Worker {
         let here = self.room.as_deref().and_then(|room| ha.find(room).ok().flatten());
         match found {
             Some(target) => Ok(Some(target)),
+            None if mentions_everywhere(request) => {
+                let lights = ha.lights().map_err(|error| unreachable(&error, no))?;
+                // Each lamp, not the room groups as well, so nothing is switched twice.
+                let ids = lights.iter().filter(|l| !l.group).map(|l| l.id.clone()).collect();
+                let label = if no { "huset" } else { "house" }.to_owned();
+                Ok(Some(Target { label, ids, area: true }))
+            }
             None if mentions_this_room(request) => Ok(here),
             None if !ha::names_something(request) => {
                 Ok(if refers_back(request) { recent.or(here) } else { here.or(recent) })
@@ -2537,6 +2584,32 @@ fn house_answer(
     })
 }
 
+/// Turns the bedtime plugs off and on again, on a thread of its own with its own Home Assistant
+/// client so the answer is not held up: lights behind a plug that are not smart enough to switch
+/// off by themselves come back right after losing power.
+fn power_cycle(config: &AssistantConfig) {
+    let (Some((url, token)), false) = (&config.home_assistant, config.bedtime_power_cycle.is_empty()) else {
+        return;
+    };
+    let (ha, ids) = (HomeAssistant::new(url, token), config.bedtime_power_cycle.clone());
+    let cycle = move || {
+        let data = serde_json::json!({ "entity_id": ids });
+        ha.service("homeassistant", "turn_off", data.clone())?;
+        std::thread::sleep(POWER_CYCLE_OFF);
+        ha.service("homeassistant", "turn_on", data)?;
+        info!(?ids, "power cycled at bedtime");
+        anyhow::Ok(())
+    };
+    let spawned = std::thread::Builder::new().name("power-cycle".into()).spawn(move || {
+        if let Err(error) = cycle() {
+            warn!(error = format!("{error:#}"), "bedtime power cycle failed");
+        }
+    });
+    if let Err(error) = spawned {
+        warn!(%error, "could not start the bedtime power cycle");
+    }
+}
+
 /// Bedtime light colour: warm white.
 const BEDTIME_KELVIN: u32 = 2700;
 
@@ -2556,6 +2629,9 @@ fn routine_answer(
             let bedtime = routine == Routine::Bedtime;
             let keep = |l: &Light| bedtime && (ha::is_room(&l.area, "bedroom") || ha::is_room(&l.name, "bedroom"));
             let switched = house::everything_off(ha, keep)?;
+            if bedtime {
+                power_cycle(config);
+            }
             let except = if bedtime && !switched.lights.is_empty() {
                 Some(if no { "soverommet" } else { "bedroom" })
             } else {
@@ -2738,6 +2814,40 @@ fn mentions_this_room(request: &str) -> bool {
     [" here ", " this room ", " her inne ", " her ", " dette rommet ", " rommet her "].iter().any(|p| text.contains(p))
 }
 
+/// Whether `heard` repeats what was `said`: all its words but at most one were in it ("Left on the
+/// one minute timer, sir." after "37 seconds left on the 1 minute timer, sir."). A follow-up adds
+/// words of its own ("stop the timer"). After a question the answer may well repeat its words
+/// ("Which one?" "The 1 minute timer."), so nothing is an echo then.
+fn is_echo(said: &[&str], heard: &str) -> bool {
+    if said.last().is_none_or(|last| last.trim_end().ends_with('?')) {
+        return false;
+    }
+    let said: HashSet<String> = said.iter().flat_map(|text| echo_words(text)).collect();
+    let heard = echo_words(heard);
+    let new = heard.iter().filter(|w| !said.contains(*w)).count();
+    heard.len() >= 2 && new <= 1 && new * 5 <= heard.len()
+}
+
+/// Words for comparing what was heard with what was said, with numbers as digits: the speech
+/// says "1 minute", the transcriber hears "one minute".
+fn echo_words(text: &str) -> Vec<String> {
+    const NUMBERS: &[&str] =
+        &["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+    text.split_whitespace()
+        .map(voice_assistant::dialog::normalize)
+        .filter(|w| !w.is_empty())
+        .map(|w| NUMBERS.iter().position(|n| *n == w).map_or(w, |n| n.to_string()))
+        .collect()
+}
+
+/// "All the lights", "every light", "the whole house": every light, not this room's. Only asked
+/// when the request names no room or light ("all the kitchen lights" is the kitchen).
+fn mentions_everywhere(request: &str) -> bool {
+    request.split_whitespace().map(voice_assistant::dialog::normalize).any(|w| {
+        ["all", "every", "everything", "everywhere", "house", "alle", "alt", "overalt", "huset"].contains(&w.as_str())
+    })
+}
+
 /// "Them", "it", "those": the lights just switched rather than the room.
 fn refers_back(request: &str) -> bool {
     request
@@ -2794,6 +2904,18 @@ fn push(reply: &mut rtrb::Producer<i16>, pcm: &[i16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_its_own_answer_from_a_follow_up() {
+        let said = ["37 seconds left on the 1 minute timer, sir."];
+        assert!(is_echo(&said, "Left on the one minute timer, sir."));
+        assert!(is_echo(&["Timer set for 1 minute, sir."], "One minute sir."));
+        assert!(!is_echo(&said, "Stop the timer."));
+        assert!(!is_echo(&["It's 20 degrees in the bedroom."], "What about the living room?"));
+        assert!(!is_echo(&said, "Timer"));
+        assert!(!is_echo(&["You have 2 timers. Which one?"], "The 1 minute timer."));
+        assert!(!is_echo(&[], "Turn on the kitchen."));
+    }
 
     #[test]
     fn pauses_for_a_while_or_until_resumed() {

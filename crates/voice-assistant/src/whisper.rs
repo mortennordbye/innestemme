@@ -95,6 +95,18 @@ pub struct Transcript {
     pub score: f32,
 }
 
+/// Speech to text for whole utterances: Whisper or Parakeet.
+pub trait Transcribe: Send {
+    /// Transcripts of 24 kHz speech, most likely first; none when there are no words.
+    fn transcribe(&mut self, pcm: &[i16]) -> Result<Vec<Transcript>>;
+}
+
+impl Transcribe for Transcriber {
+    fn transcribe(&mut self, pcm: &[i16]) -> Result<Vec<Transcript>> {
+        Transcriber::transcribe(self, pcm)
+    }
+}
+
 /// One loaded Whisper checkpoint and its special tokens.
 struct Model {
     config: w::Config,

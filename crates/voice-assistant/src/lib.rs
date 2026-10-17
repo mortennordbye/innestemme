@@ -18,6 +18,7 @@ pub mod lookup;
 pub mod music;
 pub mod names;
 pub mod news;
+pub mod parakeet;
 pub mod persona;
 pub mod pocket;
 pub mod power;

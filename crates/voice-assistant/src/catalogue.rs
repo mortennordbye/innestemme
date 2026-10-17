@@ -131,7 +131,7 @@ pub const SKILLS: &[Skill] = &[
         name: "Leaving, home and bedtime",
         group: "Home",
         icon: "door",
-        does: "Leaving: lights off, music paused, TV off, and a reminder when the alarm is off. Home: a welcome, the home-room lights (or this room's after dark) and the home-music. Bedtime: the same as leaving, but the bedroom stays lit, dimmed to a warm bedtime-light.",
+        does: "Leaving: lights off, music paused, TV off, and a reminder when the alarm is off. Home: a welcome, the home-room lights (or this room's after dark) and the home-music. Bedtime: the same as leaving, but the bedroom stays lit, dimmed to a warm bedtime-light, and the bedtime-power-cycle plugs go off and on again.",
         source: "Home Assistant, Music Assistant",
         calls: &["light.turn_off", "media_player.media_pause", "media_player.turn_off", "light.turn_on", "music_assistant.play_media"],
         examples: &["I'm leaving", "I'm home", "Daddy's home", "I'm going to bed", "Good night"],
