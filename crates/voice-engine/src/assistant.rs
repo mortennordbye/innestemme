@@ -34,7 +34,7 @@ use voice_assistant::persona::Persona;
 use voice_assistant::power::{self, Power};
 use voice_assistant::shopping::{Change, ListCommand, ShoppingList};
 use voice_assistant::stt::SpeechToText;
-use voice_assistant::timer::{self, Notice, Timers};
+use voice_assistant::timer::{self, Notice, TimerCommand, Timers};
 use voice_assistant::transit::Transit;
 use voice_assistant::tts::{self, Tts};
 use voice_assistant::tv::{self, Tv, TvCommand};
@@ -2805,6 +2805,16 @@ fn complete_at_once(intent: &Intent) -> bool {
                     | TvCommand::Quieter
             )
             | Intent::Time
+            | Intent::Thanks
+            | Intent::Joke
+            // A length is the end of the request: "set a timer for 5 minutes", "stop the timer".
+            | Intent::Timer(
+                TimerCommand::Start { seconds: Some(_), .. }
+                    | TimerCommand::Cancel(_)
+                    | TimerCommand::Pause(_)
+                    | TimerCommand::Resume(_)
+                    | TimerCommand::Remaining(_)
+            )
     )
 }
 
