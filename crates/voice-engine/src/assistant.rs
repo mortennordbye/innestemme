@@ -990,8 +990,9 @@ impl Worker {
         // microphone also hears the room.
         // With a language model, it decides whether unrecognised words were meant for the assistant.
         let unknown = intent::parse(&request) == Intent::Unknown;
-        let pending =
-            self.pending_lights.is_some() || self.pending_confirm.is_some() || self.timers.awaiting_duration();
+        // A question waiting for "yes" only takes a yes or a no: other words without the name are the room.
+        let confirming = self.pending_confirm.is_some() && confirmation(&request).is_some();
+        let pending = self.pending_lights.is_some() || confirming || self.timers.awaiting_duration();
         if !addressed && !pending && unknown && self.config.llm.is_none() {
             info!(text = heard.text, "not addressed");
             self.not_understood(&heard.text, audio, ended, heard.lang, start);
@@ -1272,8 +1273,13 @@ impl Worker {
         let mut texts: Vec<String> =
             LEADS.iter().flat_map(|leads| leads.iter().map(|l| lead_sentence(l, honorific))).collect();
         texts.extend(self.persona.as_ref().map(Persona::phrases).unwrap_or_default());
+        let questions =
+            [HouseCommand::Camera(Switch::Off), HouseCommand::Camera(Switch::On), HouseCommand::Alarm(Switch::On)]
+                .map(|c| confirm_question(&c, Lang::English).unwrap_or_default());
         let answers = voice_assistant::music::ENGLISH_ANSWERS
             .iter()
+            .chain(&questions)
+            .chain(&["Okay, I'll leave it."])
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
             .chain(house::LOCKDOWN_ANSWERS);
         match &self.persona {
