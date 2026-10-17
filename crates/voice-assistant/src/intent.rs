@@ -519,13 +519,18 @@ fn music(words: &[String]) -> Option<MusicCommand> {
     if has("previous") || has("forrige") {
         return Some(MusicCommand::Previous);
     }
-    let up = ["up", "opp", "increase", "increased", "raise", "raised", "øk", "øke"].iter().any(|w| has(w));
-    let down = ["down", "ned", "decrease", "decreased", "reduce", "reduced", "lowered", "senk", "senke"]
-        .iter()
-        .any(|w| has(w));
-    let volume = ["volume", "volumet", "sound", "lyd", "lyden", "turn", "skru", "it", "music", "musikken"]
-        .iter()
-        .any(|w| has(w));
+    const VOLUME: &[&str] = &["volume", "volumet", "sound", "lyd", "lyden", "turn", "skru", "it", "music", "musikken"];
+    let volume = words.iter().any(|w| VOLUME.contains(&w.as_str()));
+    // "Up" and "down" only after a volume word ("turn it up", "skru ned lyden"): in "show the bus
+    // times ... up it" the "it" comes too late to be turned up.
+    let particle = |list: &[&str]| {
+        let first_volume = words.iter().position(|w| VOLUME.contains(&w.as_str()));
+        words.iter().enumerate().any(|(i, w)| list.contains(&w.as_str()) && first_volume.is_some_and(|v| v < i))
+    };
+    let up =
+        ["increase", "increased", "raise", "raised", "øk", "øke"].iter().any(|w| has(w)) || particle(&["up", "opp"]);
+    let down = ["decrease", "decreased", "reduce", "reduced", "lowered", "senk", "senke"].iter().any(|w| has(w))
+        || particle(&["down", "ned"]);
     let louder = has("louder") || has("høyere") || (volume && up);
     let quieter = ["quieter", "softer", "lower", "lavere"].iter().any(|w| has(w)) || (volume && down);
     if let Some((to, amount)) = volume_amount(words).filter(|_| volume || louder || quieter) {
@@ -657,7 +662,47 @@ pub fn parse(text: &str) -> Intent {
     }
 }
 
+/// Words the transcriber gets wrong in requests, from the engine's logs, and what was said. Only
+/// mishearings that are no request of their own: "stand out" is never asked for.
+const MISHEARD: &[(&[&str], &[&str])] = &[
+    (&["stand", "out"], &["stand", "down"]),
+    (&["shove"], &["show"]),
+    (&["tarmer"], &["timer"]),
+    (&["tarmers"], &["timers"]),
+    (&["best", "times"], &["bus", "times"]),
+    (&["bowling"], &["volume"]),
+];
+
+/// The request with known mishearings put right, as normalised words; unchanged when there are none.
+fn corrected(text: &str) -> std::borrow::Cow<'_, str> {
+    let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    let mut out: Vec<&str> = Vec::with_capacity(words.len());
+    let (mut i, mut changed) = (0, false);
+    while i < words.len() {
+        let rest = &words[i..];
+        let fix =
+            MISHEARD.iter().find(|(heard, _)| rest.len() >= heard.len() && heard.iter().zip(rest).all(|(h, w)| h == w));
+        match fix {
+            Some((heard, meant)) => {
+                out.extend_from_slice(meant);
+                i += heard.len();
+                changed = true;
+            }
+            None => {
+                out.push(&words[i]);
+                i += 1;
+            }
+        }
+    }
+    if changed {
+        out.join(" ").into()
+    } else {
+        text.into()
+    }
+}
+
 fn rules(text: &str) -> Intent {
+    let text = &*corrected(text);
     let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
     // Whole short phrases only, so it takes nothing from the skills ("how are the lights" is not it).
     if let Some(chat) = crate::smalltalk::parse(&words) {
@@ -749,7 +794,11 @@ fn rules(text: &str) -> Intent {
         None
     };
     // "Turn them off" names no light; the assistant resolves it against the last lights it used.
-    if words.iter().any(|w| LIGHT_WORDS.contains(&w.as_str())) || (switching && pronoun) {
+    // "Turn on the kitchen": a room on its own is its lights.
+    if words.iter().any(|w| LIGHT_WORDS.contains(&w.as_str()))
+        || (switching && pronoun)
+        || (switching && crate::ha::names_only_room(&words))
+    {
         if let Some(on) = on {
             return Intent::Lights { on, target: text.to_owned() };
         }
@@ -781,7 +830,8 @@ fn rules(text: &str) -> Intent {
     let day = if tomorrow { Day::Tomorrow } else { Day::Today };
     // The place follows the last marker that is followed by a name ("i morgen" is not a place).
     let place =
-        words.iter().enumerate().rev().filter(|(_, w)| PLACE_MARKERS.contains(&w.as_str())).find_map(|(i, _)| {
+        // "I" first is the English pronoun, not the Norwegian "in": "I always do weather today".
+        words.iter().enumerate().rev().filter(|(i, w)| PLACE_MARKERS.contains(&w.as_str()) && !(*i == 0 && *w == "i")).find_map(|(i, _)| {
             let name: Vec<&str> = words[i + 1..]
                 .iter()
                 .map(String::as_str)
@@ -839,6 +889,41 @@ mod tests {
 
     fn weather(place: Option<&str>, day: Day) -> Intent {
         Intent::Weather { place: place.map(str::to_owned), day }
+    }
+
+    /// Requests the living room Voice PE heard wrong, from the engine's logs (12-17 October 2026).
+    #[test]
+    fn logged_mishearings() {
+        use crate::tv::Screen;
+        assert_eq!(parse("Stand out."), Intent::Routine(Routine::StandDown));
+        assert_eq!(parse("Initially lockdown."), Intent::Routine(Routine::Lockdown));
+        assert_eq!(parse("In the shape, lock down."), Intent::Routine(Routine::Lockdown));
+        assert_eq!(parse("Is the lockdown still on?"), Intent::Unknown);
+        assert_eq!(parse("Shove timers on the screen."), Intent::Tv(TvCommand::Show(Screen::Timers)));
+        assert_eq!(parse("Show Tarmers on the screen."), Intent::Tv(TvCommand::Show(Screen::Timers)));
+        assert_eq!(
+            parse("Show the best times on the screen to release up it."),
+            Intent::Tv(TvCommand::Show(Screen::Departures))
+        );
+        assert_eq!(parse("The bowling at 60%."), Intent::Music(MusicCommand::VolumeTo(60)));
+        assert_eq!(parse("I always do weather today."), weather(None, Day::Today));
+        assert_eq!(parse("Show the dashboard on the TV."), Intent::Tv(TvCommand::Show(Screen::Jarvis)));
+        assert_eq!(parse("Show the dashboard."), Intent::Tv(TvCommand::Show(Screen::Jarvis)));
+        assert!(matches!(parse("Turn on the kitchen."), Intent::Lights { on: true, .. }));
+        assert!(matches!(parse("Switch off the living room."), Intent::Lights { on: false, .. }));
+        assert_eq!(parse("Turn on the bedroom fan."), Intent::Unknown);
+    }
+
+    #[test]
+    fn up_and_down_follow_a_volume_word() {
+        let music = |text: &str| match parse(text) {
+            Intent::Music(command) => Some(command),
+            _ => None,
+        };
+        assert_eq!(music("turn it up"), Some(MusicCommand::Louder));
+        assert_eq!(music("turn up the volume"), Some(MusicCommand::Louder));
+        assert_eq!(music("skru ned lyden"), Some(MusicCommand::Quieter));
+        assert_eq!(music("release up it"), None);
     }
 
     #[test]

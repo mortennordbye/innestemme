@@ -498,6 +498,13 @@ pub fn names_something(request: &str) -> bool {
     request.split_whitespace().map(normalize).any(|w| !w.is_empty() && !FILLER.contains(&w.as_str()))
 }
 
+/// Whether a switching request names a room and nothing else: "turn on the kitchen", not "turn
+/// on the bedroom fan".
+pub fn names_only_room(words: &[String]) -> bool {
+    let rest: Vec<&str> = words.iter().map(String::as_str).filter(|w| !FILLER.contains(w)).collect();
+    !rest.is_empty() && room_group(&rest.join(" ")).is_some()
+}
+
 /// Whether a name or area is the room `room` names, in either language ("Soverom" is the bedroom).
 pub fn is_room(name: &str, room: &str) -> bool {
     let (name, room) = (normalize_phrase(name), normalize_phrase(room));

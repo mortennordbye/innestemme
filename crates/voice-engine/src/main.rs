@@ -194,6 +194,10 @@ struct Args {
     /// Brightness in percent the bedroom lights that are on dim to at bedtime ("good night"), warm white.
     #[arg(long, env = "VOICE_BEDTIME_LIGHT", default_value_t = 20, value_parser = clap::value_parser!(u8).range(1..=100))]
     bedtime_light: u8,
+    /// Lights or switches that bedtime turns off and, a few seconds later, on again, comma-separated:
+    /// a smart plug in front of lights that need a power cut to reset.
+    #[arg(long, env = "VOICE_BEDTIME_POWER_CYCLE", value_delimiter = ',')]
+    bedtime_power_cycle: Vec<String>,
     /// The room whose lights come on when you come home ("I'm home"), whatever the time. Unset:
     /// the microphone's room, after dark only.
     #[arg(long, env = "VOICE_HOME_ROOM")]
@@ -494,6 +498,7 @@ fn main() -> Result<()> {
                     screen_url: args.screen_url.clone(),
                     alerts: args.alerts,
                     bedtime_light: args.bedtime_light,
+                    bedtime_power_cycle: args.bedtime_power_cycle.clone(),
                     home_room: args.home_room.clone(),
                     home_music: args.home_music.clone(),
                     lockdown_music: args.lockdown_music.clone(),
