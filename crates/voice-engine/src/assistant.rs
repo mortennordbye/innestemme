@@ -63,6 +63,8 @@ const HISTORY_TURNS: usize = 4;
 const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// After a bare name or an answer, speech within this time needs no name.
 const FOLLOW_UP: Duration = Duration::from_secs(8);
+/// How long "Turn on privacy mode?" waits for its "yes".
+const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 /// Speech without the name that repeats what was said this recently is the answer coming back from
 /// the speaker: the player starts late, so the end of an answer can reach the follow-up window.
 const ECHO_WINDOW: Duration = Duration::from_secs(30);
@@ -417,6 +419,7 @@ impl AssistantProcessor {
             last_list: None,
             pending_list_add: false,
             pending_scene: None,
+            pending_confirm: None,
             timers: Timers::default(),
             persona: None,
             prerender: VecDeque::new(),
@@ -753,6 +756,8 @@ struct Worker {
     pending_list_add: bool,
     /// A scene request that exists in several rooms: the next answer is the room.
     pending_scene: Option<String>,
+    /// A camera or alarm change waiting for "yes": a misheard request must not switch them.
+    pending_confirm: Option<(HouseCommand, Instant)>,
     timers: Timers,
     persona: Option<Persona>,
     /// Sentences still to render ahead of time.
@@ -795,9 +800,13 @@ impl Worker {
                         self.unhush();
                     }
                     self.ring_due_timers();
+                    // Not during a conversation: a request would wait for the sentence being rendered.
+                    let talking = self.woken_at.is_some()
+                        || self.hushed.is_some()
+                        || self.follow_up_until.is_some_and(|until| Instant::now() < until);
                     if self.prerender.is_empty() {
                         self.keep_warm();
-                    } else {
+                    } else if !talking {
                         self.render_ahead();
                     }
                     continue;
@@ -981,7 +990,8 @@ impl Worker {
         // microphone also hears the room.
         // With a language model, it decides whether unrecognised words were meant for the assistant.
         let unknown = intent::parse(&request) == Intent::Unknown;
-        let pending = self.pending_lights.is_some() || self.timers.awaiting_duration();
+        let pending =
+            self.pending_lights.is_some() || self.pending_confirm.is_some() || self.timers.awaiting_duration();
         if !addressed && !pending && unknown && self.config.llm.is_none() {
             info!(text = heard.text, "not addressed");
             self.not_understood(&heard.text, audio, ended, heard.lang, start);
@@ -1233,6 +1243,7 @@ impl Worker {
         let pending = self.pending_lights.is_some()
             || self.pending_list_add
             || self.pending_scene.is_some()
+            || self.pending_confirm.is_some()
             || self.timers.awaiting_duration();
         if lang != Lang::English || !self.config.prerender || pending {
             return None;
@@ -1292,6 +1303,14 @@ impl Worker {
         for seconds in [10, 15, 20, 30, 45, 90] {
             numbered.push(format!("Timer set for {}.", timer::say_duration(seconds, Lang::English)));
         }
+        // Every time of day, from now on: the next hour is ready soon after a start, the rest in
+        // idle time over a day, and then kept on disk.
+        let now = jiff::Zoned::now();
+        let minute = u32::from(now.hour() as u8) * 60 + u32::from(now.minute() as u8);
+        numbered.extend((0..24 * 60).map(|i| {
+            let m = (minute + i) % (24 * 60);
+            format!("It's {:02}:{:02}.", m / 60, m % 60)
+        }));
         let numbered = numbered.into_iter().flat_map(|a| match &self.persona {
             Some(persona) => persona.forms(&a),
             None => vec![a],
@@ -1339,6 +1358,18 @@ impl Worker {
             if let Some(ListCommand::Add(items)) = voice_assistant::shopping::parse(&format!("add {text} to the list"))
             {
                 return Some(self.shopping_list(ListCommand::Add(items), lang));
+            }
+        }
+        if let Some((command, at)) = self.pending_confirm.take() {
+            match confirmation(text) {
+                Some(true) if at.elapsed() < CONFIRM_WINDOW => return Some(self.house(&command, lang)),
+                Some(false) => {
+                    return Some(
+                        if lang == Lang::Norwegian { "Ok, jeg lar det være." } else { "Okay, I'll leave it." }.into(),
+                    )
+                }
+                // Anything else is a new request, and the question is dropped.
+                _ => {}
             }
         }
         if let Some(scene) = self.pending_scene.take() {
@@ -1548,7 +1579,13 @@ impl Worker {
                 if no { "Ok." } else { "Okay." }.into()
             }
             Intent::Tv(command) => self.tv.run(self.home_assistant.as_ref(), &command, lang),
-            Intent::House(command) => self.house(&command, lang),
+            Intent::House(command) => match confirm_question(&command, lang) {
+                Some(question) => {
+                    self.pending_confirm = Some((command, Instant::now()));
+                    question.into()
+                }
+                None => self.house(&command, lang),
+            },
             Intent::Routine(routine) => {
                 // Leaving and bedtime pause the music themselves; coming home may start new music.
                 if routine != Routine::Home || self.config.home_music.is_some() {
@@ -2858,6 +2895,42 @@ fn mentions_everywhere(request: &str) -> bool {
     })
 }
 
+/// The question asked before a change that a misheard request must not make on its own: the
+/// camera's privacy mode ("stop the timer" was heard as "Stop the camera.") and arming the alarm.
+fn confirm_question(command: &HouseCommand, lang: Lang) -> Option<&'static str> {
+    let no = lang == Lang::Norwegian;
+    Some(match command {
+        HouseCommand::Camera(Switch::Off) if no => "Skal jeg slå på personvernmodus?",
+        HouseCommand::Camera(Switch::Off) => "Turn on privacy mode?",
+        HouseCommand::Camera(Switch::On) if no => "Skal kameraet ta opp igjen?",
+        HouseCommand::Camera(Switch::On) => "Turn privacy mode off?",
+        HouseCommand::Alarm(Switch::On) if no => "Skal jeg slå på alarmen?",
+        HouseCommand::Alarm(Switch::On) => "Arm the alarm?",
+        _ => return None,
+    })
+}
+
+/// "Yes" or "no" to a question, if the reply is one.
+fn confirmation(text: &str) -> Option<bool> {
+    const YES: &[&str] = &[
+        "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "please", "correct", "do", "it", "ja", "jepp", "gjerne",
+        "takk", "sir",
+    ];
+    const NO: &[&str] =
+        &["no", "nope", "nah", "don't", "dont", "not", "cancel", "never", "mind", "nei", "ikke", "la", "være"];
+    let words: Vec<String> =
+        text.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
+    let all = |list: &[&str]| !words.is_empty() && words.len() <= 4 && words.iter().all(|w| list.contains(&w.as_str()));
+    let first = |list: &[&str]| words.first().is_some_and(|w| list[..4].contains(&w.as_str()));
+    if all(NO) || first(NO) {
+        Some(false)
+    } else if all(YES) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 /// "Them", "it", "those": the lights just switched rather than the room.
 fn refers_back(request: &str) -> bool {
     request
@@ -2914,6 +2987,21 @@ fn push(reply: &mut rtrb::Producer<i16>, pcm: &[i16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asks_before_privacy_mode_and_the_alarm() {
+        assert_eq!(confirm_question(&HouseCommand::Camera(Switch::Off), Lang::English), Some("Turn on privacy mode?"));
+        assert_eq!(confirm_question(&HouseCommand::Alarm(Switch::On), Lang::English), Some("Arm the alarm?"));
+        assert_eq!(confirm_question(&HouseCommand::Camera(Switch::Status), Lang::English), None);
+        assert_eq!(confirmation("Yes."), Some(true));
+        assert_eq!(confirmation("Yes, please do it."), Some(true));
+        assert_eq!(confirmation("Ja takk"), Some(true));
+        assert_eq!(confirmation("No."), Some(false));
+        assert_eq!(confirmation("No, leave it."), Some(false));
+        assert_eq!(confirmation("Nei"), Some(false));
+        assert_eq!(confirmation("What time is it?"), None);
+        assert_eq!(confirmation("Do you love me?"), None);
+    }
 
     #[test]
     fn tells_its_own_answer_from_a_follow_up() {
