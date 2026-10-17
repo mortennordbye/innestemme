@@ -25,6 +25,8 @@ const NUMBER_SHAPES: &[&str] = &[
     "the # second timer is",
     "the # hour timer is",
     "it's # degrees in the",
+    // The time: "It's 16:50."
+    "it's #:#",
 ];
 /// The largest number kept: volume and room temperatures stay under it.
 const NUMBER_MAX: u32 = 100;
@@ -139,7 +141,8 @@ mod tests {
         assert!(CachedTts::cacheable("Timer set for 1 hour and 30 minutes, sir."));
         assert!(CachedTts::cacheable("The 5 minute timer is cancelled."));
         assert!(CachedTts::cacheable("It's 21 degrees in the bedroom."));
-        assert!(!CachedTts::cacheable("It's 06:38."));
+        assert!(CachedTts::cacheable("It's 06:38."));
+        assert!(CachedTts::cacheable("It's 16:50, sir."));
         assert!(!CachedTts::cacheable("37 seconds left on the 1 minute timer."));
         assert!(!CachedTts::cacheable("Timer set for 120 minutes."));
         assert!(!CachedTts::cacheable("It's 5 degrees and partly cloudy in Oslo, with a high of 13."));

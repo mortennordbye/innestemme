@@ -59,8 +59,9 @@ const NEAR_MISS: f32 = 0.2;
 /// Audio kept from before the wake word, so a run's recording holds the wake word itself.
 const WAKE_PREROLL: usize = 2 * DEVICE_RATE as usize;
 /// From announcing an answer on the player to its first sound (fetch and start), a little over
-/// what the Sonos takes, so the follow-up does not hear the end of the answer.
-const PLAYER_START: Duration = Duration::from_millis(1200);
+/// what the Sonos takes (0.41 s, "answer heard on the device"), so the follow-up does not hear the
+/// end of the answer; an echo that still gets through is dropped by the assistant.
+const PLAYER_START: Duration = Duration::from_millis(800);
 /// The device takes a few tens of milliseconds from the end of speech to waiting for the answer.
 const RUN_END_DELAY: Duration = Duration::from_millis(250);
 /// Announced over an answer to stop it: 0.3 s at 24 kHz.
