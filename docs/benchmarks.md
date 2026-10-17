@@ -193,3 +193,22 @@ targets compare the raw text, so this undercounts for every system alike). Other
   going to play a little bit more"). It writes numbers as words ("thirty percent").
 - Moonshine returns nothing for many of these recordings (its own test file works; the level is not the cause).
 - The streaming zipformer keeps up easily (real-time factor 0.02) but is the least accurate after Moonshine.
+
+## End to end in the cluster with Parakeet, 2026-10-17
+
+Requests spoken by Home Assistant's Piper voice on the living room Sonos, heard by the Voice PE, answered on
+the same Sonos (image 0.0.1792247630, 4 CPUs). From the engine log: `spoken ... after_speech` (end of speech
+to the first answer audio) and `answer heard on the device` (announcement to the device's microphone
+hearing the answer).
+
+| | Whisper base (12-17 Oct, real use) | Parakeet |
+|---|---|---|
+| End of speech to answer audio, fixed answer | 3.3 s median | 0.24 s (acted at the 0.24 s pause), 0.64 s otherwise |
+| Answer with a live number (Kokoro) | 5-6 s | 2-4 s, then cached for the frequent shapes |
+| Announcement to sound in the room | | 0.41 s (5 answers, 0.41-0.49 s) |
+
+So a cached answer is heard about 0.65-1.05 s after the end of speech. The synthetic voice through a speaker
+was misheard often (9 of 20: "Stop the camera.", "Set a towel for 10 minutes", "Tell me a fact."); the
+benchmark above on real recordings is the better guide to accuracy. Hotwords (sherpa-onnx contextual biasing,
+with a `bpe.vocab` made from `tokens.txt`) and snapping unknown requests to catalogue phrases by sound key
+did not help on reverberant noisy command recordings, so neither is used.
