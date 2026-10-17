@@ -1281,6 +1281,22 @@ impl Worker {
             .collect();
         sentences.sort();
         sentences.dedup();
+        // Then the answers with numbers that come up most, which the cache keeps too.
+        let mut numbered: Vec<String> = (0..=100).map(|n| format!("Volume {n} percent.")).collect();
+        for minutes in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 20, 25, 30, 40, 45, 60, 90, 120] {
+            numbered.push(format!("Timer set for {}.", timer::say_duration(minutes * 60, Lang::English)));
+            if minutes < 60 {
+                numbered.push(format!("The {minutes} minute timer is cancelled."));
+            }
+        }
+        for seconds in [10, 15, 20, 30, 45, 90] {
+            numbered.push(format!("Timer set for {}.", timer::say_duration(seconds, Lang::English)));
+        }
+        let numbered = numbered.into_iter().flat_map(|a| match &self.persona {
+            Some(persona) => persona.forms(&a),
+            None => vec![a],
+        });
+        sentences.extend(numbered.filter(|s| voice_assistant::speech_cache::CachedTts::cacheable(s)));
         sentences
     }
 
