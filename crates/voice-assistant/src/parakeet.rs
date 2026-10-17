@@ -64,12 +64,30 @@ impl Transcribe for Parakeet {
         stream.accept_waveform(16_000, &resample_24k_to_16k(pcm));
         self.recognizer.decode(&stream);
         let text = stream.get_result().map(|r| r.text).unwrap_or_default();
-        let text = digits(text.trim());
+        let text = digits(&letters(text.trim()));
         if text.is_empty() {
             return Ok(Vec::new());
         }
         Ok(vec![Transcript { lang: Lang::English, text, score: 0.0 }])
     }
+}
+
+/// Letters spoken one at a time written together, as Whisper writes them: "the T V" is "the TV".
+fn letters(text: &str) -> String {
+    let single = |w: &str| w.len() == 1 && w.chars().all(|c| c.is_ascii_uppercase()) && w != "I" && w != "A";
+    let words: Vec<&str> = text.split(' ').collect();
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    for (i, word) in words.iter().enumerate() {
+        let bare = word.trim_end_matches(|c: char| c.is_ascii_punctuation());
+        let after_letter = i > 0 && single(words[i - 1]);
+        match out.last_mut() {
+            Some(last) if after_letter && bare.len() == 1 && bare.chars().all(|c| c.is_ascii_uppercase()) => {
+                last.push_str(word)
+            }
+            _ => out.push((*word).to_owned()),
+        }
+    }
+    out.join(" ")
 }
 
 const UNITS: &[&str] = &[
@@ -168,6 +186,14 @@ fn number_at(words: &[&str]) -> Option<(u32, usize, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joins_spelled_letters() {
+        assert_eq!(letters("Show the dashboard on the T V."), "Show the dashboard on the TV.");
+        assert_eq!(letters("Turn off the T V"), "Turn off the TV");
+        assert_eq!(letters("I want a B"), "I want a B");
+        assert_eq!(letters("Play B B C News"), "Play BBC News");
+    }
 
     #[test]
     fn writes_numbers_as_digits() {

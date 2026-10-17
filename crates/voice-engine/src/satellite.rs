@@ -65,6 +65,11 @@ const PLAYER_START: Duration = Duration::from_millis(1200);
 const RUN_END_DELAY: Duration = Duration::from_millis(250);
 /// Announced over an answer to stop it: 0.3 s at 24 kHz.
 const SILENCE: usize = 7200;
+/// How long after announcing an answer to watch for it in the microphone, how much of that sets the
+/// room's level (no player starts this fast), and how far above that level the answer is.
+const ONSET_WATCH: Duration = Duration::from_secs(5);
+const ONSET_BASELINE: Duration = Duration::from_millis(250);
+const ONSET_RISE_DB: f32 = 15.0;
 /// After an answer has played, listen this long for a follow-up without the wake word.
 const FOLLOW_UP: Duration = Duration::from_secs(6);
 
@@ -193,6 +198,9 @@ struct Bridge<'a> {
     announced: Option<(Instant, usize)>,
     /// When the last answer will have played, to listen for a follow-up from then on.
     follow_up_at: Option<Instant>,
+    /// An answer just announced on the player: when, and the room's quietest level since (dBFS),
+    /// to log when the microphone first hears it.
+    onset: Option<(Instant, f32)>,
     /// An answer is going to the player while the device already listens for the wake word again,
     /// so it can be interrupted.
     player_answer: bool,
@@ -260,6 +268,7 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         preroll: VecDeque::new(),
         announced: None,
         follow_up_at: None,
+        onset: None,
         player_answer: false,
         run_end_at: None,
     };
@@ -360,6 +369,7 @@ impl Bridge<'_> {
                 }
             }
             Incoming::Audio(pcm) => {
+                self.watch_onset(&pcm);
                 if self.run == Run::WakeWord && self.wake.is_some() {
                     return self.listen_for_wake_word(&pcm, assistant).await;
                 }
@@ -432,6 +442,7 @@ impl Bridge<'_> {
                     });
                     self.clip = Some((url, clip));
                     self.announced = Some((Instant::now(), 0));
+                    self.onset = Some((Instant::now(), 0.0));
                     if self.wake.is_some() {
                         // The device goes back to streaming for the wake word while the player speaks,
                         // so "Hey Jarvis" over the answer stops it. Its run ends a moment later: a
@@ -568,6 +579,25 @@ impl Bridge<'_> {
             AssistantEvent::Show(_) => {}
         }
         Ok(())
+    }
+
+    /// Logs how long the player took from the announcement to the answer reaching the room: the
+    /// first audio well above the level the room had just after the announcement.
+    fn watch_onset(&mut self, pcm: &[i16]) {
+        let Some((at, quietest)) = &mut self.onset else { return };
+        let since = at.elapsed();
+        if since > ONSET_WATCH {
+            info!("answer not heard on the device");
+            self.onset = None;
+            return;
+        }
+        let level = dbfs(pcm);
+        if since < ONSET_BASELINE {
+            *quietest = if *quietest == 0.0 { level } else { quietest.min(level) };
+        } else if level > *quietest + ONSET_RISE_DB {
+            info!(after = ?since, "answer heard on the device");
+            self.onset = None;
+        }
     }
 
     /// Scores the continuous stream; only audio after the wake word goes on to the engine.
@@ -718,4 +748,10 @@ async fn hello(udp: &UdpSocket, id: u16) -> Result<()> {
         }
     }
     bail!("the engine did not accept a session (another client connected?)")
+}
+
+/// The level of a chunk of audio in dB below full scale.
+fn dbfs(pcm: &[i16]) -> f32 {
+    let power = pcm.iter().map(|&s| f64::from(s) * f64::from(s)).sum::<f64>() / pcm.len().max(1) as f64;
+    (10.0 * (power / (32768.0 * 32768.0)).max(1e-12).log10()) as f32
 }
