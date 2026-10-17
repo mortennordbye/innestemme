@@ -149,6 +149,17 @@ pub const SKILLS: &[Skill] = &[
         norwegian: &[],
     },
     Skill {
+        id: "party",
+        name: "Party mode",
+        group: "Home",
+        icon: "music",
+        does: "Every Hue light follows the music the satellite hears: normal mode moves a new colour round the room on each beat and fades between them; fast mode flashes on every hit, as fast as the lights follow. Stopping it, or the music, puts the lights back.",
+        source: "The satellite's microphone, the Hue bridge's Entertainment API",
+        calls: &["Hue entertainment_configuration", "scene.create", "scene.turn_on"],
+        examples: &["Party mode", "Let's party", "Fast party mode", "Stop the party"],
+        norwegian: &["Skru på festmodus", "Slå av festmodus"],
+    },
+    Skill {
         id: "alerts",
         name: "Safety alerts",
         group: "Home",
@@ -435,6 +446,7 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
         Intent::Tv(_) => "tv",
         Intent::Routine(Routine::Lockdown | Routine::StandDown) => "lockdown",
         Intent::Routine(_) => "routines",
+        Intent::Party(_) => "party",
         Intent::House(command) => match command {
             HouseCommand::Status => "house_status",
             HouseCommand::Sun(_) => "sun",

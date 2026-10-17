@@ -80,6 +80,11 @@ whisper-size: base
 # "Initiate lockdown" (just for fun): every light blinking red, this song at this volume. "Stand down" puts it all back.
 # lockdown-music: Mombasa by Hans Zimmer
 # lockdown-volume: 50
+# "Party mode" / "fast party mode": every Hue light follows the music the satellite hears, through the
+# bridge's Entertainment API. The keys come from POST {"devicetype": "innestemme#engine",
+# "generateclientkey": true} to https://<bridge>/api after pressing the bridge's link button
+# (`username` and `clientkey`); keep them in .env as VOICE_HUE_APP_KEY and VOICE_HUE_CLIENT_KEY.
+# hue-bridge: 192.168.1.2
 # Your own face images for the hub page (/hub): idle.jpg, listening.jpg, speaking.jpg.
 # hub-faces: /models/faces
 

@@ -372,6 +372,7 @@ impl Bridge<'_> {
             }
             Incoming::Audio(pcm) => {
                 self.watch_onset(&pcm);
+                assistant.party.feed(&pcm);
                 if self.run == Run::WakeWord && self.wake.is_some() {
                     return self.listen_for_wake_word(&pcm, assistant).await;
                 }

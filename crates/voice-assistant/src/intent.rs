@@ -75,6 +75,8 @@ pub enum Intent {
     House(HouseCommand),
     /// "I'm leaving", "I'm home", "I'm going to bed".
     Routine(Routine),
+    /// "Party mode", "fast party mode", "stop the party": the Hue lights follow the music.
+    Party(crate::party::PartyCommand),
     Thanks,
     /// "How are you?", "who are you?", "good night".
     SmallTalk(Chat),
@@ -717,6 +719,10 @@ fn rules(text: &str) -> Intent {
     }
     if let Some(routine) = house::routine(&words) {
         return Intent::Routine(routine);
+    }
+    // Before music: "stop the party" is not "stop the music".
+    if let Some(command) = crate::party::parse(&words) {
+        return Intent::Party(command);
     }
     // Before music: "pause the TV" is not the music, "play Netflix" not a song.
     if let Some(command) = tv::parse(&words) {
