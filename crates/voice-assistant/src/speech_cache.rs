@@ -14,22 +14,36 @@ use tracing::warn;
 use crate::lang::Lang;
 use crate::tts::Tts;
 
-/// Sentences with numbers that are kept anyway, digits as `#`: the answers with live data that come
-/// up most, so they need not be synthesized each time.
-const NUMBER_SHAPES: &[&str] = &[
-    "volume # percent",
-    "timer set for #",
-    "i'll remind you in #",
-    "the # minute timer is",
-    "the # minutes timer is",
-    "the # second timer is",
-    "the # hour timer is",
-    "it's # degrees in the",
+/// Sentences with numbers that are kept anyway, digits as `#`, and the largest number each may
+/// hold: the answers with live data that come up most, so they need not be synthesized each time.
+/// The limits keep what is stored bounded.
+const NUMBER_SHAPES: &[(&str, u32)] = &[
+    ("volume # percent", 100),
+    ("timer set for #", 100),
+    ("i'll remind you in #", 100),
+    ("the # minute timer is", 100),
+    ("the # minutes timer is", 100),
+    ("the # second timer is", 100),
+    ("the # hour timer is", 100),
+    // Room temperatures and the weather: "It's 21 degrees in the bedroom.", "It's 4 degrees in Oslo."
+    ("it's # degrees in ", 100),
+    ("it's # degree in ", 100),
+    ("the high today is #", 100),
+    ("# to # degrees", 100),
     // The time: "It's 16:50."
-    "it's #:#",
+    ("it's #:#", 59),
+    // Departures: the line ("The next bus is the 31 to Snarøya, from Wessels plass."), then when.
+    ("is the # to ", 999),
+    ("departure is ", 999),
+    ("it leaves in #", 59),
+    ("it leaves at #:#", 59),
+    ("the one after leaves in #", 59),
+    ("the one after leaves at #:#", 59),
+    // Electricity prices: "Right now, power costs 1.44 kroner per kilowatt hour."
+    ("power costs #", 100),
+    ("it costs #", 100),
+    (" is at #:#.", 59),
 ];
-/// The largest number kept: volume and room temperatures stay under it.
-const NUMBER_MAX: u32 = 100;
 
 pub struct CachedTts {
     inner: Box<dyn Tts>,
@@ -49,8 +63,8 @@ impl CachedTts {
         Self { inner, dir, memory: HashMap::new() }
     }
 
-    /// Whether a sentence is worth keeping: fixed text, or one of the [`NUMBER_SHAPES`] with
-    /// numbers up to [`NUMBER_MAX`], so what is kept stays bounded.
+    /// Whether a sentence is worth keeping: fixed text, or one of the [`NUMBER_SHAPES`] within its
+    /// limit, so what is kept stays bounded.
     pub fn cacheable(text: &str) -> bool {
         let numbers: Vec<u32> = text
             .split(|c: char| !c.is_ascii_digit())
@@ -68,7 +82,10 @@ impl CachedTts {
                 (false, _) => shape.push(c),
             }
         }
-        numbers.iter().all(|n| *n <= NUMBER_MAX) && NUMBER_SHAPES.iter().any(|s| shape.contains(s))
+        // "It's minus 4 degrees in Oslo." has the shape of "It's 4 degrees in Oslo."
+        let shape = shape.replace("minus #", "#");
+        let largest = numbers.into_iter().max().unwrap_or(0);
+        NUMBER_SHAPES.iter().any(|(s, max)| largest <= *max && shape.contains(s))
     }
 
     fn path(&self, text: &str) -> Option<PathBuf> {
@@ -146,6 +163,14 @@ mod tests {
         assert!(!CachedTts::cacheable("37 seconds left on the 1 minute timer."));
         assert!(!CachedTts::cacheable("Timer set for 120 minutes."));
         assert!(!CachedTts::cacheable("It's 5 degrees and partly cloudy in Oslo, with a high of 13."));
+        assert!(CachedTts::cacheable("It's minus 4 degrees in Oslo."));
+        assert!(CachedTts::cacheable("Minus 3 to 12 degrees."));
+        assert!(CachedTts::cacheable("The next bus is the 390 to Snarøya, from Wessels plass."));
+        assert!(CachedTts::cacheable("It leaves in 4 minutes."));
+        assert!(CachedTts::cacheable("Right now, power costs 1.44 kroner per kilowatt hour."));
+        assert!(CachedTts::cacheable("Cheapest tonight is at 03:15."));
+        assert!(!CachedTts::cacheable("It leaves in 75 minutes."));
+        assert!(!CachedTts::cacheable("Today it ranges from 36 øre to 2.10 kroner."));
     }
 
     /// Counts how often it is asked to speak; says one sample per character.

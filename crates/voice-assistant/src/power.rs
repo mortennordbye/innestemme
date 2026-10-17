@@ -141,8 +141,10 @@ impl Power {
                         format_price(high, lang)
                     )
                 } else {
+                    // The first sentence is one of a bounded set, rendered ahead (`english_sentences`);
+                    // the range is synthesized while it plays.
                     format!(
-                        "Power costs {} right now, between {} and {} today.",
+                        "Right now, power costs {}. Today it ranges from {} to {}.",
                         price_of(current),
                         format_price(low, lang),
                         format_price(high, lang)
@@ -192,12 +194,7 @@ impl Power {
                 };
                 let Some(pick) = pick else { bail!("no prices in the window") };
                 let word = match (no, cheapest, when) {
-                    (false, true, When::Today) => "Cheapest for the rest of today",
-                    (false, true, When::Tonight) => "Cheapest tonight",
-                    (false, true, When::Tomorrow) => "Cheapest tomorrow",
-                    (false, false, When::Today) => "Most expensive for the rest of today",
-                    (false, false, When::Tonight) => "Most expensive tonight",
-                    (false, false, When::Tomorrow) => "Most expensive tomorrow",
+                    (false, ..) => english_word(cheapest, when),
                     (true, true, When::Today) => "Billigst resten av dagen",
                     (true, true, When::Tonight) => "Billigst i natt",
                     (true, true, When::Tomorrow) => "Billigst i morgen",
@@ -207,8 +204,8 @@ impl Power {
                 };
                 let started = pick.time_start <= now.timestamp();
                 Ok(match (no, started) {
-                    (false, true) => format!("{word} is right now, at {}.", price_of(pick)),
-                    (false, false) => format!("{word} is at {}, {}.", at(pick), price_of(pick)),
+                    (false, true) => format!("{word} is right now. It costs {}.", price_of(pick)),
+                    (false, false) => format!("{word} is at {}. It costs {}.", at(pick), price_of(pick)),
                     (true, true) => format!("{word} er akkurat nå, {}.", price_of(pick)),
                     (true, false) => format!("{word} er klokka {}, {}.", at(pick), price_of(pick)),
                 })
@@ -235,6 +232,36 @@ impl Power {
         self.days.push((date, prices.clone(), Instant::now()));
         Ok(prices)
     }
+}
+
+fn english_word(cheapest: bool, when: When) -> &'static str {
+    match (cheapest, when) {
+        (true, When::Today) => "Cheapest for the rest of today",
+        (true, When::Tonight) => "Cheapest tonight",
+        (true, When::Tomorrow) => "Cheapest tomorrow",
+        (false, When::Today) => "Most expensive for the rest of today",
+        (false, When::Tonight) => "Most expensive tonight",
+        (false, When::Tomorrow) => "Most expensive tomorrow",
+    }
+}
+
+/// Every English price sentence up to 5 kroner, and when the cheapest and dearest quarter hours
+/// are, to render ahead.
+pub fn english_sentences() -> Vec<String> {
+    let mut sentences = Vec::new();
+    for cents in 1..500 {
+        let price = format!("{} {}", format_price(cents as f64 / 100.0, Lang::English), per_kwh(Lang::English));
+        sentences.push(format!("Right now, power costs {price}."));
+        sentences.push(format!("It costs {price}."));
+    }
+    for cheapest in [true, false] {
+        for when in [When::Today, When::Tonight, When::Tomorrow] {
+            let word = english_word(cheapest, when);
+            sentences.push(format!("{word} is right now."));
+            sentences.extend((0..96).map(|q| format!("{word} is at {:02}:{:02}.", q / 4, q % 4 * 15)));
+        }
+    }
+    sentences
 }
 
 /// "1.44 kroner" / "1,44 kroner", or "36 øre" under a krone.
@@ -282,6 +309,15 @@ mod tests {
         assert_eq!(area_for(63.43, 10.39), "NO3"); // Trondheim
         assert_eq!(area_for(69.65, 18.96), "NO4"); // Tromsø
         assert_eq!(area_for(60.79, 11.07), "NO1"); // Hamar
+    }
+
+    #[test]
+    fn english_sentences_are_kept() {
+        let ahead = english_sentences();
+        assert!(ahead.contains(&"Right now, power costs 1.44 kroner per kilowatt hour.".to_string()));
+        assert!(ahead.contains(&"It costs 36 øre per kilowatt hour.".to_string()));
+        assert!(ahead.contains(&"Cheapest tonight is at 03:15.".to_string()));
+        assert!(ahead.iter().all(|s| crate::speech_cache::CachedTts::cacheable(s)), "not all cacheable");
     }
 
     #[test]

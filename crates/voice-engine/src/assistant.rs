@@ -1310,19 +1310,37 @@ impl Worker {
         for seconds in [10, 15, 20, 30, 45, 90] {
             numbered.push(format!("Timer set for {}.", timer::say_duration(seconds, Lang::English)));
         }
-        // Every time of day, from now on: the next hour is ready soon after a start, the rest in
+        // Every time of day, from now on: the next hours are ready soon after a start, the rest in
         // idle time over a day, and then kept on disk.
         let now = jiff::Zoned::now();
         let minute = u32::from(now.hour() as u8) * 60 + u32::from(now.minute() as u8);
-        numbered.extend((0..24 * 60).map(|i| {
-            let m = (minute + i) % (24 * 60);
-            format!("It's {:02}:{:02}.", m / 60, m % 60)
-        }));
+        let mut times: Vec<String> = (0..24 * 60)
+            .map(|i| {
+                let m = (minute + i) % (24 * 60);
+                format!("It's {:02}:{:02}.", m / 60, m % 60)
+            })
+            .collect();
+        let later = times.split_off(120);
+        numbered.extend(times);
         let numbered = numbered.into_iter().flat_map(|a| match &self.persona {
             Some(persona) => persona.forms(&a),
             None => vec![a],
         });
-        sentences.extend(numbered.filter(|s| voice_assistant::speech_cache::CachedTts::cacheable(s)));
+        sentences.extend(numbered);
+        // Answers after a lead-in are spoken as they are, without the persona's opener: the weather,
+        // departures and electricity prices, a sentence at a time.
+        let home = self.home_location.as_ref().map(|l| l.label.clone()).or_else(|| self.config.home.clone());
+        if let Some(home) = home {
+            sentences.extend(voice_assistant::weather::english_sentences(&home));
+        }
+        sentences.extend(voice_assistant::transit::english_sentences());
+        sentences.extend(voice_assistant::power::english_sentences());
+        let later = later.into_iter().flat_map(|a| match &self.persona {
+            Some(persona) => persona.forms(&a),
+            None => vec![a],
+        });
+        sentences.extend(later);
+        sentences.retain(|s| voice_assistant::speech_cache::CachedTts::cacheable(s));
         sentences
     }
 
