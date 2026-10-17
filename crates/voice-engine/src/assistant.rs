@@ -73,6 +73,9 @@ const ECHO_WINDOW: Duration = Duration::from_secs(30);
 /// keep it paused.
 const HUSH_QUIET: Duration = Duration::from_secs(12);
 const HUSH_CAP: Duration = Duration::from_secs(40);
+/// From queuing an answer to the speaker having played it: its length and this for the player to
+/// start. Music started or stopped sooner cuts the announcement off.
+const ANSWER_START: Duration = Duration::from_millis(1500);
 /// A short utterance that starts this soon after a device's wake word holds the end of the wake
 /// word ("Oh", "What?"), not the request. A longer one is the name and the request in one breath.
 const WAKE_TAIL: Duration = Duration::from_millis(500);
@@ -438,6 +441,9 @@ impl AssistantProcessor {
             room: None,
             warmed_prompt: String::new(),
             lockdown_volume: None,
+            after_answer: None,
+            after_answer_at: None,
+            render_after: None,
             alarm: None,
         };
         worker.room = worker.config.room.clone();
@@ -786,6 +792,14 @@ struct Worker {
     warmed_prompt: String,
     /// The music's volume before a lockdown raised it, for standing down.
     lockdown_volume: Option<f64>,
+    /// Music to start or stop, and the volume to set, once the answer has played: the lockdown's
+    /// music and its stand-down.
+    after_answer: Option<(MusicCommand, Option<f64>)>,
+    /// When the answer will have played, for `after_answer`.
+    after_answer_at: Option<Instant>,
+    /// Rendering ahead waits until then: half the time, so the CPU (and the fans) are not at full
+    /// tilt for hours after a start.
+    render_after: Option<Instant>,
     /// The lockdown's lights blinking.
     alarm: Option<Alarm>,
 }
@@ -801,6 +815,10 @@ impl Worker {
             // With speech still to render ahead, that is done between jobs, a sentence at a time.
             let wait = if self.prerender.is_empty() { wait } else { Duration::from_millis(20) };
             let wait = if self.hushed.is_some() { wait.min(Duration::from_secs(1)) } else { wait };
+            let wait = match self.after_answer_at {
+                Some(at) => wait.min(at.saturating_duration_since(Instant::now())),
+                None => wait,
+            };
             let job = match queued.pop_front().map_or_else(|| jobs.recv_timeout(wait), Ok) {
                 Ok(job) => job,
                 Err(RecvTimeoutError::Timeout) => {
@@ -812,13 +830,16 @@ impl Worker {
                         self.unhush();
                     }
                     self.ring_due_timers();
+                    if self.after_answer_at.is_some_and(|at| Instant::now() >= at) {
+                        self.run_after_answer();
+                    }
                     // Not during a conversation: a request would wait for the sentence being rendered.
                     let talking = self.woken_at.is_some()
                         || self.hushed.is_some()
                         || self.follow_up_until.is_some_and(|until| Instant::now() < until);
                     if self.prerender.is_empty() {
                         self.keep_warm();
-                    } else if !talking {
+                    } else if !talking && self.render_after.is_none_or(|at| Instant::now() >= at) {
                         self.render_ahead();
                     }
                     continue;
@@ -1280,6 +1301,9 @@ impl Worker {
         self.unhush();
         // The reply is queued faster than it plays; the window opens when it has been heard.
         self.follow_up_until = Some(Instant::now() + Duration::from_secs_f32(seconds) + FOLLOW_UP);
+        if self.after_answer.is_some() {
+            self.after_answer_at = Some(Instant::now() + Duration::from_secs_f32(seconds) + ANSWER_START);
+        }
         self.busy.store(false, Relaxed);
     }
 
@@ -1393,9 +1417,11 @@ impl Worker {
         let Some(sentence) = self.prerender.pop_front() else {
             return;
         };
+        let start = Instant::now();
         if let Err(error) = self.tts.speak(&sentence, Lang::English, &mut |_| {}) {
             warn!(%error, sentence, "could not render ahead");
         }
+        self.render_after = Some(Instant::now() + start.elapsed());
         if self.prerender.is_empty() {
             info!("speech rendered ahead");
         }
@@ -1693,19 +1719,44 @@ impl Worker {
             let volume = ha.state(&entity).ok().and_then(|s| s["attributes"]["volume_level"].as_f64());
             // A second lockdown keeps the volume from before the first.
             self.lockdown_volume = self.lockdown_volume.or(volume);
-            let level = f64::from(self.config.lockdown_volume) / 100.0;
-            if let Err(error) = ha.service(
-                "media_player",
-                "volume_set",
-                serde_json::json!({ "entity_id": entity, "volume_level": level }),
-            ) {
-                warn!(error = format!("{error:#}"), "could not raise the volume for the lockdown");
-            }
         }
+        // The lockdown's music replaces what was paused for the request.
+        self.hushed = None;
         let music = MusicCommand::Song(self.config.lockdown_music.clone());
-        self.player.run(self.home_assistant.as_ref(), &music, lang);
+        self.after_answer = Some((music, Some(f64::from(self.config.lockdown_volume) / 100.0)));
         self.show("lockdown", serde_json::json!({ "music": self.config.lockdown_music }), None);
         if no { "Nedstengning startet. Huset er forseglet." } else { "Lockdown initiated. The house is sealed." }.into()
+    }
+
+    /// Starts or stops the music the last answer was about, and sets the volume, now that the
+    /// answer has played. Volume first for new music, last when stopping, so neither is heard at
+    /// the wrong level.
+    fn run_after_answer(&mut self) {
+        self.after_answer_at = None;
+        let Some((music, volume)) = self.after_answer.take() else { return };
+        let Some(ha) = &self.home_assistant else { return };
+        let set_volume = |player: &mut Player| {
+            let Some(level) = volume else { return };
+            let set = player.check(ha).and_then(|entity| {
+                ha.service(
+                    "media_player",
+                    "volume_set",
+                    serde_json::json!({ "entity_id": entity, "volume_level": level }),
+                )
+            });
+            if let Err(error) = set {
+                warn!(error = format!("{error:#}"), "could not set the music's volume");
+            }
+        };
+        let stopping = music == MusicCommand::Stop;
+        if !stopping {
+            set_volume(&mut self.player);
+        }
+        self.player.run(Some(ha), &music, Lang::English);
+        if stopping {
+            set_volume(&mut self.player);
+        }
+        info!(?music, ?volume, "music after the answer");
     }
 
     fn stand_down(&mut self, lang: Lang) -> String {
@@ -1726,19 +1777,9 @@ impl Worker {
         if !restored && volume.is_none() {
             return if no { "Det er ingen nedstengning å avslutte." } else { "There is no lockdown to end." }.into();
         }
-        self.player.run(self.home_assistant.as_ref(), &MusicCommand::Stop, lang);
-        if let (Some(volume), Some(ha)) = (volume, &self.home_assistant) {
-            let set = self.player.check(ha).and_then(|entity| {
-                ha.service(
-                    "media_player",
-                    "volume_set",
-                    serde_json::json!({ "entity_id": entity, "volume_level": volume }),
-                )
-            });
-            if let Err(error) = set {
-                warn!(error = format!("{error:#}"), "could not restore the volume after the lockdown");
-            }
-        }
+        // The music was paused for the request: it stays paused under the answer, then stops.
+        self.hushed = None;
+        self.after_answer = Some((MusicCommand::Stop, volume));
         info!(restored, ?volume, "lockdown over");
         if self.screen.showing("lockdown") {
             self.hide();
