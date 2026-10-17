@@ -218,6 +218,16 @@ struct Args {
     /// The music's volume during a lockdown, in percent; standing down puts the old one back.
     #[arg(long, env = "VOICE_LOCKDOWN_VOLUME", default_value_t = 50, value_parser = clap::value_parser!(u8).range(1..=100))]
     lockdown_volume: u8,
+    /// The Hue bridge's address, for party mode (the lights following the music).
+    #[arg(long, env = "VOICE_HUE_BRIDGE")]
+    hue_bridge: Option<String>,
+    /// The bridge's key for innestemme: POST {"devicetype": "innestemme#engine", "generateclientkey":
+    /// true} to https://<bridge>/api after pressing its link button; this is `username`.
+    #[arg(long, env = "VOICE_HUE_APP_KEY")]
+    hue_app_key: Option<String>,
+    /// The `clientkey` from the same answer, for the bridge's entertainment stream.
+    #[arg(long, env = "VOICE_HUE_CLIENT_KEY")]
+    hue_client_key: Option<String>,
     /// Full-size face images for the hub page (`idle.jpg`, `listening.jpg`, `speaking.jpg`); the
     /// built-in raccoon otherwise.
     #[arg(long, env = "VOICE_HUB_FACES")]
@@ -518,6 +528,16 @@ fn main() -> Result<()> {
                     home_music: args.home_music.clone(),
                     lockdown_music: args.lockdown_music.clone(),
                     lockdown_volume: args.lockdown_volume,
+                    party: voice_engine::party::Party::new(
+                        match (&args.hue_bridge, &args.hue_app_key, &args.hue_client_key) {
+                            (Some(bridge), Some(app_key), Some(client_key)) => Some(voice_engine::party::HueConfig {
+                                bridge: bridge.clone(),
+                                app_key: app_key.clone(),
+                                client_key: client_key.clone(),
+                            }),
+                            _ => None,
+                        },
+                    ),
                     prerender: args.speech_cache.is_some(),
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");

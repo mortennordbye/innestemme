@@ -30,6 +30,7 @@ use voice_assistant::llm::{self, Decision, Llm, Turn};
 use voice_assistant::lookup::Lookup;
 use voice_assistant::music::Player;
 use voice_assistant::news::News;
+use voice_assistant::party::PartyCommand;
 use voice_assistant::persona::Persona;
 use voice_assistant::power::{self, Power};
 use voice_assistant::shopping::{Change, ListCommand, ShoppingList};
@@ -46,6 +47,7 @@ use voice_rt::noalloc::permit_alloc;
 
 use crate::engine::{FrameProcessor, ProcessError};
 use crate::metrics::Metrics;
+use crate::party::{self, Party};
 use crate::screen::Screen;
 use crate::unhandled::{Reason, UnhandledLog};
 
@@ -148,6 +150,8 @@ pub struct AssistantConfig {
     pub lockdown_music: String,
     /// The music's volume during a lockdown, in percent.
     pub lockdown_volume: u8,
+    /// The Hue lights following the music, when a bridge is configured.
+    pub party: Party,
 }
 
 pub enum Listener {
@@ -229,6 +233,7 @@ pub struct AssistantHandle {
     interrupted: Arc<AtomicBool>,
     pub pause: Arc<Pause>,
     pub screen: Arc<Screen>,
+    pub party: Party,
 }
 
 impl AssistantHandle {
@@ -326,6 +331,7 @@ pub struct AssistantProcessor {
     interrupted: Arc<AtomicBool>,
     pause: Arc<Pause>,
     screen: Arc<Screen>,
+    party: Party,
     was_busy: bool,
     frame: u64,
     deaf_until: u64,
@@ -352,6 +358,7 @@ impl AssistantProcessor {
         let interrupted = Arc::new(AtomicBool::new(false));
         let pause = Arc::new(Pause::default());
         let screen = Arc::new(Screen::default());
+        let party = config.party.clone();
         let speaker = config.speaker.clone();
         let tv = Tv::new(config.tv.clone());
         let (events, _) = broadcast::channel(256);
@@ -503,6 +510,7 @@ impl AssistantProcessor {
             interrupted,
             pause,
             screen,
+            party,
             was_busy: false,
             frame: 0,
             deaf_until: 0,
@@ -517,6 +525,7 @@ impl AssistantProcessor {
             interrupted: self.interrupted.clone(),
             pause: self.pause.clone(),
             screen: self.screen.clone(),
+            party: self.party.clone(),
         }
     }
 }
@@ -1350,6 +1359,7 @@ impl Worker {
             .chain(&questions)
             .chain(&["Okay, I'll leave it."])
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
+            .chain(&["Okay, party mode is on.", "Okay, fast party mode is on.", "Okay, the party's over."])
             .chain(house::LOCKDOWN_ANSWERS);
         match &self.persona {
             Some(persona) => texts.extend(answers.flat_map(|a| persona.forms(a))),
@@ -1571,6 +1581,7 @@ impl Worker {
                 joke
             }
             Intent::Time => time_of_day(lang),
+            Intent::Party(command) => self.party(command, lang),
             Intent::Music(command) => {
                 // New music replaces what was paused for the request, and "play" plays it itself.
                 if matches!(
@@ -1585,6 +1596,9 @@ impl Worker {
                         | MusicCommand::Album(_)
                 ) {
                     self.hushed = None;
+                }
+                if command == MusicCommand::Stop {
+                    self.party_off();
                 }
                 self.player.run(self.home_assistant.as_ref(), &command, lang)
             }
@@ -1695,9 +1709,76 @@ impl Worker {
         })
     }
 
+    /// "Party mode": the Hue lights follow the music, after a snapshot to put them back from.
+    fn party(&mut self, command: PartyCommand, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let PartyCommand::On { fast } = command else {
+            return match self.party_off() {
+                true if no => "Ok, festen er over.",
+                true => "Okay, the party's over.",
+                false if no => "Det er ingen fest på gang.",
+                false => "There's no party on.",
+            }
+            .into();
+        };
+        if !self.config.party.configured() {
+            return if no {
+                "Festmodus trenger en Hue-bro. Sett hue-bridge i innstillingene."
+            } else {
+                "Party mode needs a Hue bridge. Set hue-bridge in the settings."
+            }
+            .into();
+        }
+        if let Some(ha) = &self.home_assistant {
+            if let Err(error) = house::party_snapshot(ha) {
+                warn!(error = format!("{error:#}"), "party mode: no snapshot of the lights");
+            }
+        }
+        let mode = if fast { party::Mode::Fast } else { party::Mode::Normal };
+        if let Err(error) = self.config.party.start(mode) {
+            warn!(error = format!("{error:#}"), "party mode did not start");
+            return if no {
+                "Beklager, jeg fikk ikke startet festmodus."
+            } else {
+                "Sorry, I couldn't start party mode."
+            }
+            .into();
+        }
+        match (fast, no) {
+            (false, false) => "Okay, party mode is on.",
+            (true, false) => "Okay, fast party mode is on.",
+            (false, true) => "Ok, festmodus er på.",
+            (true, true) => "Ok, rask festmodus er på.",
+        }
+        .into()
+    }
+
+    /// Ends party mode and puts the lights back once the stream has let go of them. Whether it was on.
+    fn party_off(&mut self) -> bool {
+        if self.config.party.mode().is_none() {
+            return false;
+        }
+        self.config.party.stop();
+        if let Some((url, token)) = self.config.home_assistant.clone() {
+            // On a thread of its own: the bridge lets go of the lights after the stream's last frame.
+            let restore = std::thread::Builder::new().name("party-restore".into()).spawn(move || {
+                std::thread::sleep(Duration::from_secs(1));
+                if let Err(error) = house::party_restore(&HomeAssistant::new(&url, &token)) {
+                    warn!(error = format!("{error:#}"), "party mode: could not put the lights back");
+                }
+            });
+            if let Err(error) = restore {
+                warn!(%error, "party mode: could not put the lights back");
+            }
+        }
+        true
+    }
+
     /// Every light red, the volume up and the lockdown music on. Just for fun: nothing is locked.
     fn lockdown(&mut self, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
+        // Its red lights and the party's stream would fight over the same lights.
+        self.party_off();
         let Some(ha) = &self.home_assistant else {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();

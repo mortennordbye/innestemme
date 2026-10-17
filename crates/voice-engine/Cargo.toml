@@ -18,11 +18,14 @@ socket2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+ureq = { version = "3", features = ["json"] }
 voice-assistant = { path = "../voice-assistant" }
 voice-codec.workspace = true
 voice-esphome = { path = "../voice-esphome" }
 voice-proto.workspace = true
 voice-rt.workspace = true
+webrtc-dtls = "0.12"
+webrtc-util = "0.11"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
@@ -30,3 +33,6 @@ libc = "0.2"
 [features]
 # Runs the assistant's STT on the Apple GPU (`--stt-gpu`). Local testing on a Mac only.
 metal = ["voice-assistant/metal"]
+
+[dev-dependencies]
+cpal = "0.18"

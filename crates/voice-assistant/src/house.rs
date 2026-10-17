@@ -1211,6 +1211,32 @@ pub fn stand_down(ha: &HomeAssistant) -> Result<bool> {
     Ok(true)
 }
 
+/// The scene the lights are kept in while party mode streams to them.
+const PARTY_SCENE: &str = "party_restore";
+
+/// Keeps the lights as they are, for after party mode; a second start keeps the first snapshot.
+pub fn party_snapshot(ha: &HomeAssistant) -> Result<()> {
+    if ha.state(&format!("scene.{PARTY_SCENE}")).is_ok() {
+        return Ok(());
+    }
+    let lights: Vec<LockdownLight> =
+        serde_json::from_str(&ha.template(LOCKDOWN_LIGHTS_TEMPLATE)?).context("parsing the lights")?;
+    let all: Vec<&str> = lights.iter().map(|l| l.id.as_str()).collect();
+    ha.service("scene", "create", json!({ "scene_id": PARTY_SCENE, "snapshot_entities": all }))?;
+    Ok(())
+}
+
+/// The lights as they were before party mode; false when there was no snapshot.
+pub fn party_restore(ha: &HomeAssistant) -> Result<bool> {
+    let scene = format!("scene.{PARTY_SCENE}");
+    if ha.state(&scene).is_err() {
+        return Ok(false);
+    }
+    ha.service("scene", "turn_on", json!({ "entity_id": scene }))?;
+    ha.service("scene", "delete", json!({ "entity_id": scene }))?;
+    Ok(true)
+}
+
 /// A lockdown's snapshot exists. It outlives an engine restart, not a Home Assistant one.
 fn locked_down(ha: &HomeAssistant) -> bool {
     ha.state(&format!("scene.{LOCKDOWN_SCENE}")).is_ok()

@@ -43,6 +43,11 @@ jobs:
           # Pull requests read main's cache but cannot share their own with other branches.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # sherpa-onnx-sys reuses this directory when it exists, and the restored cache can hold it
+      # without the library: a rebuild then fails to link. Cached builds have the library in their rlib.
+      - name: Drop sherpa-onnx's download cache
+        run: rm -rf target/sherpa-onnx-prebuilt
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 

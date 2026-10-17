@@ -18,6 +18,7 @@ Guidance for coding agents (Claude Code and others) working in this repository.
 | Language model accuracy and latency | `cargo run --release -p voice-assistant --example llm_eval -- http://127.0.0.1:11434/v1 qwen3-voice:4b-instruct` |
 | Wake word scores of recordings | `cargo run --release -p voice-assistant --example wake_score -- hey_jarvis target/utterances/run-*.wav` |
 | What Parakeet hears in each wake word | `cargo run --release -p voice-assistant --example wake_text -- hey_jarvis target/utterances/run-*.wav` |
+| Party mode from the Mac's microphone | `set -a; . ./.env; set +a; cargo run --release -p voice-engine --example party -- normal 60` (or `fast`) |
 | Container image | `docker build .` |
 
 ## Layout
