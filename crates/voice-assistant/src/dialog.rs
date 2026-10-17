@@ -103,6 +103,7 @@ pub fn normalize(word: &str) -> String {
 /// also match common words. For Freya, "fredag" (Friday) and "fela" (fiddle) are close
 /// mishearings but everyday Norwegian, so they are left out; for Homie, so is "home".
 const SPELLINGS: &[(&str, &[&str])] = &[
+    ("jarvis", &["jarvis", "jarvis's", "jarvis'", "jarris", "jervis", "jarvus", "jarviss", "jarves", "javis"]),
     ("homie", &["homie", "homies", "homie's", "homey", "homy", "homi", "hommie", "homee", "homeie"]),
     (
         "freya",
@@ -199,6 +200,16 @@ pub fn is_greeting(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Parakeet on the living room Voice PE's wake words (`examples/wake_text.rs`).
+    #[test]
+    fn hears_jarvis_as_parakeet_writes_it() {
+        let wake = WakeWord::new("Jarvis");
+        for heard in ["Hey Jarvis.", "Hey Jarris.", "Hey Jervis.", "Kate Jarvis.", "Hey, Jarvis, play.", "heyjarvis"] {
+            assert!(heard.split_whitespace().any(|w| wake.matches(&normalize(w))), "{heard}");
+        }
+        assert!(!"That's my parents.".split_whitespace().any(|w| wake.matches(&normalize(w))));
+    }
 
     fn words(text: &str) -> Vec<String> {
         text.split_whitespace().map(str::to_owned).collect()

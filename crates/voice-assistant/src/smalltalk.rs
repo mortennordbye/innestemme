@@ -73,8 +73,10 @@ const PHRASES: &[(Chat, &[&str])] = &[
 /// Longer requests are real questions that merely start like small talk ("how are the lights").
 const MAX_WORDS: usize = 7;
 /// Words that may follow a phrase without changing it ("how are you doing today, Jarvis").
-const TRAILING: &[&str] =
-    &["today", "tonight", "this", "morning", "evening", "then", "now", "mate", "buddy", "i", "dag", "kveld"];
+const TRAILING: &[&str] = &[
+    "today", "tonight", "this", "morning", "evening", "then", "now", "mate", "buddy", "guys", "everyone", "i", "dag",
+    "kveld",
+];
 
 /// The kind of small talk in `words` (normalized, without the wake word), if that is all it is.
 pub fn parse(words: &[String]) -> Option<Chat> {

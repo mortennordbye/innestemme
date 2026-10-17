@@ -17,6 +17,7 @@ Guidance for coding agents (Claude Code and others) working in this repository.
 | One home request without audio | `cargo run -p voice-assistant --example home -- "what's on the shopping list"` |
 | Language model accuracy and latency | `cargo run --release -p voice-assistant --example llm_eval -- http://127.0.0.1:11434/v1 qwen3-voice:4b-instruct` |
 | Wake word scores of recordings | `cargo run --release -p voice-assistant --example wake_score -- hey_jarvis target/utterances/run-*.wav` |
+| What Parakeet hears in each wake word | `cargo run --release -p voice-assistant --example wake_text -- hey_jarvis target/utterances/run-*.wav` |
 | Container image | `docker build .` |
 
 ## Layout
