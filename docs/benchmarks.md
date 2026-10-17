@@ -167,3 +167,29 @@ on the Mac, first audio 0.2 to 0.4 ms after transcription for weather, a joke an
 sane text; `3/10` took 160 to 607 ms and turned one request into "What are you doing?" repeated, another into
 "BELL", and "today" into "tonight"; `2/0` changed four of five. The full window is the default since then.
 
+
+## Speech to text on the Voice PE's utterances, 2026-10-17
+
+156 utterances the engine cut from the living room Voice PE (`target/utterances/utterance-*.wav`, 23 min),
+4 CPU threads on an M4 Pro. Reference: whisper-large-v3-turbo (mlx, Metal). "Same intent": of the 94
+utterances whose reference parses to a request, how many parse to the identical intent (light and scene
+targets compare the raw text, so this undercounts for every system alike). Others with
+`examples/stt_eval.rs` (the engine's Whisper) and sherpa-onnx 1.13 (int8 models); scored with `examples/stt_score.rs`.
+
+| System | WER | Same intent | Median | p90 |
+|---|---|---|---|---|
+| whisper-base, candle f32, full window (the engine today) | 58% | 58/94 (62%) | 558 ms | 632 ms |
+| whisper-base, sherpa-onnx int8 | 51% | 61/94 (65%) | 90 ms | 146 ms |
+| moonshine-tiny | 77% | 30/94 (32%) | 13 ms | 32 ms |
+| moonshine-base | 64% | 36/94 (38%) | 21 ms | 39 ms |
+| parakeet-tdt-0.6b-v2 | 43% | 67/94 (71%) | 70 ms | 151 ms |
+| zipformer streaming en 2023-06-26 (after the last frame) | 73% | 38/94 (40%) | 7 ms | 8 ms |
+
+- The cluster's engine takes 3.3 s median for the same Whisper (the logs, 63 utterances), about 6x the Mac;
+  at that ratio Parakeet would take about 0.4 s there.
+- Parakeet's errors against the reference are partly the reference's: it heard "Pause the music", "Tell me
+  a joke" and "next bus to Majorstua" where large-v3-turbo wrote "Pulse the music", "The mid-joke" and "next
+  best to Majora". On room noise it returns nothing, where the engine's Whisper writes whole sentences ("I'm
+  going to play a little bit more"). It writes numbers as words ("thirty percent").
+- Moonshine returns nothing for many of these recordings (its own test file works; the level is not the cause).
+- The streaming zipformer keeps up easily (real-time factor 0.02) but is the least accurate after Moonshine.
