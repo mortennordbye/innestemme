@@ -40,7 +40,7 @@ use voice_assistant::tts::{self, Tts};
 use voice_assistant::tv::{self, Tv, TvCommand};
 use voice_assistant::vad::{self, Vad};
 use voice_assistant::weather::Weather;
-use voice_assistant::whisper::{Transcriber, Transcript};
+use voice_assistant::whisper::{Transcribe, Transcript};
 use voice_proto::{FRAME_SAMPLES, SAMPLE_RATE};
 use voice_rt::noalloc::permit_alloc;
 
@@ -146,7 +146,8 @@ pub struct AssistantConfig {
 }
 
 pub enum Listener {
-    Whisper(Box<Transcriber>),
+    /// Whisper or Parakeet, one call per utterance the energy detector cuts.
+    Utterances(Box<dyn Transcribe>),
     Kyutai(Box<SpeechToText>),
 }
 
@@ -320,7 +321,7 @@ pub struct AssistantProcessor {
 impl AssistantProcessor {
     pub fn new(listener: Listener, tts: Box<dyn Tts>, config: AssistantConfig) -> anyhow::Result<Self> {
         let (ear, transcriber) = match listener {
-            Listener::Whisper(transcriber) => (Ear::Vad(Vad::default()), Some(transcriber)),
+            Listener::Utterances(transcriber) => (Ear::Vad(Vad::default()), Some(transcriber)),
             Listener::Kyutai(mut stt) => {
                 // The first steps compile GPU kernels or fault in the weights.
                 let start = Instant::now();
@@ -720,7 +721,7 @@ struct Worker {
     home_assistant: Option<HomeAssistant>,
     player: Player,
     tv: Tv,
-    transcriber: Option<Box<Transcriber>>,
+    transcriber: Option<Box<dyn Transcribe>>,
     /// The latest draft and its transcripts.
     draft: Option<(Vec<i16>, Vec<Transcript>)>,
     /// Until then, speech counts without the name: after a bare name, and for a while after each

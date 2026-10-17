@@ -52,7 +52,7 @@ Piper (Norwegian). The audio path does no heap allocation after startup, and eve
 | `voice-rt` | Real-time plumbing: reorder buffer, atomic histogram, allocation guard, pinned threads. |
 | `voice-codec` | Packet codec (raw PCM) and `MimiCodec` over `moshi` / candle. |
 | `voice-engine` | The server: UDP transport, net task and model thread joined by lock-free rings, `/metrics`. |
-| `voice-assistant` | Assistant parts: Whisper and Kyutai STT, wake word and turn logic, intent rules, the language model client, skills (Home Assistant lights, scenes, shopping list, TV, phones, house status and routines, safety alerts, Music Assistant, timers, Yr, Entur, electricity prices), Pocket TTS and Piper output. |
+| `voice-assistant` | Assistant parts: Whisper, Parakeet and Kyutai STT, wake word and turn logic, intent rules, the language model client, skills (Home Assistant lights, scenes, shopping list, TV, phones, house status and routines, safety alerts, Music Assistant, timers, Yr, Entur, electricity prices), Pocket TTS and Piper output. |
 | `voice-esphome` | ESPHome native API client (plaintext and Noise), so the engine can serve a Voice PE instead of Home Assistant's Assist. |
 | `voice-client` | Test client: tone, wav file or live microphone. Reports frame turnaround and mouth-to-ear. |
 | `voice-bench` | Per-frame step times for [docs/benchmarks.md](docs/benchmarks.md). |
@@ -122,7 +122,7 @@ gets "Which room?" and the next answer is the room. "Thanks" gets "You're welcom
 
 Options for `make assistant`: `VOICE=cosette` (Pocket TTS preset, the default; others: alba, fantine, eponine, azelma, marius, javert, jean),
 `POCKET_PRECISION=f32|q8`, `THREADS=3`, `ENGLISH_TTS=pocket|say`, `NORWEGIAN=false|true`,
-`LISTENER=whisper|kyutai`, `WHISPER=base|small`
+`LISTENER=whisper|parakeet|kyutai`, `WHISPER=base|small`
 (small is more accurate, a 970 MB download on first use), `HOME_PLACE=Oslo`
 (for questions that name no place), `SAY_VOICE=...`, `SAY_VOICE_NO=Nora`, `SECONDS_LIVE=600`. It runs
 `voice-engine --processor assistant --stt-gpu` in the background and `voice-client` on the microphone in the
@@ -193,6 +193,11 @@ real time on 3 threads (f32) and 10x with `q8`, first audio 25-45 ms after the t
 Language ID plus transcription takes about 0.2-0.3 s per utterance on the M4 Pro GPU, and the first reply audio
 starts about 1 s after you stop talking in English: 0.64 s end-of-speech wait, about 0.3 s transcription, the
 weather lookup (0.1-0.4 s), and a few tens of milliseconds for the first Pocket TTS audio.
+
+`LISTENER=parakeet` uses NVIDIA Parakeet TDT 0.6B v2 (int8, through sherpa-onnx) instead of Whisper: English
+only, per utterance like Whisper, and on the Voice PE's own recordings about 8x faster than whisper-base on a CPU
+and more accurate; on room noise it returns nothing where Whisper writes sentences. Numbers it writes as words
+become digits. Measurements in `docs/benchmarks.md`.
 
 `LISTENER=kyutai` uses Kyutai STT-1B instead: streaming, English only (it hears nothing useful in Norwegian),
 lower latency, 2 GB of weights. It runs at about 20 ms per 80 ms frame on the M4 Pro GPU and 89 ms on its CPU,
