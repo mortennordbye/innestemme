@@ -222,3 +222,35 @@ seven, two or three were the TV ("That's my parents.") and three or four were re
 without the name ("Hey Joe's, what's the time today?", "Stop the music."). So the check is no gate
 for requests (it would drop about one real wake in twenty); it only decides whether an unrecognised
 request gets "didn't catch that" or silence.
+
+## Answer latency against a fake Home Assistant, 2026-10-18
+
+`scripts/latency-bench`: eight requests, each a real "Hey Jarvis" from a Voice PE recording followed by a
+macOS voice, played by the fake satellite to an engine on the Mac (cluster settings, Kokoro in Docker). Home
+Assistant is a stand-in that reads from the real one and answers each service call after as long as the
+cluster's log shows it taking (a Hue light call 0.6-0.65 s, a phone notification 0.35 s), without making
+it. End of speech to the first answer audio (`spoken ... after_speech`), median of rounds 2-4 (round 1
+renders what the seed cache lacked):
+
+| Request | main (999724d) | Home Assistant calls queued, more early drafts |
+|---|---|---|
+| Turn off the kitchen lights. | 1250 ms | 240 ms |
+| Initiate lockdown. | 1999 ms | 268 ms |
+| Stand down. | 686 ms | 285 ms |
+| Where is my phone? | 1037 ms | 273 ms |
+| Put the weather on the TV. | 640 ms | 240 ms |
+| What's the temperature in the living room? | 656 ms | 254 ms |
+| Set a timer for five minutes. | 240 ms | 240 ms |
+| Good night. | 1312 ms | 294 ms |
+
+- Writes that nothing waits on (lights, scenes, the phone's ring, pausing and resuming music) go to a queue
+  on a thread of their own, in order; a failure is said afterwards ("Sorry, I couldn't reach Home
+  Assistant."). Both builds made the same calls in the same order.
+- Complete requests act at the 0.24 s pause: lights with what they switch said last, a level or colour,
+  the TV screens, finding the phone, a room's temperature, the routines and party mode.
+- Each sentence's opening silence (50-90 ms from Kokoro) is cut to 10 ms; this is not in the numbers above,
+  which end at the first audio sent.
+- Ending an utterance after 0.48 s of quiet instead of 0.64 s was measured and left out: 23 of the 156
+  recorded utterances (15%) hold a pause of 0.48-0.56 s, which would cut them in two.
+- The Mac is faster than the cluster's CPU, but none of these steps is CPU bound; the Sonos still adds about
+  0.4 s before the answer is heard.

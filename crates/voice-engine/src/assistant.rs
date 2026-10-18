@@ -98,6 +98,10 @@ const ALARM_LONGEST: Duration = Duration::from_secs(30 * 60);
 const SCREEN_MOMENT: Duration = Duration::from_secs(25);
 /// How long bedtime keeps a power-cycled plug off: long enough for the lights behind it to lose power.
 const POWER_CYCLE_OFF: Duration = Duration::from_secs(3);
+/// Where a sentence's speech starts (about -38 dBFS, above Kokoro's noise floor), and how much before
+/// that is kept (10 ms).
+const SPEECH_ONSET: u16 = 400;
+const ONSET_LEAD: usize = SAMPLE_RATE as usize / 100;
 
 pub struct AssistantConfig {
     /// Place used when a weather question names none; also the home's name in answers.
@@ -317,6 +321,8 @@ enum Job {
     Preview(String, tokio::sync::oneshot::Sender<Preview>),
     /// A safety sensor went off: speak this warning.
     Alert(String),
+    /// A Home Assistant call the answer did not wait for failed: say so.
+    Failed(String),
 }
 
 pub struct AssistantProcessor {
@@ -461,6 +467,15 @@ impl AssistantProcessor {
         }
         if let Some((url, token)) = &worker.config.home_assistant {
             let mut ha = HomeAssistant::new(url, token);
+            // Once for the calls of one request: a lockdown makes three.
+            let (failed, last) = (jobs.clone(), std::sync::Mutex::new(None::<Instant>));
+            ha.write_behind(move |_| {
+                let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+                if last.is_none_or(|at| at.elapsed() > Duration::from_secs(10)) {
+                    *last = Some(Instant::now());
+                    let _ = failed.send(Job::Failed("Sorry, I couldn't reach Home Assistant.".into()));
+                }
+            })?;
             match ha.check() {
                 Ok(lights) => info!(url, lights, "home assistant connected"),
                 Err(error) => {
@@ -472,6 +487,11 @@ impl AssistantProcessor {
                 Err(error) => warn!(%error, "music assistant not usable; music requests will fail"),
             }
             worker.home_assistant = Some(ha);
+            if worker.config.prerender {
+                let home = worker.home_sentences();
+                info!(sentences = home.len(), "rendering this home's answers ahead");
+                worker.prerender.extend(home);
+            }
         }
         if let Some((url, token)) = worker.config.home_assistant.clone().filter(|_| worker.config.alerts) {
             let jobs = jobs.clone();
@@ -496,7 +516,7 @@ impl AssistantProcessor {
         if let Some(t) = &mut worker.transcriber {
             let start = Instant::now();
             t.transcribe(&[0i16; FRAME_SAMPLES * 12])?;
-            info!(elapsed = ?start.elapsed(), "whisper warmed up");
+            info!(elapsed = ?start.elapsed(), "listener warmed up");
         }
         std::thread::Builder::new().name("assistant".into()).spawn(move || worker.run(rx))?;
         let hear_now = Arc::new(AtomicBool::new(false));
@@ -689,6 +709,8 @@ impl Alarm {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let thread = std::thread::Builder::new().name("alarm".into()).spawn(move || {
+            // The lights go red on the write queue; a pulse before that would flash the old colours.
+            ha.flush();
             let start = Instant::now();
             let targets = house::alarm_targets(&ha, &red).unwrap_or_else(|error| {
                 warn!(error = format!("{error:#}"), "no Hue rooms for the lockdown; each light alone");
@@ -910,6 +932,7 @@ impl Worker {
                     info!(text, "safety alert");
                     self.announce(&text, tts::alarm_chime(), Lang::English, false);
                 }
+                Job::Failed(text) => self.announce(&text, Vec::new(), Lang::English, false),
                 Job::Ready => {
                     info!("ready");
                     (self.follow_up_until, self.last_lights, self.pending_lights) = (None, None, None);
@@ -1276,11 +1299,21 @@ impl Worker {
                 info!("answer interrupted");
                 break;
             }
+            let mut started = false;
             let mut sink = |pcm: &[i16]| {
                 // The rest of the sentence being synthesized when the answer was interrupted.
                 if interrupted.load(Relaxed) {
                     return;
                 }
+                // Kokoro opens each sentence with 50-90 ms of silence, heard as a slower answer.
+                let pcm = match started {
+                    true => pcm,
+                    false => match pcm.iter().position(|s| s.unsigned_abs() > SPEECH_ONSET) {
+                        Some(onset) => &pcm[onset.saturating_sub(ONSET_LEAD)..],
+                        None => return,
+                    },
+                };
+                started = true;
                 spoken.first.get_or_insert_with(Instant::now);
                 spoken.samples += pcm.len();
                 push(reply, pcm);
@@ -1360,7 +1393,8 @@ impl Worker {
             .chain(&["Okay, I'll leave it."])
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
             .chain(&["Okay, party mode is on.", "Okay, fast party mode is on.", "Okay, the party's over."])
-            .chain(house::LOCKDOWN_ANSWERS);
+            .chain(house::LOCKDOWN_ANSWERS)
+            .chain(house::ROUTINE_ANSWERS);
         match &self.persona {
             Some(persona) => texts.extend(answers.flat_map(|a| persona.forms(a))),
             None => texts.extend(answers.map(|a| a.to_string())),
@@ -1422,13 +1456,62 @@ impl Worker {
         sentences
     }
 
+    /// Answers about this home's own lights and rooms, which Home Assistant names: the first
+    /// "turn off the kitchen lights" would otherwise wait for its sentence to be synthesized.
+    fn home_sentences(&mut self) -> Vec<String> {
+        let Some(ha) = &mut self.home_assistant else { return Vec::new() };
+        let states = ["on", "off", "back on", "back off"];
+        let mut answers: Vec<String> =
+            ["I couldn't find that light.", "Sorry, I couldn't reach Home Assistant.", "Okay, I'm ringing your phone."]
+                .map(String::from)
+                .into();
+        if let Ok(lights) = ha.lights() {
+            let mut areas: Vec<String> =
+                lights.iter().map(|l| l.area.to_lowercase()).filter(|a| !a.is_empty()).collect();
+            areas.sort();
+            areas.dedup();
+            for area in &areas {
+                answers.extend(states.map(|state| format!("Okay, the {area} lights are {state}.")));
+            }
+            for light in lights.iter().filter(|l| !l.group) {
+                let name = light.name.to_lowercase();
+                answers.extend(states.map(|state| format!("Okay, the {name} is {state}.")));
+            }
+        }
+        // Indoor temperatures, the ones a home has most of the year.
+        if let Ok(rooms) = house::climate_readings(ha) {
+            for room in rooms.iter().filter(|r| r.temperature.is_some()) {
+                let area = room.area.to_lowercase();
+                answers.extend((15..=30).map(|t| format!("It's {t} degrees in the {area}.")));
+            }
+        }
+        let mut sentences: Vec<String> = answers
+            .iter()
+            .flat_map(|a| match &self.persona {
+                Some(persona) => persona.forms(a),
+                None => vec![a.clone()],
+            })
+            .flat_map(|t| {
+                t.split_inclusive(['.', '?', '!'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|s| voice_assistant::speech_cache::CachedTts::cacheable(s))
+            .collect();
+        sentences.sort();
+        sentences.dedup();
+        sentences
+    }
+
     /// Renders one sentence ahead of time while nothing else is going on.
     fn render_ahead(&mut self) {
         let Some(sentence) = self.prerender.pop_front() else {
             return;
         };
         let start = Instant::now();
-        if let Err(error) = self.tts.speak(&sentence, Lang::English, &mut |_| {}) {
+        if let Err(error) = self.tts.render(&sentence, Lang::English) {
             warn!(%error, sentence, "could not render ahead");
         }
         self.render_after = Some(Instant::now() + start.elapsed());
@@ -1787,8 +1870,8 @@ impl Worker {
             Ok(red) => {
                 info!(red = red.len(), "lockdown");
                 let blinking = self.alarm.as_ref().is_some_and(|a| !a.thread.is_finished());
-                if let (false, false, Some((url, token))) = (blinking, red.is_empty(), &self.config.home_assistant) {
-                    match Alarm::start(HomeAssistant::new(url, token), red) {
+                if !blinking && !red.is_empty() {
+                    match Alarm::start(ha.detached(), red) {
                         Ok(alarm) => self.alarm = Some(alarm),
                         Err(error) => warn!(%error, "could not start the lockdown's blink"),
                     }
@@ -2624,7 +2707,7 @@ impl Worker {
             return;
         }
         let ids: Vec<&str> = players.iter().map(|p| p.id.as_str()).collect();
-        if let Err(error) = ha.service("media_player", "media_pause", serde_json::json!({ "entity_id": ids })) {
+        if let Err(error) = ha.send("media_player", "media_pause", serde_json::json!({ "entity_id": ids })) {
             return warn!(error = format!("{error:#}"), "could not pause the music");
         }
         info!(players = ?ids, "music paused for a request");
@@ -2651,7 +2734,7 @@ impl Worker {
         if ids.is_empty() {
             return;
         }
-        match ha.service("media_player", "media_play", serde_json::json!({ "entity_id": ids })) {
+        match ha.send("media_player", "media_play", serde_json::json!({ "entity_id": ids })) {
             Ok(()) => info!(players = ?ids, "music resumed after a request"),
             Err(error) => warn!(error = format!("{error:#}"), "could not resume the music"),
         }
@@ -2880,7 +2963,7 @@ fn routine_answer(
                         "brightness_pct": config.bedtime_light,
                         "color_temp_kelvin": BEDTIME_KELVIN,
                     });
-                    ha.service("light", "turn_on", data)?;
+                    ha.send("light", "turn_on", data)?;
                     parts.push(
                         if no { "Lyset på soverommet er dempet." } else { "The bedroom lights are dimmed." }.into(),
                     );
@@ -3117,6 +3200,25 @@ fn players_to_hush(players: Vec<Playing>, music: &[String]) -> Vec<Playing> {
 /// resume: "play" is also the start of "play Careless Whisper"; not louder or quieter: "increase
 /// the sound" may go on "by 25%".
 fn complete_at_once(intent: &Intent) -> bool {
+    match intent {
+        // "Turn off the kitchen lights", not "turn off the lights" (may go on "in the kitchen").
+        Intent::Lights { target, .. } => names_light_last(target),
+        // A level or colour ends the request; "dim the kitchen" may go on "to 30 percent".
+        Intent::LightLevel { level: LightLevel::Percent(_) | LightLevel::Color(_), target } => {
+            ha::names_something(target)
+        }
+        _ => complete_command(intent),
+    }
+}
+
+/// Whether a light request ends on what it switches: "the kitchen lights", "the kitchen".
+fn names_light_last(target: &str) -> bool {
+    let words: Vec<String> = target.split_whitespace().map(voice_assistant::dialog::normalize).collect();
+    let last = words.last().map(String::as_str).unwrap_or_default();
+    ha::names_something(target) && (["light", "lights", "lamp", "lamps"].contains(&last) || ha::names_only_room(&words))
+}
+
+fn complete_command(intent: &Intent) -> bool {
     matches!(
         intent,
         Intent::Cancel
@@ -3140,6 +3242,10 @@ fn complete_at_once(intent: &Intent) -> bool {
                     | TvCommand::Louder
                     | TvCommand::Quieter
             )
+            | Intent::Tv(TvCommand::Show(_))
+            | Intent::House(HouseCommand::FindPhone(_) | HouseCommand::Climate(house::Indoors::Room(_), _))
+            | Intent::Routine(_)
+            | Intent::Party(_)
             | Intent::Time
             | Intent::Thanks
             | Intent::Joke
@@ -3406,6 +3512,17 @@ mod tests {
         assert!(complete_at_once(&parse("what time is it")));
         assert!(!complete_at_once(&parse("turn off the lights")));
         assert!(!complete_at_once(&parse("play")));
+        assert!(complete_at_once(&parse("turn off the kitchen lights")));
+        assert!(complete_at_once(&parse("turn on the kitchen")));
+        assert!(!complete_at_once(&parse("turn on the lights in")));
+        assert!(complete_at_once(&parse("set the living room to 30 percent")));
+        assert!(!complete_at_once(&parse("dim the living room")));
+        assert!(complete_at_once(&parse("put the weather on the tv")));
+        assert!(complete_at_once(&parse("where is my phone")));
+        assert!(complete_at_once(&parse("what's the temperature in the bedroom")));
+        assert!(!complete_at_once(&parse("what's the temperature")));
+        assert!(complete_at_once(&parse("good night")));
+        assert!(complete_at_once(&parse("initiate lockdown")));
     }
 
     #[test]

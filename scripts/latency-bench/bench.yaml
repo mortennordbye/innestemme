@@ -1,0 +1,21 @@
+# Latency bench (scripts/latency-bench/run.sh): the cluster's settings, against the fake satellite and
+# the fake Home Assistant.
+processor: assistant
+bind: 127.0.0.1:7100
+metrics-bind: 127.0.0.1:9190
+public-url: http://127.0.0.1:9190
+threads: 4
+wake-name: Jarvis
+honorific: sir
+home: Oslo
+norwegian: false
+english-tts: kokoro
+kokoro-url: http://127.0.0.1:8880
+kokoro-voice: am_onyx
+listener: parakeet
+ha-url: http://127.0.0.1:18123
+speaker: Living Room
+home-room: Living Room
+satellite: 127.0.0.1:16053
+wake-model: hey_jarvis
+wake-threshold: 0.65
