@@ -1,5 +1,6 @@
 //! UDP audio server: reorder, decode, hand 80 ms frames to a pinned model thread, send the result back.
 
+pub mod activity;
 pub mod assistant;
 pub mod engine;
 pub mod hub;

@@ -66,8 +66,12 @@ does, so the engine takes the device's microphone in place of Assist. Answers ar
 (`/speech/<id>.wav`), streamed while they are synthesized; with `answer-player` Home Assistant announces them on
 another media player. Timers count down on the Voice PE's LED ring through the ESPHome timer events.
 
-**Screens.** `web: true` serves on the metrics port: `/` (rooms, music, timers, alerts and the skill map),
-`/hub` (a wall tablet's face) and `/tv` (the screen "show the weather on the TV" opens in the TV's browser).
+**Screens.** `web: true` serves on the metrics port: `/` with four tabs (Home: the face, rooms, what is
+playing, timers, the shopping list, the latest requests and today's numbers; Map: every skill and a box that
+shows how a phrase is understood; Log: what no skill handled; System: version, models, connections, the speech
+cache and response times), `/hub` (the same page) and `/tv` (the screen "show the weather on the TV" opens in
+the TV's browser). `/api/activity` has the requests since the start (in memory, about a day's worth) with
+what was heard and answered, the skill and the time to the first answer audio.
 
 **Real-time audio path.** The UDP transport, jitter buffer and model thread (`voice-proto`, `voice-rt`,
 `voice-engine`) do no heap allocation after start; `tests/loopback.rs` checks that under an allocator that aborts.

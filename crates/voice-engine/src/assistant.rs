@@ -42,6 +42,7 @@ use voice_assistant::whisper::{Transcribe, Transcript};
 use voice_proto::{FRAME_SAMPLES, SAMPLE_RATE};
 use voice_rt::noalloc::permit_alloc;
 
+use crate::activity::{self, Activity, Outcome};
 use crate::engine::{FrameProcessor, ProcessError};
 use crate::metrics::Metrics;
 use crate::party::{self, Party};
@@ -181,6 +182,8 @@ pub struct AssistantConfig {
     pub party: Party,
     /// Shopping list items written under their Norwegian names, and Whisper for items said alone.
     pub norwegian_groceries: Option<voice_assistant::norwegian::Norwegian>,
+    /// What was asked and answered lately, for the web page.
+    pub activity: Arc<Activity>,
 }
 
 /// What the assistant is doing, for satellites that show it (listening lights, speech URLs).
@@ -252,6 +255,7 @@ pub struct AssistantHandle {
     pub pause: Arc<Pause>,
     pub screen: Arc<Screen>,
     pub party: Party,
+    pub activity: Arc<Activity>,
 }
 
 impl AssistantHandle {
@@ -350,6 +354,7 @@ pub struct AssistantProcessor {
     pause: Arc<Pause>,
     screen: Arc<Screen>,
     party: Party,
+    activity: Arc<Activity>,
     was_busy: bool,
     frame: u64,
     deaf_until: u64,
@@ -365,6 +370,7 @@ impl AssistantProcessor {
         let pause = Arc::new(Pause::default());
         let screen = Arc::new(Screen::default());
         let party = config.party.clone();
+        let activity = config.activity.clone();
         let speaker = config.speaker.clone();
         let tv = Tv::new(config.tv.clone());
         let (events, _) = broadcast::channel(256);
@@ -448,6 +454,7 @@ impl AssistantProcessor {
             last_list: None,
             list_open: None,
             request_audio: Vec::new(),
+            turn: None,
             pending_scene: None,
             pending_confirm: None,
             timers: Timers::default(),
@@ -535,6 +542,7 @@ impl AssistantProcessor {
             pause,
             screen,
             party,
+            activity,
             was_busy: false,
             frame: 0,
             deaf_until: 0,
@@ -550,6 +558,7 @@ impl AssistantProcessor {
             pause: self.pause.clone(),
             screen: self.screen.clone(),
             party: self.party.clone(),
+            activity: self.activity.clone(),
         }
     }
 }
@@ -777,6 +786,8 @@ struct Worker {
     list_open: Option<Instant>,
     /// The audio of the request being answered, for a second listener (Norwegian items).
     request_audio: Vec<i16>,
+    /// The request being answered, recorded in `activity` once its answer is out.
+    turn: Option<activity::Turn>,
     /// A scene request that exists in several rooms: the next answer is the room.
     pending_scene: Option<String>,
     /// A camera or alarm change waiting for "yes": a misheard request must not switch them.
@@ -1149,6 +1160,7 @@ impl Worker {
             "Sorry, I didn't catch that."
         };
         self.unhandled(Reason::NotUnderstood, text, Some(answer));
+        self.turn = Some(self.turn_for(text, Some(answer.to_owned()), Outcome::NotUnderstood, start));
         self.busy.store(true, Relaxed);
         self.emit(AssistantEvent::Heard { text: text.to_owned() });
         // The music stays paused for a second try; it plays on if none comes.
@@ -1200,6 +1212,9 @@ impl Worker {
         let failed = ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s));
         if !failed && intent::split_commands(text).is_none() && heard_by_itself(&intent::parse(text)) {
             info!(request = text, answer, after = ?start.elapsed(), "done without words");
+            let after_ms = self.speech_ended.take().map(|ended| ended.elapsed().as_millis() as u64);
+            let turn = self.turn_for(text, Some(answer.clone()), Outcome::Done, start);
+            self.config.activity.record(activity::Turn { after_ms, ..turn });
             self.history.push_back((Instant::now(), Turn { user: text.to_owned(), assistant: answer }));
             self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
             self.emit(AssistantEvent::Done);
@@ -1209,6 +1224,7 @@ impl Worker {
             return;
         }
         info!(request = text, answer, ?lang, after = ?start.elapsed(), "answering");
+        self.turn = Some(self.turn_for(text, Some(answer.clone()), Outcome::Answered, start));
         // The rules' own fallback, or a skill that could not do it ("Sorry, I couldn't find ...").
         let fallback = ["Sorry, I can't help with that yet.", "Beklager, det kan jeg ikke hjelpe med ennå."];
         if fallback.iter().any(|f| answer.starts_with(f)) {
@@ -1294,6 +1310,18 @@ impl Worker {
         }
     }
 
+    fn turn_for(&self, heard: &str, answer: Option<String>, outcome: Outcome, start: Instant) -> activity::Turn {
+        activity::Turn {
+            at: activity::now(),
+            heard: heard.to_owned(),
+            answer,
+            skill: voice_assistant::catalogue::skill_of(&intent::parse(heard)).map(|s| s.name),
+            outcome,
+            after_ms: None,
+            decide_ms: start.elapsed().as_millis() as u64,
+        }
+    }
+
     fn finish(&mut self, spoken: Spoken, start: Instant) {
         self.woken_at = None;
         self.live.clear();
@@ -1302,6 +1330,11 @@ impl Worker {
         let after_speech = self.speech_ended.take().zip(spoken.first).map(|(ended, first)| first - ended);
         let first_audio_after = spoken.first.map(|first| first - start);
         info!(?first_audio_after, ?after_speech, done_after = ?start.elapsed(), seconds, "spoken");
+        if let Some(turn) = self.turn.take() {
+            self.config
+                .activity
+                .record(activity::Turn { after_ms: after_speech.map(|d| d.as_millis() as u64), ..turn });
+        }
         self.emit(AssistantEvent::Spoken);
         // After the answer is queued: the speaker's announcement ducks the music under it.
         self.unhush();
