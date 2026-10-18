@@ -19,6 +19,7 @@ Guidance for coding agents (Claude Code and others) working in this repository.
 | Wake word scores of recordings | `cargo run --release -p voice-assistant --example wake_score -- hey_jarvis target/utterances/run-*.wav` |
 | What Parakeet hears in each wake word | `cargo run --release -p voice-assistant --example wake_text -- hey_jarvis target/utterances/run-*.wav` |
 | Party mode from the Mac's microphone | `set -a; . ./.env; set +a; cargo run --release -p voice-engine --example party -- normal 60` (or `fast`) |
+| Answer latency against `main` | `scripts/latency-bench/` (fake satellite and Home Assistant; steps in `docs/development.md`) |
 | Container image | `docker build .` |
 
 ## Layout
@@ -31,6 +32,8 @@ Guidance for coding agents (Claude Code and others) working in this repository.
 - `crates/voice-esphome/` — ESPHome native API client (plaintext and Noise)
 - `crates/voice-client/` — test client: tone, wav or live microphone
 - `crates/voice-bench/` — benchmark tool; results in `docs/benchmarks.md`
+- `docs/` — how it works, the Voice PE, deployment, development, benchmarks; the README is the overview. A change
+  that alters behaviour, a setting or a command updates the page that describes it.
 
 ## No AI traces
 

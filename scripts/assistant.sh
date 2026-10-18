@@ -33,8 +33,8 @@ bold=$'\e[1m' green=$'\e[32m' cyan=$'\e[36m' dim=$'\e[2m' yellow=$'\e[33m' reset
   ${CONFIG:+--config "$CONFIG"} \
   ${WAKE_NAME:+--wake-name "$WAKE_NAME"} ${SPEAKER:+--speaker "$SPEAKER"} ${NORWEGIAN:+--norwegian "$NORWEGIAN"} \
   ${LISTENER:+--listener "$LISTENER"} ${WHISPER:+--whisper-size "$WHISPER"} \
-  ${ENGLISH_TTS:+--english-tts "$ENGLISH_TTS"} ${VOICE:+--pocket-voice "$VOICE"} \
-  ${POCKET_PRECISION:+--pocket-precision "$POCKET_PRECISION"} ${THREADS:+--threads "$THREADS"} \
+  ${ENGLISH_TTS:+--english-tts "$ENGLISH_TTS"} ${KOKORO_VOICE:+--kokoro-voice "$KOKORO_VOICE"} \
+  ${THREADS:+--threads "$THREADS"} \
   ${DUMP:+--dump-utterances target/utterances} \
   ${HOME_PLACE:+--home "$HOME_PLACE"} ${SAY_VOICE:+--say-voice "$SAY_VOICE"} \
   ${SAY_VOICE_NO:+--say-voice-no "$SAY_VOICE_NO"} >"$LOG" 2>&1 &

@@ -1,17 +1,17 @@
 .PHONY: help tools setup build piper piper-stop kokoro ollama firmware firmware-flash assistant satellite log test lint
 
-# The assistant target runs STT on the Mac GPU; see README "Local voice assistant".
-FEATURES := voice-engine/metal,voice-bench/metal
+# The assistant target runs Whisper on the Mac GPU; see README "Local voice assistant".
+FEATURES := voice-engine/metal
 
 help:
-	@echo "make setup      build (release, Metal) and download the models (~550 MB, once)"
+	@echo "make setup      build (release, Metal) and download the models (once)"
 	@echo "                lights: put HA_URL and HA_TOKEN in .env (see README)"
 	@echo "make assistant  run the voice assistant on this Mac's microphone"
 	@echo "                settings: config.local.yaml (copy config.example.yaml); the options below override it"
-	@echo "                options: NORWEGIAN=false|true LISTENER=whisper|kyutai"
+	@echo "                options: NORWEGIAN=false|true LISTENER=parakeet|whisper"
 	@echo "                         WHISPER=base|small (small: more accurate, 970 MB download)"
-	@echo "                         VOICE=cosette (default) alba fantine eponine azelma marius javert jean"
-	@echo "                         POCKET_PRECISION=f32|q8 THREADS=3 ENGLISH_TTS=pocket|say"
+	@echo "                         ENGLISH_TTS=say|kokoro|piper (kokoro: make kokoro first) KOKORO_VOICE=am_onyx"
+	@echo "                         THREADS=3"
 	@echo "                         SPEAKER="Living Room" (Music Assistant player, for music)"
 	@echo "                         SECONDS_LIVE=600 HOME_PLACE=Oslo SAY_VOICE=Samantha SAY_VOICE_NO=Nora"
 	@echo "make satellite  be the voice assistant for a Voice PE from this Mac (config.satellite.yaml)"
@@ -29,7 +29,7 @@ tools:
 	@command -v say >/dev/null || { echo "macOS 'say' not found; the assistant needs macOS" >&2; exit 1; }
 
 setup: build
-	@echo "downloading and loading the models (NB-Whisper base, whisper-tiny, Pocket TTS)..."
+	@echo "downloading and loading the models (the listener, and the wake word when set)..."
 	./target/release/voice-engine --processor assistant --stt-gpu --download-only
 	@echo "setup done; run: make assistant"
 

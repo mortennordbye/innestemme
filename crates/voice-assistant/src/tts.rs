@@ -1,5 +1,5 @@
-//! Speech output: Pocket TTS for English (see `pocket.rs`), macOS `say` for Norwegian until a
-//! Norwegian model exists, and short chimes.
+//! Speech output: the engines behind one trait (Kokoro in `kokoro.rs`, Piper in `wyoming.rs`,
+//! macOS `say` here), one per language, and short chimes.
 
 use anyhow::{bail, Context, Result};
 use voice_proto::SAMPLE_RATE;
@@ -94,11 +94,6 @@ pub fn ready_chime() -> Vec<i16> {
 /// Two rising tones: the assistant heard its name and is listening.
 pub fn wake_chime() -> Vec<i16> {
     tones(&[(880.0, 0.09), (1320.0, 0.12)])
-}
-
-/// One falling tone: nothing was asked after the wake word.
-pub fn give_up_chime() -> Vec<i16> {
-    tones(&[(660.0, 0.08), (440.0, 0.14)])
 }
 
 /// A timer ran out: three bright double beeps, about two seconds.

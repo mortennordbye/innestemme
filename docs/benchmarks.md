@@ -1,4 +1,10 @@
-# Benchmarks (M0)
+# Benchmarks
+
+Every measurement so far, oldest first, each dated: what the choices in the engine rest on. What runs today is
+Parakeet for listening, Kokoro for speech and openWakeWord for the wake word; the Pocket TTS and Kyutai STT
+sections are kept as the reasons they were dropped. The latest: [answer latency](#answer-latency-against-a-fake-home-assistant-2026-10-18).
+
+## The audio path (M0)
 
 Per-frame step time of the speech stack. One frame is 80 ms of audio, so a stage keeps up with real time when its
 `whole frame` mean stays under 80 ms (RTF above 1). RTF is 80 ms divided by the mean.
@@ -6,7 +12,7 @@ Per-frame step time of the speech stack. One frame is 80 ms of audio, so a stage
 Decision D1 depends on the hyper1 rows, which are still missing. The Mac rows are only a sanity reference: Apple
 Silicon has several times the memory bandwidth of the x86 hosts and runs candle's NEON kernels, not AVX2.
 
-## Results
+### Results
 
 | host | cpu | threads | simd | stage | frames | mean ms | p50 ms | p99 ms | max ms | RTF |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -25,7 +31,7 @@ Still to measure:
 - hyper1, Moshi 7B q8. Expected 220 to 330 ms per step, which would confirm that it is ruled out.
 - hyper1, LFM2.5-Audio-1.5B through its x64 runner. `voice-bench` does not cover this; it needs the vendor runner.
 
-## Running it
+### Running it
 
 ```
 cargo build --release -p voice-bench
@@ -38,7 +44,7 @@ signal with a 24 kHz mono 16-bit file. Weights come from the Hugging Face cache 
 about 385 MB for Mimi, about 8 GB for Moshi q8, which also needs roughly 10 GB of RAM. `--mimi-model` and
 `--moshi-model` take local paths instead.
 
-### On hyper1
+#### On hyper1
 
 A one-off Job, pinned to hyper1 and sized like the planned pod. It is a manual debugging run, not part of the
 GitOps tree: create it, read the rows from the log, delete it. Replace the tag with a real CI build.
@@ -91,7 +97,9 @@ On x86 the `simd` column must show `avx`. If it shows `scalar`, the binary was b
 The `--bench moshi` path compiles but has not been executed yet. The development Mac did not have the disk space
 for the weights.
 
-## Kyutai STT-1B (assistant), Mac only so far
+## Kyutai STT-1B (assistant), Mac only
+
+Removed on 2026-10-18 (slower than real time on a CPU; Parakeet replaced it), and `--bench stt` with it.
 
 `voice-bench --bench stt --wav-in <spoken wav>` times one streaming step (its own 32-codebook Mimi encode plus the
 1B LM) and prints the transcript on stderr. Local numbers from 2026-09-23. The homelab CPUs are slower than
@@ -107,7 +115,9 @@ this Mac, so these rows are an upper bound, not a prediction for hyper1.
 More threads do not help on the CPU. The weights load as f32 (bf16 on disk), so every step reads about 4 GB, and
 memory bandwidth is the likely limit. Quantized weights are the first thing to try for the cluster.
 
-## Kyutai Pocket TTS (assistant's English voice), Mac only so far
+## Kyutai Pocket TTS (assistant's English voice), Mac only
+
+Removed on 2026-10-18 (Kokoro replaced it on 2026-10-10), and `--bench pocket` with it.
 
 `voice-bench --bench pocket --precision f32|q8 --threads N --frames 5`: a two-sentence reply (8.5 s of audio),
 5 runs after a warm-up, voice "alba". "first audio" is from the call to the first 80 ms chunk; RTF columns are
