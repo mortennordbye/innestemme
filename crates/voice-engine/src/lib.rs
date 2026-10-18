@@ -8,6 +8,7 @@ pub mod hub;
 pub mod metrics;
 pub mod party;
 pub mod pipeline;
+pub mod render;
 pub mod satellite;
 pub mod screen;
 pub mod settings;

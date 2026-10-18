@@ -177,7 +177,16 @@ impl Tts for CachedTts {
         self.inner.speak(text, lang, sink)
     }
 
+    /// Without reading back what is kept already: rendering ahead goes through every sentence after
+    /// each start, and only the ones spoken need to be in memory.
     fn render(&mut self, text: &str, lang: Lang) -> Result<()> {
+        let text = text.trim();
+        if lang != Lang::English || !Self::cacheable(text) || self.memory.contains_key(text) {
+            return Ok(());
+        }
+        if self.path(text).is_some_and(|path| path.exists()) {
+            return Ok(());
+        }
         self.cached(text, lang, true, &mut |_| {})
     }
 }
@@ -255,6 +264,14 @@ mod tests {
         let mut again = CachedTts::new(Box::new(Counting(calls.clone())), Some(dir.clone()));
         assert_eq!(heard(&mut again, "Very good, sir."), 15);
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 4);
+        // A second voice on the same folder renders ahead what the first one then plays, and
+        // what is kept already is not rendered again.
+        let mut renderer = CachedTts::new(Box::new(Counting(calls.clone())), Some(dir.clone()));
+        renderer.render("Very good, sir.", Lang::English).unwrap();
+        renderer.render("At once, sir.", Lang::English).unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 5);
+        assert_eq!(heard(&mut again, "At once, sir."), 13);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 5);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -46,6 +46,7 @@ use crate::activity::{self, Activity, Outcome};
 use crate::engine::{FrameProcessor, ProcessError};
 use crate::metrics::Metrics;
 use crate::party::{self, Party};
+use crate::render::{Priority, RenderAhead};
 use crate::screen::Screen;
 use crate::unhandled::{Reason, UnhandledLog};
 
@@ -79,6 +80,14 @@ const ANSWER_START: Duration = Duration::from_millis(1500);
 /// word ("Oh", "What?"), not the request. A longer one is the name and the request in one breath.
 const WAKE_TAIL: Duration = Duration::from_millis(500);
 const WAKE_TAIL_LONGEST: Duration = Duration::from_millis(1600);
+/// Questions answered from the forecast and prices fetched ahead, rendered after each refresh.
+const DATA_QUESTIONS: &[&str] = &[
+    "What's the weather?",
+    "What's the weather tomorrow?",
+    "What's the electricity price now?",
+    "When is electricity cheapest today?",
+    "When is electricity cheapest tomorrow?",
+];
 /// Unrecognised speech after a wake longer than this many words gets no "didn't catch that".
 const LONGEST_REQUEST_WORDS: usize = 12;
 /// How often Home Assistant's safety sensors are checked.
@@ -153,9 +162,9 @@ pub struct AssistantConfig {
     pub room: Option<String>,
     /// English answers in a butler's words, addressing the user this way ("sir").
     pub honorific: Option<String>,
-    /// Speech is kept once rendered: fixed sentences are rendered ahead of time, and slow answers
-    /// open with a lead-in.
-    pub prerender: bool,
+    /// Speech is kept once rendered: fixed sentences are rendered ahead of time by this voice, on a
+    /// thread of its own, and slow answers open with a lead-in.
+    pub renderer: Option<Box<dyn Tts>>,
     /// Directory for a wav of every utterance (debugging recognition).
     pub dump_utterances: Option<std::path::PathBuf>,
     /// Where requests that no skill handled are logged.
@@ -469,7 +478,7 @@ impl AssistantProcessor {
             pending_confirm: None,
             timers: Timers::default(),
             persona: None,
-            prerender: VecDeque::new(),
+            render: None,
             lead_turn: 0,
             chat_turn: 0,
             last_audio: None,
@@ -478,15 +487,18 @@ impl AssistantProcessor {
             lockdown_volume: None,
             after_answer: None,
             after_answer_at: None,
-            render_after: None,
             alarm: None,
             refreshed: None,
         };
         worker.room = worker.config.room.clone();
         worker.persona = worker.config.honorific.as_deref().map(Persona::new);
-        if worker.config.prerender {
-            worker.prerender = worker.fixed_sentences().into();
-            info!(sentences = worker.prerender.len(), "rendering speech ahead");
+        if let Some(renderer) = worker.config.renderer.take() {
+            let render = RenderAhead::spawn(renderer)?;
+            let (soon, idle) = worker.fixed_sentences();
+            info!(soon = soon.len(), idle = idle.len(), "rendering speech ahead");
+            render.add(Priority::Soon, soon);
+            render.add(Priority::Idle, idle);
+            worker.render = Some(render);
         }
         if let Some((url, token)) = &worker.config.home_assistant {
             let mut ha = HomeAssistant::new(url, token);
@@ -510,10 +522,10 @@ impl AssistantProcessor {
                 Err(error) => warn!(%error, "music assistant not usable; music requests will fail"),
             }
             worker.home_assistant = Some(ha);
-            if worker.config.prerender {
+            if let Some(render) = worker.render.clone() {
                 let home = worker.home_sentences();
                 info!(sentences = home.len(), "rendering this home's answers ahead");
-                worker.prerender.extend(home);
+                render.add(Priority::Soon, home);
             }
         }
         if let Some((url, token)) = worker.config.home_assistant.clone().filter(|_| worker.config.alerts) {
@@ -804,8 +816,8 @@ struct Worker {
     pending_confirm: Option<(HouseCommand, Instant)>,
     timers: Timers,
     persona: Option<Persona>,
-    /// Sentences still to render ahead of time.
-    prerender: VecDeque<String>,
+    /// Renders speech ahead of time, when there is a speech cache.
+    render: Option<RenderAhead>,
     lead_turn: usize,
     /// Small talk answers take turns.
     chat_turn: usize,
@@ -823,9 +835,6 @@ struct Worker {
     after_answer: Option<(MusicCommand, Option<f64>)>,
     /// When the answer will have played, for `after_answer`.
     after_answer_at: Option<Instant>,
-    /// Rendering ahead waits until then: half the time, so the CPU (and the fans) are not at full
-    /// tilt for hours after a start.
-    render_after: Option<Instant>,
     /// The lockdown's lights blinking.
     alarm: Option<Alarm>,
     /// When the forecast and prices were last fetched ahead of a question.
@@ -833,6 +842,14 @@ struct Worker {
 }
 
 impl Worker {
+    /// A wake, a request or its answer, or the few seconds after it that still count.
+    fn talking(&self) -> bool {
+        self.woken_at.is_some()
+            || self.hushed.is_some()
+            || self.busy.load(Relaxed)
+            || self.follow_up_until.is_some_and(|until| Instant::now() < until)
+    }
+
     fn run(mut self, jobs: mpsc::Receiver<Job>) {
         // Jobs taken off the channel early, to see whether a draft is still worth transcribing.
         let mut queued = VecDeque::new();
@@ -840,9 +857,8 @@ impl Worker {
             // Wake up for the next timer, and now and then to keep the language model warm.
             let next_timer = self.timers.next_deadline().map(|at| at.saturating_duration_since(Instant::now()));
             let wait = next_timer.map_or(WARM_CHECK, |t| t.min(WARM_CHECK));
-            // With speech still to render ahead, that is done between jobs, a sentence at a time.
-            let wait = if self.prerender.is_empty() { wait } else { Duration::from_millis(20) };
-            let wait = if self.hushed.is_some() { wait.min(Duration::from_secs(1)) } else { wait };
+            // During a conversation, to let rendering ahead go on soon after it.
+            let wait = if self.talking() { wait.min(Duration::from_secs(1)) } else { wait };
             let wait = wait.min(DATA_REFRESH);
             let wait = match self.after_answer_at {
                 Some(at) => wait.min(at.saturating_duration_since(Instant::now())),
@@ -862,15 +878,11 @@ impl Worker {
                     if self.after_answer_at.is_some_and(|at| Instant::now() >= at) {
                         self.run_after_answer();
                     }
-                    // Not during a conversation: a request would wait for the sentence being rendered.
-                    let talking = self.woken_at.is_some()
-                        || self.hushed.is_some()
-                        || self.follow_up_until.is_some_and(|until| Instant::now() < until);
-                    if self.prerender.is_empty() {
-                        self.keep_warm();
-                    } else if !talking && self.render_after.is_none_or(|at| Instant::now() >= at) {
-                        self.render_ahead();
+                    let talking = self.talking();
+                    if let Some(render) = &self.render {
+                        render.hold(talking);
                     }
+                    self.keep_warm();
                     if !talking && self.refreshed.is_none_or(|at| at.elapsed() >= DATA_REFRESH) {
                         self.refresh_data();
                     }
@@ -885,6 +897,9 @@ impl Worker {
             }
             if let (true, Some(hushed)) = (heard, &mut self.hushed) {
                 hushed.last_heard = Instant::now();
+            }
+            if let (true, Some(render)) = (heard, &self.render) {
+                render.hold(true);
             }
             match job {
                 Job::NothingAsked => {
@@ -1377,7 +1392,7 @@ impl Worker {
             || self.pending_scene.is_some()
             || self.pending_confirm.is_some()
             || self.timers.awaiting_duration();
-        if lang != Lang::English || !self.config.prerender || pending {
+        if lang != Lang::English || self.render.is_none() || pending {
             return None;
         }
         // Several requests: the first one's lead-in.
@@ -1413,8 +1428,9 @@ impl Worker {
             }
     }
 
-    /// Every fixed English sentence the assistant says, as spoken (a sentence at a time).
-    fn fixed_sentences(&self) -> Vec<String> {
+    /// Every fixed English sentence the assistant says, as spoken (a sentence at a time): what is
+    /// said most, then the long tail.
+    fn fixed_sentences(&self) -> (Vec<String>, Vec<String>) {
         let honorific = self.config.honorific.as_deref();
         let mut texts: Vec<String> =
             LEADS.iter().flat_map(|leads| leads.iter().map(|l| lead_sentence(l, honorific))).collect();
@@ -1458,7 +1474,6 @@ impl Worker {
         for seconds in [10, 15, 20, 30, 45, 90] {
             numbered.push(format!("Timer set for {}.", timer::say_duration(seconds, Lang::English)));
         }
-        numbered.extend(timer::english_left_sentences());
         // Every time of day, from now on: the next hours are ready soon after a start, the rest in
         // idle time over a day, and then kept on disk.
         let now = jiff::Zoned::now();
@@ -1469,28 +1484,34 @@ impl Worker {
                 format!("It's {:02}:{:02}.", m / 60, m % 60)
             })
             .collect();
-        let later = times.split_off(120);
+        let mut later = times.split_off(120);
         numbered.extend(times);
-        let numbered = numbered.into_iter().flat_map(|a| match &self.persona {
-            Some(persona) => persona.forms(&a),
-            None => vec![a],
-        });
-        sentences.extend(numbered);
+        let styled = |answers: Vec<String>| -> Vec<String> {
+            answers
+                .into_iter()
+                .flat_map(|a| match &self.persona {
+                    Some(persona) => persona.forms(&a),
+                    None => vec![a],
+                })
+                .collect()
+        };
+        sentences.extend(styled(numbered));
         // Answers after a lead-in are spoken as they are, without the persona's opener: the weather,
-        // departures and electricity prices, a sentence at a time.
+        // departures and electricity prices, a sentence at a time. Today's own are rendered first,
+        // after each refresh (`data_sentences`).
+        let mut tail = Vec::new();
         let home = self.home_location.as_ref().map(|l| l.label.clone()).or_else(|| self.config.home.clone());
         if let Some(home) = home {
-            sentences.extend(voice_assistant::weather::english_sentences(&home));
+            tail.extend(voice_assistant::weather::english_sentences(&home));
         }
-        sentences.extend(voice_assistant::transit::english_sentences());
-        sentences.extend(voice_assistant::power::english_sentences());
-        let later = later.into_iter().flat_map(|a| match &self.persona {
-            Some(persona) => persona.forms(&a),
-            None => vec![a],
-        });
-        sentences.extend(later);
-        sentences.retain(|s| voice_assistant::speech_cache::CachedTts::cacheable(s));
-        sentences
+        tail.extend(voice_assistant::transit::english_sentences());
+        tail.extend(voice_assistant::power::english_sentences());
+        later.extend(timer::english_left_sentences());
+        tail.extend(styled(later));
+        let cacheable = voice_assistant::speech_cache::CachedTts::cacheable;
+        sentences.retain(|s| cacheable(s));
+        tail.retain(|s| cacheable(s));
+        (sentences, tail)
     }
 
     /// Answers about this home's own lights and rooms, which Home Assistant names: the first
@@ -1524,6 +1545,11 @@ impl Worker {
                 answers.extend((15..=30).map(|t| format!("It's {t} degrees in the {area}.")));
             }
         }
+        self.spoken_sentences(&answers)
+    }
+
+    /// The sentences of these answers in every way the persona says them, as kept in the cache.
+    fn spoken_sentences(&self, answers: &[String]) -> Vec<String> {
         let mut sentences: Vec<String> = answers
             .iter()
             .flat_map(|a| match &self.persona {
@@ -1544,6 +1570,13 @@ impl Worker {
         sentences
     }
 
+    /// Today's answers from the forecast and prices fetched ahead, to render before anyone asks.
+    fn data_sentences(&mut self) -> Vec<String> {
+        let kept: Vec<&str> = DATA_QUESTIONS.iter().copied().filter(|q| self.data_kept(q, Lang::English)).collect();
+        let answers: Vec<String> = kept.into_iter().filter_map(|q| self.compose(q, Lang::English)).collect();
+        self.spoken_sentences(&answers)
+    }
+
     /// The home's forecast and the electricity prices, fetched before anyone asks.
     fn refresh_data(&mut self) {
         self.refreshed = Some(Instant::now());
@@ -1557,20 +1590,8 @@ impl Worker {
                 warn!(error = format!("{error:#}"), "could not refresh the electricity prices");
             }
         }
-    }
-
-    /// Renders one sentence ahead of time while nothing else is going on.
-    fn render_ahead(&mut self) {
-        let Some(sentence) = self.prerender.pop_front() else {
-            return;
-        };
-        let start = Instant::now();
-        if let Err(error) = self.tts.render(&sentence, Lang::English) {
-            warn!(%error, sentence, "could not render ahead");
-        }
-        self.render_after = Some(Instant::now() + start.elapsed());
-        if self.prerender.is_empty() {
-            info!("speech rendered ahead");
+        if let Some(render) = self.render.clone() {
+            render.add(Priority::Soon, self.data_sentences());
         }
     }
 
@@ -3620,6 +3641,14 @@ mod tests {
         assert!(complete_at_once(&parse("initiate lockdown")));
         assert!(complete_at_once(&parse("how you doing")));
         assert!(!complete_at_once(&parse("hey")));
+    }
+
+    #[test]
+    fn data_questions_ask_for_the_data_fetched_ahead() {
+        for question in DATA_QUESTIONS {
+            let intent = intent::parse(question);
+            assert!(matches!(intent, Intent::Weather { place: None, .. } | Intent::Power(_)), "{question}: {intent:?}");
+        }
     }
 
     #[test]
