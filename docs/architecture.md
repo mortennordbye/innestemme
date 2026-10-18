@@ -53,10 +53,14 @@ Hue call only once the lights have switched (0.5-0.7 s). A failed queued call is
 
 **Speech.** English through Kokoro, voice `am_onyx`: from a Kokoro-FastAPI server (`english-tts: kokoro`, a
 Python sidecar in the cluster) or inside the engine through sherpa-onnx (`english-tts: kokoro-onnx`, the f32
-v1.0 model, 16-31% faster on the same CPUs and no server). Norwegian through Piper over Wyoming or macOS `say`. `speech-cache` keeps every fixed sentence on disk, one folder per voice, and
-renders them ahead while idle (about 5,500: openers, remarks, lead-ins, jokes and small talk in each way the persona puts them, confirmations,
+v1.0 model, 16-31% faster on the same CPUs and no server). Norwegian through Piper over Wyoming or macOS `say`. `speech-cache` keeps every fixed sentence on disk, one folder per voice:
+about 8,000 (openers, remarks, lead-ins, jokes and small talk in each way the persona puts them, confirmations,
 every volume level, the time left on a single timer, every minute of the day, the home's lights and room
-temperatures from Home Assistant). Sentences with numbers are
+temperatures from Home Assistant). They are rendered ahead on a thread of its own with a second copy of the
+voice, so an answer never waits for a sentence being rendered, and no new one is started while a conversation
+lasts. What is said most goes first, back to back; the long tail follows at half speed. Only sentences missing
+from the folder are rendered, so after a deploy only new wording costs time. After each refresh of the
+forecast and the prices, today's own answers to them are rendered first. Sentences with numbers are
 kept only for a few frequent shapes. Fixed wording and live data are separate sentences, so only the data is
 synthesized. A slow skill opens with a cached lead-in ("Checking the forecast, sir.") while it fetches. The home's forecast
 and the electricity prices are fetched every 4 minutes while idle, so those answers need no request and skip the

@@ -443,29 +443,33 @@ fn main() -> Result<()> {
                 info!(address = piper.address, voices = voices.len(), "piper connected");
                 Ok(piper)
             };
-            let english: Box<dyn voice_assistant::tts::Tts> = match args.english_tts {
-                EnglishTts::Say => Box::new(say()),
-                EnglishTts::Piper => Box::new(piper()?),
-                EnglishTts::Kokoro => {
-                    let kokoro = voice_assistant::kokoro::KokoroTts::new(&args.kokoro_url, &args.kokoro_voice);
-                    let voices = kokoro.voices().context("asking the Kokoro server for its voices")?;
-                    if !voices.iter().any(|v| v == kokoro.voice()) {
-                        anyhow::bail!("Kokoro at {} has no voice {}", args.kokoro_url, kokoro.voice());
+            let english_voice = || -> Result<Box<dyn voice_assistant::tts::Tts>> {
+                Ok(match args.english_tts {
+                    EnglishTts::Say => Box::new(say()),
+                    EnglishTts::Piper => Box::new(piper()?),
+                    EnglishTts::Kokoro => {
+                        let kokoro = voice_assistant::kokoro::KokoroTts::new(&args.kokoro_url, &args.kokoro_voice);
+                        let voices = kokoro.voices().context("asking the Kokoro server for its voices")?;
+                        if !voices.iter().any(|v| v == kokoro.voice()) {
+                            anyhow::bail!("Kokoro at {} has no voice {}", args.kokoro_url, kokoro.voice());
+                        }
+                        info!(url = args.kokoro_url, voice = kokoro.voice(), "kokoro connected");
+                        Box::new(kokoro)
                     }
-                    info!(url = args.kokoro_url, voice = kokoro.voice(), "kokoro connected");
-                    Box::new(kokoro)
-                }
-                EnglishTts::KokoroOnnx => {
-                    let files = voice_assistant::kokoro::KokoroFiles::fetch(voice_assistant::kokoro::ONNX_REPO)?;
-                    info!(model = %files.model().display(), voice = args.kokoro_voice, threads, "loading kokoro");
-                    Box::new(voice_assistant::kokoro::KokoroOnnx::load(&files, &args.kokoro_voice, threads)?)
-                }
+                    EnglishTts::KokoroOnnx => {
+                        let files = voice_assistant::kokoro::KokoroFiles::fetch(voice_assistant::kokoro::ONNX_REPO)?;
+                        info!(model = %files.model().display(), voice = args.kokoro_voice, threads, "loading kokoro");
+                        Box::new(voice_assistant::kokoro::KokoroOnnx::load(&files, &args.kokoro_voice, threads)?)
+                    }
+                })
             };
+            let english = english_voice()?;
             let norwegian: Box<dyn voice_assistant::tts::Tts> = match args.norwegian_tts {
                 Some(NorwegianTts::Piper) => Box::new(piper()?),
                 None if args.piper.is_some() && args.norwegian => Box::new(piper()?),
                 _ => Box::new(say()),
             };
+            let mut renderer = None;
             let english: Box<dyn voice_assistant::tts::Tts> = match &args.speech_cache {
                 Some(dir) => {
                     let voice = match args.english_tts {
@@ -477,6 +481,9 @@ fn main() -> Result<()> {
                     };
                     let dir = dir.join(voice);
                     info!(dir = %dir.display(), "speech cache");
+                    // A voice of its own, so rendering ahead never holds up an answer.
+                    let ahead = voice_assistant::speech_cache::CachedTts::new(english_voice()?, Some(dir.clone()));
+                    renderer = Some(Box::new(ahead) as Box<dyn voice_assistant::tts::Tts>);
                     Box::new(voice_assistant::speech_cache::CachedTts::new(english, Some(dir)))
                 }
                 None => english,
@@ -527,7 +534,7 @@ fn main() -> Result<()> {
                         false => None,
                     },
                     activity: activity.clone(),
-                    prerender: args.speech_cache.is_some(),
+                    renderer,
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");
                         voice_assistant::llm::Llm::new(
