@@ -683,6 +683,11 @@ const MISHEARD: &[(&[&str], &[&str])] = &[
     (&["close", "up"], &["close", "that"]),
     (&["cancel", "time"], &["cancel", "timer"]),
     (&["set", "a", "towel"], &["set", "a", "timer"]),
+    (&["code", "rent"], &["code", "red"]),
+    (&["code", "ran"], &["code", "red"]),
+    (&["who", "am", "i", "on"], &["what's", "on"]),
+    (&["increase", "the", "sum"], &["increase", "the", "sound"]),
+    (&["increased", "the", "sale"], &["increase", "the", "sound"]),
 ];
 
 /// The request with known mishearings put right, as normalised words; unchanged when there are none.
@@ -933,6 +938,15 @@ mod tests {
         assert_eq!(parse("Showed a dashboard on the TV."), Intent::Tv(TvCommand::Show(Screen::Jarvis)));
         assert_eq!(parse("Close up."), Intent::Tv(TvCommand::Hide));
         assert!(matches!(parse("Cancel time."), Intent::Timer(TimerCommand::Cancel(_))));
+        // 17-18 October.
+        for code in ["Code red.", "Code rent.", "Initiate code ran."] {
+            assert_eq!(parse(code), Intent::Routine(Routine::Lockdown), "{code}");
+        }
+        assert_eq!(parse("How you doing?"), Intent::SmallTalk(Chat::HowAreYou));
+        assert_eq!(parse("What's the house status?"), Intent::House(HouseCommand::Status));
+        assert_eq!(parse("Who am I on the shopping list?"), Intent::ShoppingList(ListCommand::Read));
+        assert!(matches!(parse("Increase the sum."), Intent::Music(_)));
+        assert_eq!(parse("I increased the sale to 40 percent."), Intent::Music(MusicCommand::VolumeTo(40)));
     }
 
     #[test]

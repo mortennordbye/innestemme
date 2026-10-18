@@ -240,6 +240,12 @@ const STATUS_PHRASES: &[&str] = &[
     "everything alright at home",
     "house status",
     "home status",
+    "what's the house status",
+    "what is the house status",
+    "what's the home status",
+    "what is the home status",
+    "what's the status at home",
+    "what is the status at home",
     "status report",
     "status update",
     "how's the house",
@@ -469,6 +475,7 @@ const LOCKDOWN: &[&str] = &[
     "lock down the house",
     "lock the house down",
     "red alert",
+    "code red",
 ];
 const STAND_DOWN: &[&str] = &[
     "stand down",
@@ -520,7 +527,7 @@ pub fn routine(words: &[String]) -> Option<Routine> {
     }
     // The transcriber mangles the words around it ("Initially lockdown.", "In the shape, lock
     // down."), but the word itself in a short request is enough. A question about it is not one.
-    let lockdown = text.contains("lockdown") || text.contains("lock down");
+    let lockdown = ["lockdown", "lock down", "code red"].iter().any(|w| text.contains(w));
     let asks =
         words.first().is_some_and(|w| ["is", "are", "what", "what's", "why", "when", "how"].contains(&w.as_str()));
     if lockdown && words.len() <= 6 && !asks {
@@ -1332,6 +1339,7 @@ mod tests {
             "Is everything okay at home?",
             "is everything alright",
             "status report",
+            "What's the house status?",
             "how's the house?",
             "Is there anything I should know?",
             "er alt i orden?",

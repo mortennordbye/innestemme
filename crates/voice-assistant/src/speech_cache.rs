@@ -45,6 +45,25 @@ const NUMBER_SHAPES: &[(&str, u32)] = &[
     (" is at #:#.", 59),
 ];
 
+/// Whole sentences with numbers that are kept, with or without the honorific ("..., sir."), and
+/// with numbers up to 120: the time left on the only timer, "6 minutes and 40 seconds left."
+const WHOLE_SHAPES: &[&str] = &[
+    "# second left.",
+    "# seconds left.",
+    "# minute left.",
+    "# minutes left.",
+    "# minute and # second left.",
+    "# minute and # seconds left.",
+    "# minutes and # second left.",
+    "# minutes and # seconds left.",
+    "# hour left.",
+    "# hours left.",
+    "# hour and # minute left.",
+    "# hour and # minutes left.",
+    "# hours and # minute left.",
+    "# hours and # minutes left.",
+];
+
 pub struct CachedTts {
     inner: Box<dyn Tts>,
     /// One directory per voice: the audio is that voice's.
@@ -85,7 +104,13 @@ impl CachedTts {
         // "It's minus 4 degrees in Oslo." has the shape of "It's 4 degrees in Oslo."
         let shape = shape.replace("minus #", "#");
         let largest = numbers.into_iter().max().unwrap_or(0);
-        NUMBER_SHAPES.iter().any(|(s, max)| largest <= *max && shape.contains(s))
+        // "..., sir." as "...."
+        let bare = match shape.strip_suffix('.').and_then(|s| s.rsplit_once(", ")) {
+            Some((sentence, address)) if !address.contains([' ', '#']) => format!("{sentence}."),
+            _ => shape.clone(),
+        };
+        (largest <= 120 && WHOLE_SHAPES.contains(&bare.as_str()))
+            || NUMBER_SHAPES.iter().any(|(s, max)| largest <= *max && shape.contains(s))
     }
 
     fn path(&self, text: &str) -> Option<PathBuf> {
@@ -176,6 +201,11 @@ mod tests {
         assert!(CachedTts::cacheable("It's 06:38."));
         assert!(CachedTts::cacheable("It's 16:50, sir."));
         assert!(!CachedTts::cacheable("37 seconds left on the 1 minute timer."));
+        assert!(CachedTts::cacheable("6 minutes and 40 seconds left, sir."));
+        assert!(CachedTts::cacheable("1 hour and 5 minutes left."));
+        assert!(!CachedTts::cacheable(
+            "The pasta timer has 7 minutes left and the 10 minute timer has 9 minutes left."
+        ));
         assert!(!CachedTts::cacheable("Timer set for 120 minutes."));
         assert!(!CachedTts::cacheable("It's 5 degrees and partly cloudy in Oslo, with a high of 13."));
         assert!(CachedTts::cacheable("It's minus 4 degrees in Oslo."));
