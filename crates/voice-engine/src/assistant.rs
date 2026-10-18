@@ -1,11 +1,9 @@
 //! The `assistant` processor. The model thread listens and plays the reply; a worker thread
 //! handles requests (transcription for Whisper, intent, tool, speech).
 //!
-//! Two listeners:
-//! - Whisper (English and Norwegian): an energy detector cuts utterances, the worker transcribes
-//!   each one with NB-Whisper and acts on those that start with the name.
-//! - Kyutai (English only): streaming STT on the model thread, wake word and end of turn from the
-//!   running transcript.
+//! An energy detector on the model thread cuts the microphone into utterances; the worker
+//! transcribes each one (Parakeet, English only, or Whisper, English and Norwegian) and acts on
+//! those that start with the name or follow a wake word.
 //!
 //! Half duplex: while a request is being handled or its reply plays, and for a second after, the
 //! microphone is ignored so the assistant does not answer itself through a laptop speaker.
@@ -19,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 use voice_assistant::alerts::{self, Watch};
-use voice_assistant::dialog::{Action, Dialog, WakeWord};
+use voice_assistant::dialog::WakeWord;
 use voice_assistant::geo::{self, Location};
 use voice_assistant::ha::{self, HomeAssistant, Light, Playing, Target};
 use voice_assistant::house::{self, HouseCommand, Routine, Switch};
@@ -34,7 +32,6 @@ use voice_assistant::party::PartyCommand;
 use voice_assistant::persona::Persona;
 use voice_assistant::power::{self, Power};
 use voice_assistant::shopping::{Change, ListCommand, ShoppingList};
-use voice_assistant::stt::SpeechToText;
 use voice_assistant::timer::{self, Notice, TimerCommand, Timers};
 use voice_assistant::transit::Transit;
 use voice_assistant::tts::{self, Tts};
@@ -55,7 +52,6 @@ use crate::unhandled::{Reason, UnhandledLog};
 const DEAF_AFTER_REPLY_FRAMES: u64 = 13;
 /// The rolling KV cache is fine for long sessions, but position ids keep growing; start over
 /// between requests once this many steps have passed (about 13 minutes).
-const STT_RESET_STEPS: usize = 10_000;
 /// "Them" and "that" refer to the last lights for this long.
 const MEMORY: Duration = Duration::from_secs(120);
 /// How often the worker checks that the language model's prompt is still the one it warmed.
@@ -156,17 +152,6 @@ pub struct AssistantConfig {
     pub lockdown_volume: u8,
     /// The Hue lights following the music, when a bridge is configured.
     pub party: Party,
-}
-
-pub enum Listener {
-    /// Whisper or Parakeet, one call per utterance the energy detector cuts.
-    Utterances(Box<dyn Transcribe>),
-    Kyutai(Box<SpeechToText>),
-}
-
-enum Ear {
-    Vad(Vad),
-    Kyutai { stt: Box<SpeechToText>, dialog: Dialog },
 }
 
 /// What the assistant is doing, for satellites that show it (listening lights, speech URLs).
@@ -309,11 +294,9 @@ enum Job {
     Woken(Instant, Option<Vec<i16>>),
     /// A satellite heard nothing after its wake word.
     NothingAsked,
-    /// Kyutai path: already transcribed, English.
-    Action(Action),
-    /// Whisper path: audio still to transcribe, and when it ended.
+    /// Audio still to transcribe, and when it ended.
     Utterance(Vec<i16>, Instant),
-    /// Whisper path: the speaker paused and may be done. Transcribed ahead of the utterance.
+    /// The speaker paused and may be done. Transcribed ahead of the utterance.
     Draft(Vec<i16>),
     /// A satellite connected, by its names.
     Satellite(Vec<String>),
@@ -326,7 +309,7 @@ enum Job {
 }
 
 pub struct AssistantProcessor {
-    ear: Ear,
+    vad: Vad,
     jobs: mpsc::Sender<Job>,
     events: broadcast::Sender<AssistantEvent>,
     reply: rtrb::Consumer<i16>,
@@ -344,20 +327,8 @@ pub struct AssistantProcessor {
 }
 
 impl AssistantProcessor {
-    pub fn new(listener: Listener, tts: Box<dyn Tts>, config: AssistantConfig) -> anyhow::Result<Self> {
-        let (ear, transcriber) = match listener {
-            Listener::Utterances(transcriber) => (Ear::Vad(Vad::default()), Some(transcriber)),
-            Listener::Kyutai(mut stt) => {
-                // The first steps compile GPU kernels or fault in the weights.
-                let start = Instant::now();
-                for _ in 0..4 {
-                    stt.step(&[0i16; FRAME_SAMPLES])?;
-                }
-                stt.reset()?;
-                info!(elapsed = ?start.elapsed(), "stt warmed up");
-                (Ear::Kyutai { stt, dialog: Dialog::new(config.wake.clone()) }, None)
-            }
-        };
+    /// `transcriber` is Whisper or Parakeet, one call per utterance the energy detector cuts.
+    pub fn new(transcriber: Box<dyn Transcribe>, tts: Box<dyn Tts>, config: AssistantConfig) -> anyhow::Result<Self> {
         let (jobs, rx) = mpsc::channel();
         let (reply_tx, reply) = rtrb::RingBuffer::new(SAMPLE_RATE as usize * 60);
         let busy = Arc::new(AtomicBool::new(false));
@@ -513,15 +484,13 @@ impl AssistantProcessor {
                 }
             }
         }
-        if let Some(t) = &mut worker.transcriber {
-            let start = Instant::now();
-            t.transcribe(&[0i16; FRAME_SAMPLES * 12])?;
-            info!(elapsed = ?start.elapsed(), "listener warmed up");
-        }
+        let start = Instant::now();
+        worker.transcriber.transcribe(&[0i16; FRAME_SAMPLES * 12])?;
+        info!(elapsed = ?start.elapsed(), "listener warmed up");
         std::thread::Builder::new().name("assistant".into()).spawn(move || worker.run(rx))?;
         let hear_now = Arc::new(AtomicBool::new(false));
         Ok(Self {
-            ear,
+            vad: Vad::default(),
             jobs,
             events,
             reply,
@@ -581,40 +550,17 @@ impl FrameProcessor for AssistantProcessor {
         let deaf = self.frame < self.deaf_until;
 
         let start = Instant::now();
-        let result = permit_alloc(|| match &mut self.ear {
-            Ear::Vad(vad) => {
-                if deaf {
-                    vad.reset();
-                } else {
-                    if let Some(utterance) = vad.push(input) {
-                        info!(seconds = utterance.len() as f32 / SAMPLE_RATE as f32, "utterance");
-                        let _ = self.jobs.send(Job::Utterance(utterance, Instant::now()));
-                    }
-                    if let Some(draft) = vad.draft() {
-                        let _ = self.jobs.send(Job::Draft(draft));
-                    }
-                }
-                Ok(())
+        permit_alloc(|| {
+            if deaf {
+                self.vad.reset();
+                return;
             }
-            Ear::Kyutai { stt, dialog } => {
-                let heard = stt.step(input).map_err(|error| warn!(%error, "stt step failed"))?;
-                if !heard.words.is_empty() {
-                    info!(words = heard.words.join(" "), deaf, "heard");
-                }
-                if deaf {
-                    dialog.reset();
-                    return Ok(());
-                }
-                for action in dialog.step(&heard.words, heard.pause) {
-                    if matches!(action, Action::Request(_)) {
-                        self.busy.store(true, Relaxed);
-                    }
-                    let _ = self.jobs.send(Job::Action(action));
-                }
-                if !dialog.is_listening() && stt.steps() > STT_RESET_STEPS {
-                    let _ = stt.reset();
-                }
-                Ok(())
+            if let Some(utterance) = self.vad.push(input) {
+                info!(seconds = utterance.len() as f32 / SAMPLE_RATE as f32, "utterance");
+                let _ = self.jobs.send(Job::Utterance(utterance, Instant::now()));
+            }
+            if let Some(draft) = self.vad.draft() {
+                let _ = self.jobs.send(Job::Draft(draft));
             }
         });
         metrics.engine_step.record(start.elapsed());
@@ -630,21 +576,11 @@ impl FrameProcessor for AssistantProcessor {
             }
             Err(_) => output.fill(0),
         }
-        result.map_err(|()| ProcessError)
+        Ok(())
     }
 
     fn reset(&mut self) {
-        match &mut self.ear {
-            Ear::Vad(vad) => permit_alloc(|| vad.reset()),
-            Ear::Kyutai { stt, dialog } => {
-                permit_alloc(|| {
-                    if let Err(error) = stt.reset() {
-                        warn!(%error, "stt reset failed");
-                    }
-                });
-                dialog.reset();
-            }
-        }
+        permit_alloc(|| self.vad.reset());
         self.deaf_until = 0;
         let queued = self.reply.slots();
         if let Ok(chunk) = self.reply.read_chunk(queued) {
@@ -771,7 +707,7 @@ struct Worker {
     home_assistant: Option<HomeAssistant>,
     player: Player,
     tv: Tv,
-    transcriber: Option<Box<dyn Transcribe>>,
+    transcriber: Box<dyn Transcribe>,
     /// The latest draft and its transcripts.
     draft: Option<(Vec<i16>, Vec<Transcript>)>,
     /// Until then, speech counts without the name: after a bare name, and for a while after each
@@ -878,10 +814,7 @@ impl Worker {
                 Err(RecvTimeoutError::Disconnected) => return,
             };
             // A wake word or request while paused is dropped; a give-up still ends a listening run.
-            let heard = matches!(
-                job,
-                Job::Action(Action::Wake | Action::Request(_)) | Job::Woken(..) | Job::Utterance(..) | Job::Draft(_)
-            );
+            let heard = matches!(job, Job::Woken(..) | Job::Utterance(..) | Job::Draft(_));
             if heard && self.pause.paused() {
                 continue;
             }
@@ -889,19 +822,6 @@ impl Worker {
                 hushed.last_heard = Instant::now();
             }
             match job {
-                Job::Action(Action::Wake) => {
-                    info!("wake word");
-                    self.emit(AssistantEvent::Listening);
-                    // The chime first: pausing the music takes Home Assistant round trips.
-                    self.play(&tts::wake_chime());
-                    self.hush();
-                }
-                Job::Action(Action::GaveUp) => {
-                    info!("nothing asked after the wake word");
-                    self.emit(AssistantEvent::Done);
-                    self.unhush();
-                    self.play(&tts::give_up_chime());
-                }
                 Job::NothingAsked => {
                     self.woken_at = None;
                     self.unhush();
@@ -918,7 +838,6 @@ impl Worker {
                 Job::Preview(text, reply) => {
                     let _ = reply.send(self.preview(&text));
                 }
-                Job::Action(Action::Request(text)) => self.answer(&text, Lang::English, Instant::now()),
                 Job::Utterance(audio, ended) => self.utterance(&audio, ended),
                 Job::Draft(audio) => {
                     queued.extend(jobs.try_iter());
@@ -963,9 +882,7 @@ impl Worker {
                 Err(error) => warn!(%error, "could not save utterance"),
             }
         }
-        let Some(transcriber) = &mut self.transcriber else {
-            return;
-        };
+        let transcriber = &mut self.transcriber;
         let start = Instant::now();
         let draft = self
             .draft
@@ -1128,11 +1045,10 @@ impl Worker {
 
     /// A device woke on its wake word and the request was not understood: say so, once, rather
     /// than end the run in silence, which sounds as if the device never woke.
-    /// Whether the last wake word's audio holds the assistant's name; `None` without the audio or a
-    /// transcriber.
+    /// Whether the last wake word's audio holds the assistant's name; `None` without the audio.
     fn name_in_wake(&mut self) -> Option<bool> {
         let audio = self.wake_audio.take()?;
-        let transcriber = self.transcriber.as_mut()?;
+        let transcriber = &mut self.transcriber;
         let start = Instant::now();
         let heard = match transcriber.transcribe(&audio) {
             Ok(candidates) => candidates.into_iter().next().map(|c| c.text).unwrap_or_default(),
@@ -1195,9 +1111,7 @@ impl Worker {
     }
 
     fn transcribe_draft(&mut self, audio: Vec<i16>) {
-        let Some(transcriber) = &mut self.transcriber else {
-            return;
-        };
+        let transcriber = &mut self.transcriber;
         self.draft = match transcriber.transcribe(&audio) {
             Ok(candidates) => Some((audio, candidates)),
             Err(error) => {

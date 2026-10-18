@@ -11,12 +11,10 @@ use voice_assistant::dialog::WakeWord;
 use voice_assistant::ha::HomeAssistant;
 use voice_assistant::lang::Lang;
 use voice_assistant::parakeet::{Parakeet, ParakeetFiles};
-use voice_assistant::pocket::PocketFiles;
-use voice_assistant::stt::{SpeechToText, SttFiles};
-use voice_assistant::whisper::{Transcriber, WakePrompt, WhisperFiles, Window};
+use voice_assistant::whisper::{Transcribe, Transcriber, WakePrompt, WhisperFiles, Window};
 use voice_assistant::wyoming::WyomingTts;
 use voice_codec::MimiCodec;
-use voice_engine::assistant::{AssistantConfig, AssistantProcessor, Listener};
+use voice_engine::assistant::{AssistantConfig, AssistantProcessor};
 use voice_engine::settings;
 use voice_engine::{
     metrics::{serve_http, SpeechClips},
@@ -42,7 +40,7 @@ enum Processor {
     Mimi,
     /// Echo PCM without touching a model.
     Passthrough,
-    /// Voice assistant (wake word, default "Homie"): STT, weather lookup, spoken reply (macOS `say`).
+    /// Voice assistant (wake word, default "Homie"): speech to text, skills, a spoken reply.
     Assistant,
 }
 
@@ -55,8 +53,6 @@ enum WakePromptArg {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum EnglishTts {
-    /// Kyutai Pocket TTS on the CPU, streaming.
-    Pocket,
     /// macOS `say`.
     Say,
     /// Piper over Wyoming (`--piper`).
@@ -73,28 +69,10 @@ enum NorwegianTts {
     Piper,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum PocketPrecision {
-    F32,
-    /// 8-bit linear layers: smaller and usually faster on weak CPUs.
-    Q8,
-}
-
-impl From<PocketPrecision> for voice_assistant::pocket::Precision {
-    fn from(p: PocketPrecision) -> Self {
-        match p {
-            PocketPrecision::F32 => Self::F32,
-            PocketPrecision::Q8 => Self::Q8,
-        }
-    }
-}
-
 #[derive(Clone, Copy, ValueEnum)]
 enum ListenerKind {
     /// NB-Whisper per utterance: English and Norwegian.
     Whisper,
-    /// Kyutai STT-1B streaming: English (and French) only, lower latency.
-    Kyutai,
     /// NVIDIA Parakeet TDT 0.6B per utterance (int8, sherpa-onnx): English only. About 8x faster
     /// than whisper-base on a CPU and more accurate on the Voice PE's recordings.
     Parakeet,
@@ -179,7 +157,7 @@ struct Args {
     /// Hugging Face repo of the Parakeet model (sherpa-onnx export: encoder, decoder, joiner, tokens).
     #[arg(long, env = "VOICE_PARAKEET_REPO", default_value = voice_assistant::parakeet::DEFAULT_REPO)]
     parakeet_repo: String,
-    /// Run the assistant's STT on the Apple GPU. Needs a build with `--features metal`.
+    /// Run Whisper on the Apple GPU. Needs a build with `--features metal`.
     #[arg(long, env = "VOICE_STT_GPU")]
     stt_gpu: bool,
     /// Home Assistant base URL, for example http://homeassistant.local:8123. Lights need this and a token.
@@ -261,14 +239,10 @@ struct Args {
     /// RSS feeds for Norwegian headlines, the same way. Default: NRK.
     #[arg(long, env = "VOICE_NEWS_FEEDS_NO", value_delimiter = ',', default_values = voice_assistant::news::NORWEGIAN_FEEDS)]
     news_feeds_no: Vec<String>,
-    /// Speech engine for English replies.
-    #[arg(long, env = "VOICE_ENGLISH_TTS", value_enum, default_value = "pocket")]
+    /// Speech engine for English replies. `say` needs nothing running; Kokoro sounds natural but
+    /// needs its server (`make kokoro`), and the engine does not start without it.
+    #[arg(long, env = "VOICE_ENGLISH_TTS", value_enum, default_value = "say")]
     english_tts: EnglishTts,
-    /// Pocket TTS preset voice: alba, marius, javert, jean, fantine, cosette, eponine, azelma.
-    #[arg(long, env = "VOICE_POCKET_VOICE", default_value = "cosette")]
-    pocket_voice: String,
-    #[arg(long, env = "VOICE_POCKET_PRECISION", value_enum, default_value = "f32")]
-    pocket_precision: PocketPrecision,
     /// macOS `say` voice for English replies with `--english-tts say`; the system default when omitted.
     #[arg(long, env = "VOICE_SAY_VOICE")]
     say_voice: Option<String>,
@@ -375,7 +349,6 @@ fn main() -> Result<()> {
 
     let threads = args.threads.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
     voice_rt::threads::configure_compute_threads(threads);
-    voice_assistant::pocket::set_threads(threads);
     info!(
         threads,
         avx = candle::utils::with_avx(),
@@ -426,7 +399,7 @@ fn main() -> Result<()> {
                     if !args.norwegian {
                         transcriber.restrict(Lang::English);
                     }
-                    Listener::Utterances(Box::new(transcriber))
+                    Box::new(transcriber) as Box<dyn Transcribe>
                 }
                 ListenerKind::Parakeet => {
                     if args.norwegian {
@@ -434,12 +407,7 @@ fn main() -> Result<()> {
                     }
                     let files = ParakeetFiles::fetch(&args.parakeet_repo)?;
                     info!(model = %files.encoder.display(), threads, "loading parakeet");
-                    Listener::Utterances(Box::new(Parakeet::load(&files, threads)?))
-                }
-                ListenerKind::Kyutai => {
-                    let files = SttFiles::fetch()?;
-                    info!(model = %files.model.display(), ?device, "loading stt");
-                    Listener::Kyutai(Box::new(SpeechToText::load(&files, &mimi_path()?, device)?))
+                    Box::new(Parakeet::load(&files, threads)?)
                 }
             };
             let say =
@@ -466,11 +434,6 @@ fn main() -> Result<()> {
                 Ok(piper)
             };
             let english: Box<dyn voice_assistant::tts::Tts> = match args.english_tts {
-                EnglishTts::Pocket => {
-                    let files = PocketFiles::fetch(&args.pocket_voice)?;
-                    info!(model = %files.model.display(), voice = args.pocket_voice, precision = ?args.pocket_precision, "loading pocket tts");
-                    voice_assistant::pocket::load(&files, args.pocket_precision.into())?
-                }
                 EnglishTts::Say => Box::new(say()),
                 EnglishTts::Piper => Box::new(piper()?),
                 EnglishTts::Kokoro => {
@@ -491,7 +454,6 @@ fn main() -> Result<()> {
             let english: Box<dyn voice_assistant::tts::Tts> = match &args.speech_cache {
                 Some(dir) => {
                     let voice = match args.english_tts {
-                        EnglishTts::Pocket => format!("pocket-{}", args.pocket_voice),
                         EnglishTts::Say => format!("say-{}", args.say_voice.as_deref().unwrap_or("default")),
                         EnglishTts::Piper => format!("piper-{}", args.piper_voice_en.as_deref().unwrap_or("default")),
                         EnglishTts::Kokoro => format!("kokoro-{}", args.kokoro_voice),
@@ -587,7 +549,6 @@ fn main() -> Result<()> {
         let speech = Arc::new(SpeechClips::default());
         let web = args.web.then(|| {
             let voice = match args.english_tts {
-                EnglishTts::Pocket => format!("Pocket TTS, {}", args.pocket_voice),
                 EnglishTts::Say => {
                     format!("macOS say{}", args.say_voice.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
                 }

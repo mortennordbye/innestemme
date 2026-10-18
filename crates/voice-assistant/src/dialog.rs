@@ -1,98 +1,5 @@
-//! Turn logic on top of the transcript: wait for the wake word (a name, "Homie" by default), then
-//! collect the request until the speaker pauses.
-
-use std::collections::VecDeque;
-
-/// 80 ms frames.
-const FRAMES_PER_SECOND: u64 = 12;
-/// End of request when no new word arrived for this long, if the pause head has not fired first.
-const SILENCE_END: u64 = 2 * FRAMES_PER_SECOND;
-/// Give up when nothing is said this long after the wake word.
-const NOTHING_SAID: u64 = 6 * FRAMES_PER_SECOND;
-const PAUSE_THRESHOLD: f32 = 0.5;
-/// The pause head can fire while the last word is still held back by the STT delay (a word is
-/// emitted only when the pause after it is seen), so it only ends a request after this much
-/// quiet in the transcript as well.
-const PAUSE_MIN_QUIET: u64 = 8;
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Action {
-    Wake,
-    Request(String),
-    /// Woken, but nothing followed.
-    GaveUp,
-}
-
-enum State {
-    Idle { recent: VecDeque<String> },
-    Listening { words: Vec<String>, since: u64, last_word: u64 },
-}
-
-pub struct Dialog {
-    state: State,
-    frame: u64,
-    wake: WakeWord,
-}
-
-impl Default for Dialog {
-    fn default() -> Self {
-        Self::new(WakeWord::default())
-    }
-}
-
-impl Dialog {
-    pub fn new(wake: WakeWord) -> Self {
-        Self { state: State::Idle { recent: VecDeque::new() }, frame: 0, wake }
-    }
-
-    pub fn is_listening(&self) -> bool {
-        matches!(self.state, State::Listening { .. })
-    }
-
-    pub fn reset(&mut self) {
-        self.state = State::Idle { recent: VecDeque::new() };
-    }
-
-    /// One call per frame with the words that frame produced. At most one wake and one request
-    /// per frame; the wake comes first when both happen.
-    pub fn step(&mut self, words: &[String], pause: Option<f32>) -> Vec<Action> {
-        self.frame += 1;
-        let now = self.frame;
-        let mut actions = Vec::new();
-        // One STT "word" can hold several words.
-        for word in words.iter().flat_map(|w| w.split_whitespace()).map(normalize).filter(|w| !w.is_empty()) {
-            match &mut self.state {
-                State::Idle { recent } => {
-                    recent.push_back(word);
-                    if recent.len() > 2 {
-                        recent.pop_front();
-                    }
-                    if recent.back().is_some_and(|w| self.wake.matches(w)) {
-                        actions.push(Action::Wake);
-                        self.state = State::Listening { words: Vec::new(), since: now, last_word: now };
-                    }
-                }
-                State::Listening { words, last_word, .. } => {
-                    words.push(word);
-                    *last_word = now;
-                }
-            }
-        }
-        if let State::Listening { words, since, last_word } = &mut self.state {
-            let quiet = now - *last_word;
-            let paused =
-                (pause.is_some_and(|p| p > PAUSE_THRESHOLD) && quiet >= PAUSE_MIN_QUIET) || quiet >= SILENCE_END;
-            if !words.is_empty() && paused {
-                actions.push(Action::Request(words.join(" ")));
-                self.reset();
-            } else if words.is_empty() && now - *since >= NOTHING_SAID {
-                actions.push(Action::GaveUp);
-                self.reset();
-            }
-        }
-        actions
-    }
-}
+//! The wake word: the assistant's name (a name, "Homie" by default) as transcribers write it, and
+//! the request after it.
 
 /// Lower case, letters, digits and apostrophes only.
 pub fn normalize(word: &str) -> String {
@@ -211,12 +118,9 @@ mod tests {
         assert!(!"That's my parents.".split_whitespace().any(|w| wake.matches(&normalize(w))));
     }
 
-    fn words(text: &str) -> Vec<String> {
-        text.split_whitespace().map(str::to_owned).collect()
-    }
-
-    fn freya() -> Dialog {
-        Dialog::new(WakeWord::new("Freya"))
+    /// Whether a phrase holds the name, word by word as the engine checks a transcript.
+    fn wakes(wake: &WakeWord, phrase: &str) -> bool {
+        phrase.split_whitespace().any(|w| wake.matches(&normalize(w)))
     }
 
     fn strip_wake(text: &str) -> Option<String> {
@@ -224,38 +128,14 @@ mod tests {
     }
 
     #[test]
-    fn wake_then_request_ends_on_pause_head() {
-        let mut d = freya();
-        assert!(d.step(&words("so anyway"), None).is_empty());
-        assert_eq!(d.step(&words("Hey, Freya."), None), vec![Action::Wake]);
-        assert!(d.step(&["what's the weather".into()], Some(0.1)).is_empty());
-        assert!(d.step(&words("in"), Some(0.9)).is_empty());
-        assert!(d.step(&words("Oslo?"), Some(0.9)).is_empty());
-        let actions: Vec<_> = (0..PAUSE_MIN_QUIET).flat_map(|_| d.step(&[], Some(0.9))).collect();
-        assert_eq!(actions, vec![Action::Request("what's the weather in oslo".into())]);
-        assert!(!d.is_listening());
-    }
-
-    #[test]
-    fn wake_and_request_in_one_breath_end_on_silence() {
-        let mut d = freya();
-        let mut actions = d.step(&words("Freya, what is the weather in bergen"), None);
-        for _ in 0..SILENCE_END {
-            actions.extend(d.step(&[], None));
-        }
-        assert_eq!(actions, vec![Action::Wake, Action::Request("what is the weather in bergen".into())]);
-    }
-
-    #[test]
     fn wakes_on_freya_alone_or_after_a_greeting() {
+        let freya = WakeWord::new("Freya");
         for phrase in ["Freya,", "freya", "hey Freja", "hei Freia", "Frøya.", "okay Freyja", "hi Freya", "hei, Freya"]
         {
-            let mut d = freya();
-            assert_eq!(d.step(&words(phrase), None), vec![Action::Wake], "{phrase}");
+            assert!(wakes(&freya, phrase), "{phrase}");
         }
         for phrase in ["free", "Frey", "hey there", "fresh", "Eden"] {
-            let mut d = freya();
-            assert!(d.step(&words(phrase), None).is_empty(), "{phrase}");
+            assert!(!wakes(&freya, phrase), "{phrase}");
         }
     }
 
@@ -284,8 +164,7 @@ mod tests {
         assert_eq!(homie.strip("Heyhomie what's the weather").as_deref(), Some("what's the weather"));
         assert_eq!(homie.strip("Home, turn off the lights."), None);
         assert_eq!(homie.strip("Freya, tell me a joke"), None);
-        let mut d = Dialog::default();
-        assert_eq!(d.step(&words("hey Homie"), None), vec![Action::Wake]);
+        assert!(wakes(&homie, "hey Homie"));
     }
 
     #[test]
@@ -293,13 +172,5 @@ mod tests {
         let zelda = WakeWord::new("Zelda");
         assert_eq!(zelda.strip("Zelda, tell me a joke.").as_deref(), Some("tell me a joke."));
         assert_eq!(zelda.strip("Homie, tell me a joke."), None);
-    }
-
-    #[test]
-    fn gives_up_when_nothing_follows() {
-        let mut d = freya();
-        d.step(&words("hey freya"), None);
-        let actions: Vec<_> = (0..NOTHING_SAID).flat_map(|_| d.step(&[], Some(0.9))).collect();
-        assert_eq!(actions, vec![Action::GaveUp]);
     }
 }

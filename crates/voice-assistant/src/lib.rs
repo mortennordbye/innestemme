@@ -1,5 +1,5 @@
-//! Voice assistant pieces behind the engine's `assistant` processor: streaming speech-to-text, the
-//! wake word and turn logic, intent parsing, tools and speech output.
+//! Voice assistant pieces behind the engine's `assistant` processor: speech-to-text, the
+//! wake word, intent parsing, tools and speech output.
 
 pub mod alerts;
 pub mod calc;
@@ -21,13 +21,11 @@ pub mod news;
 pub mod parakeet;
 pub mod party;
 pub mod persona;
-pub mod pocket;
 pub mod power;
 pub mod resample;
 pub mod shopping;
 pub mod smalltalk;
 pub mod speech_cache;
-pub mod spm;
 pub mod stt;
 pub mod timer;
 pub mod transit;

@@ -29,14 +29,17 @@ home: London
 norwegian: false
 
 # --- Voice -------------------------------------------------------------------------------------
-# Pocket TTS preset: alba, marius, javert, jean, fantine, cosette, eponine, azelma.
-pocket-voice: cosette
-# f32, or q8 (smaller and usually faster on weak CPUs).
-pocket-precision: f32
+# English speech: kokoro (Kokoro-FastAPI, `make kokoro`), piper, or say (macOS, the default: needs nothing running).
+english-tts: kokoro
+# kokoro-url: http://127.0.0.1:8880
+# am_onyx (American, deep) or bm_george (British), among Kokoro's voices.
+kokoro-voice: am_onyx
+# Every fixed sentence, rendered once and kept: answers that need no synthesis when asked.
+# speech-cache: target/speech-cache
 # How requests are turned into text: whisper (English and Norwegian), or parakeet (NVIDIA Parakeet TDT
 # 0.6B, 640 MB, English only): about 8x faster than whisper-base on a CPU and more accurate on the
 # Voice PE's recordings (docs/benchmarks.md).
-# listener: parakeet
+listener: parakeet
 # whisper-size: base (290 MB) or small (970 MB, more accurate).
 whisper-size: base
 # Whisper encodes the request and 3 s of silence (8 s at the least). true: its full 30 s window,

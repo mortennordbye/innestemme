@@ -28,7 +28,7 @@ updates:
       minor-and-patch:
         update-types: [minor, patch]
     ignore:
-      # moshi 0.6.4 (Mimi codec, Kyutai STT) is built on candle 0.9 and has no newer release; our
+      # moshi 0.6.4 (Mimi codec) is built on candle 0.9 and has no newer release; our
       # tensors cross into it, so candle moves when moshi does.
       - dependency-name: "candle-*"
         versions: [">=0.10"]

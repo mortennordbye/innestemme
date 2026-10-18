@@ -12,24 +12,19 @@ hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "rus
 candle-transformers = "0.9.1"
 hound = "3.5"
 jiff = { version = "0.2", features = ["serde"] }
-moshi = "0.6.4"
-ptts = "0.2.3"
 rand = "0.10"
-rand_distr = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sherpa-onnx = "1.13.8"
 sha2 = "0.10.9"
-tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
 tracing.workspace = true
 tract-onnx = "0.23.8"
 ureq = { version = "3", features = ["json"] }
 voice-proto.workspace = true
-xn = "0.2.4"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
 
 [features]
-# Apple GPU for the STT model. For local testing on a Mac; the cluster runs on CPU.
-metal = ["candle/metal", "candle-nn/metal", "moshi/metal"]
+# Apple GPU for Whisper. For local testing on a Mac; the cluster runs on CPU.
+metal = ["candle/metal", "candle-nn/metal"]
