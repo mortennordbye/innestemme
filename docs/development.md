@@ -52,6 +52,7 @@ recordings in `target/utterances`. Say so before anything plays on the real spea
 | `cargo run --release -p voice-assistant --example wake_score -- hey_jarvis target/utterances/run-*.wav` | openWakeWord's score on recordings, to pick `wake-threshold` |
 | `cargo run --release -p voice-assistant --example wake_text -- hey_jarvis target/utterances/run-*.wav` | what Parakeet hears in each wake word |
 | `cargo run --release -p voice-assistant --example stt_eval -- target/utterances/utterance-*.wav` | Whisper's transcripts and times; `stt_score` scores lists against a reference |
+| `cargo run --release -p voice-assistant --example kokoro_speed -- 4 http://127.0.0.1:8880 <out dir>` | Kokoro in the engine against Kokoro-FastAPI, per sentence, with wavs to compare by ear |
 | `cargo run -p voice-assistant --example music -- "play my liked songs"` | a music request through Music Assistant |
 | `cargo run -p voice-assistant --example speak -- 127.0.0.1:10200 <voice> out.wav "Hei"` | a Piper sample |
 | `cargo run -p voice-esphome --example fake_satellite -- ...` | a pretend Voice PE, see [voice-pe.md](voice-pe.md) |
@@ -71,7 +72,8 @@ python3 -I scripts/latency-bench/compare.py target/latency-bench/main target/lat
 It needs `make kokoro` and `cargo build --release -p voice-esphome --example fake_satellite`. The fake Home
 Assistant reads from the real one in `.env` and never makes a service call; `run.sh` passes `--ha-url` because
 `HA_URL` from `.env` would otherwise win over the bench's settings file. A rendered speech cache in
-`target/latency-bench/seed` is copied into each run.
+`target/latency-bench/seed` is copied into each run; flags after the rounds go to the engine
+(`--english-tts kokoro-onnx`), and `QUESTIONS_DIR` points at other questions.
 
 ## The audio path on its own
 

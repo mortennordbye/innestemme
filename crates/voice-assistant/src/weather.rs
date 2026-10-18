@@ -50,9 +50,23 @@ impl Weather {
         }))
     }
 
+    /// Fetches `place`'s forecast once the kept one is half as old as it may get, so a question about
+    /// it is always answered from memory.
+    pub fn refresh(&mut self, place: &Location) -> Result<()> {
+        if !self.cache.get(&key(place)).is_some_and(|(at, _)| at.elapsed() < CACHE / 2) {
+            self.cache.remove(&key(place));
+            self.met(place)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a forecast for `place` is kept, so its answer needs no request.
+    pub fn is_fresh(&self, place: &Location) -> bool {
+        self.cache.get(&key(place)).is_some_and(|(at, _)| at.elapsed() < CACHE)
+    }
+
     fn met(&mut self, place: &Location) -> Result<&Met> {
-        // MET wants at most four decimals; two (about a kilometre) also make a good cache key.
-        let key = ((place.latitude * 100.0).round() as i64, (place.longitude * 100.0).round() as i64);
+        let key = key(place);
         if !self.cache.get(&key).is_some_and(|(at, _)| at.elapsed() < CACHE) {
             let met: Met = self
                 .agent
@@ -68,6 +82,11 @@ impl Weather {
         }
         Ok(&self.cache[&key].1)
     }
+}
+
+/// MET wants at most four decimals; two (about a kilometre) also make a good cache key.
+fn key(place: &Location) -> (i64, i64) {
+    ((place.latitude * 100.0).round() as i64, (place.longitude * 100.0).round() as i64)
 }
 
 /// Hours shown on the TV after the current one.

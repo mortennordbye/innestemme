@@ -82,6 +82,9 @@ const WAKE_TAIL_LONGEST: Duration = Duration::from_millis(1600);
 const LONGEST_REQUEST_WORDS: usize = 12;
 /// How often Home Assistant's safety sensors are checked.
 const ALERT_POLL: Duration = Duration::from_secs(5);
+/// How often the home's forecast and electricity prices are fetched while idle, so asking for them
+/// needs no request and no lead-in.
+const DATA_REFRESH: Duration = Duration::from_secs(240);
 /// How long the TV screen shows asked-for data (weather, departures) before the face is back.
 const SCREEN_DATA: Duration = Duration::from_secs(120);
 /// Music shows longer: it is often left on while it plays.
@@ -429,6 +432,7 @@ impl AssistantProcessor {
             after_answer_at: None,
             render_after: None,
             alarm: None,
+            refreshed: None,
         };
         worker.room = worker.config.room.clone();
         worker.persona = worker.config.honorific.as_deref().map(Persona::new);
@@ -769,6 +773,8 @@ struct Worker {
     render_after: Option<Instant>,
     /// The lockdown's lights blinking.
     alarm: Option<Alarm>,
+    /// When the forecast and prices were last fetched ahead of a question.
+    refreshed: Option<Instant>,
 }
 
 impl Worker {
@@ -782,6 +788,7 @@ impl Worker {
             // With speech still to render ahead, that is done between jobs, a sentence at a time.
             let wait = if self.prerender.is_empty() { wait } else { Duration::from_millis(20) };
             let wait = if self.hushed.is_some() { wait.min(Duration::from_secs(1)) } else { wait };
+            let wait = wait.min(DATA_REFRESH);
             let wait = match self.after_answer_at {
                 Some(at) => wait.min(at.saturating_duration_since(Instant::now())),
                 None => wait,
@@ -808,6 +815,9 @@ impl Worker {
                         self.keep_warm();
                     } else if !talking && self.render_after.is_none_or(|at| Instant::now() >= at) {
                         self.render_ahead();
+                    }
+                    if !talking && self.refreshed.is_none_or(|at| at.elapsed() >= DATA_REFRESH) {
+                        self.refresh_data();
                     }
                     continue;
                 }
@@ -1127,6 +1137,9 @@ impl Worker {
         // A slow answer (weather, departures) opens with a lead-in rendered ahead of time, which
         // plays while the data is fetched and its sentence synthesized.
         let lead = self.lead_in(text, lang);
+        // Its data kept, a slow skill's answer goes out at once, worded as after a lead-in: the forms
+        // rendered ahead, with no honorific worked into the data sentence.
+        let plain = lead.is_none() && self.data_kept(text, lang);
         let mut spoken = Spoken::default();
         if let Some(lead) = &lead {
             self.emit(AssistantEvent::Answer { text: lead.clone() });
@@ -1171,7 +1184,7 @@ impl Worker {
             self.history.pop_front();
         }
         let answer = match &mut self.persona {
-            Some(persona) if lang == Lang::English && lead.is_some() => persona.after_lead(&answer),
+            Some(persona) if lang == Lang::English && (lead.is_some() || plain) => persona.after_lead(&answer),
             Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
             _ => answer,
         };
@@ -1277,6 +1290,8 @@ impl Worker {
         // Several requests: the first one's lead-in.
         let first = intent::split_commands(text).and_then(|parts| parts.into_iter().next());
         let leads = match intent::parse(first.as_deref().unwrap_or(text)) {
+            // A lead-in plays before the answer, so with the data kept it only delays it.
+            _ if self.data_kept(text, lang) => return None,
             Intent::Weather { .. } => LEADS_WEATHER,
             Intent::Transit(_) => LEADS_TRANSIT,
             Intent::Power(_) => LEADS_POWER,
@@ -1290,6 +1305,19 @@ impl Worker {
         };
         self.lead_turn = self.lead_turn.wrapping_add(1);
         Some(lead_sentence(leads[self.lead_turn % leads.len()], self.config.honorific.as_deref()))
+    }
+
+    /// Whether a weather or electricity price request is answered from data fetched ahead.
+    fn data_kept(&self, text: &str, lang: Lang) -> bool {
+        let first = intent::split_commands(text).and_then(|parts| parts.into_iter().next());
+        lang == Lang::English
+            && match intent::parse(first.as_deref().unwrap_or(text)) {
+                Intent::Weather { place: None, .. } => {
+                    self.home_location.as_ref().is_some_and(|home| self.weather.is_fresh(home))
+                }
+                Intent::Power(query) => self.power.as_ref().is_some_and(|p| p.is_ready(query)),
+                _ => false,
+            }
     }
 
     /// Every fixed English sentence the assistant says, as spoken (a sentence at a time).
@@ -1417,6 +1445,21 @@ impl Worker {
         sentences.sort();
         sentences.dedup();
         sentences
+    }
+
+    /// The home's forecast and the electricity prices, fetched before anyone asks.
+    fn refresh_data(&mut self) {
+        self.refreshed = Some(Instant::now());
+        if let Some(home) = self.home_location.clone() {
+            if let Err(error) = self.weather.refresh(&home) {
+                warn!(error = format!("{error:#}"), "could not refresh the forecast");
+            }
+        }
+        if let Some(power) = &mut self.power {
+            if let Err(error) = power.refresh() {
+                warn!(error = format!("{error:#}"), "could not refresh the electricity prices");
+            }
+        }
     }
 
     /// Renders one sentence ahead of time while nothing else is going on.

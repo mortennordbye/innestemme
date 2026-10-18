@@ -29,9 +29,10 @@ home: London
 norwegian: false
 
 # --- Voice -------------------------------------------------------------------------------------
-# English speech: kokoro (Kokoro-FastAPI, `make kokoro`), piper, or say (macOS, the default: needs nothing running).
+# English speech: kokoro-onnx (Kokoro in the engine, about 380 MB downloaded on first start), kokoro
+# (Kokoro-FastAPI, `make kokoro`), piper, or say (macOS, the default: needs nothing running).
 english-tts: kokoro
-# kokoro-url: http://127.0.0.1:8880
+# kokoro-url: http://127.0.0.1:8880   # english-tts: kokoro only
 # am_onyx (American, deep) or bm_george (British), among Kokoro's voices.
 kokoro-voice: am_onyx
 # Every fixed sentence, rendered once and kept: answers that need no synthesis when asked.
