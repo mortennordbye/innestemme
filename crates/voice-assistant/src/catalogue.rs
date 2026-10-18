@@ -315,10 +315,17 @@ pub const SKILLS: &[Skill] = &[
         name: "Shopping list",
         group: "Everyday",
         icon: "cart",
-        does: "Adds, removes, reads or clears the shopping list.",
+        does: "Adds, removes, reads or clears the shopping list. After an add it stays open for a minute: say \
+               more items one after the other without \"add\", and \"that's all\" to finish. With \
+               norwegian-groceries, items are written under their Norwegian names.",
         source: "Home Assistant to-do list",
         calls: &["todo.add_item", "todo.update_item", "todo.get_items"],
-        examples: &["Add milk and eggs to the shopping list", "What's on the shopping list?", "Clear the shopping list"],
+        examples: &[
+            "Add milk and eggs to the shopping list",
+            "Shopping list",
+            "What's on the shopping list?",
+            "Clear the shopping list",
+        ],
         norwegian: &["Legg melk på handlelista"],
     },
     Skill {

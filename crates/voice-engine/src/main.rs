@@ -198,6 +198,13 @@ struct Args {
     /// The music's volume during a lockdown, in percent; standing down puts the old one back.
     #[arg(long, env = "VOICE_LOCKDOWN_VOLUME", default_value_t = 50, value_parser = clap::value_parser!(u8).range(1..=100))]
     lockdown_volume: u8,
+    /// Shopping list items under their Norwegian names: an English or misheard item is matched to a
+    /// Norwegian grocery, and an item said by itself after "add" is heard again by Whisper in Norwegian.
+    #[arg(long, env = "VOICE_NORWEGIAN_GROCERIES", default_value_t = false, action = clap::ArgAction::Set)]
+    norwegian_groceries: bool,
+    /// The Whisper model for those items (sherpa-onnx export, int8).
+    #[arg(long, env = "VOICE_NORWEGIAN_GROCERIES_MODEL", default_value = voice_assistant::norwegian::DEFAULT_REPO)]
+    norwegian_groceries_model: String,
     /// The Hue bridge's address, for party mode (the lights following the music).
     #[arg(long, env = "VOICE_HUE_BRIDGE")]
     hue_bridge: Option<String>,
@@ -509,6 +516,15 @@ fn main() -> Result<()> {
                             _ => None,
                         },
                     ),
+                    norwegian_groceries: match args.norwegian_groceries {
+                        true => {
+                            let files =
+                                voice_assistant::norwegian::NorwegianFiles::fetch(&args.norwegian_groceries_model)?;
+                            info!(model = %files.encoder().display(), "loading whisper for norwegian groceries");
+                            Some(voice_assistant::norwegian::Norwegian::load(&files, threads)?)
+                        }
+                        false => None,
+                    },
                     prerender: args.speech_cache.is_some(),
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");
