@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::lang::Lang;
 use crate::tts::Tts;
@@ -116,8 +116,9 @@ impl CachedTts {
     }
 }
 
-impl Tts for CachedTts {
-    fn speak(&mut self, text: &str, lang: Lang, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
+impl CachedTts {
+    /// `ahead`: rendered while idle, so a sentence not kept yet is expected, not a miss.
+    fn cached(&mut self, text: &str, lang: Lang, ahead: bool, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
         let text = text.trim();
         if lang != Lang::English || !Self::cacheable(text) {
             return self.inner.speak(text, lang, sink);
@@ -125,6 +126,10 @@ impl Tts for CachedTts {
         if let Some(pcm) = self.load(text) {
             sink(&pcm);
             return Ok(());
+        }
+        if !ahead {
+            // Each of these was heard only after it was synthesized: a sentence to render ahead.
+            info!(text, "speech not rendered ahead");
         }
         let mut pcm = Vec::new();
         self.inner.speak(text, lang, &mut |chunk| {
@@ -136,9 +141,19 @@ impl Tts for CachedTts {
         }
         Ok(())
     }
+}
+
+impl Tts for CachedTts {
+    fn speak(&mut self, text: &str, lang: Lang, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
+        self.cached(text, lang, false, sink)
+    }
 
     fn speak_live(&mut self, text: &str, lang: Lang, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
         self.inner.speak(text, lang, sink)
+    }
+
+    fn render(&mut self, text: &str, lang: Lang) -> Result<()> {
+        self.cached(text, lang, true, &mut |_| {})
     }
 }
 

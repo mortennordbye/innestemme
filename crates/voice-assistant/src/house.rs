@@ -491,6 +491,21 @@ pub const LOCKDOWN_ANSWERS: &[&str] = &[
     "There is no lockdown to end.",
 ];
 
+/// The fixed sentences of leaving, coming home and bedtime, for rendering ahead of time.
+pub const ROUTINE_ANSWERS: &[&str] = &[
+    "Okay, the lights are off.",
+    "Okay, the lights are off, except in the bedroom.",
+    "Okay, everything is already off.",
+    "The music is paused.",
+    "The TV is off.",
+    "The bedroom lights are dimmed.",
+    "The alarm is off. Say arm the alarm to set it.",
+    "The alarm is still armed.",
+    "See you later.",
+    "Good night.",
+    "Welcome home.",
+];
+
 pub fn routine(words: &[String]) -> Option<Routine> {
     if words.len() > 9 {
         return None;
@@ -665,7 +680,7 @@ pub fn pick_phones<'a>(phones: &'a [Phone], name: Option<&str>) -> Vec<&'a Phone
 /// Rings a phone loudly, through silent mode where the app may (iOS critical alerts, Android's
 /// alarm stream).
 pub fn ring(ha: &HomeAssistant, phone: &Phone, name: &str) -> Result<()> {
-    ha.service(
+    ha.send(
         "notify",
         &format!("mobile_app_{}", phone.id),
         json!({
@@ -1114,16 +1129,16 @@ pub fn everything_off(ha: &mut HomeAssistant, keep: impl Fn(&Light) -> bool) -> 
         .collect();
     if !lights.is_empty() {
         let ids: Vec<&str> = lights.iter().map(|l| l.id.as_str()).collect();
-        ha.service("light", "turn_off", json!({ "entity_id": ids }))?;
+        ha.send("light", "turn_off", json!({ "entity_id": ids }))?;
     }
     let snapshot = snapshot(ha)?;
     if !snapshot.playing.is_empty() {
         let ids: Vec<&str> = snapshot.playing.iter().map(|p| p.id.as_str()).collect();
-        ha.service("media_player", "media_pause", json!({ "entity_id": ids }))?;
+        ha.send("media_player", "media_pause", json!({ "entity_id": ids }))?;
     }
     let tvs = crate::tv::on_tvs(ha)?;
     if !tvs.is_empty() {
-        ha.service("media_player", "turn_off", json!({ "entity_id": tvs }))?;
+        ha.send("media_player", "turn_off", json!({ "entity_id": tvs }))?;
     }
     Ok(Switched { lights, music: !snapshot.playing.is_empty(), tvs: !tvs.is_empty() })
 }
@@ -1150,13 +1165,13 @@ pub fn lockdown(ha: &HomeAssistant) -> Result<Vec<String>> {
     let (red, off) = (ids(true), ids(false));
     if !locked_down(ha) {
         let all: Vec<&str> = lights.iter().map(|l| l.id.as_str()).collect();
-        ha.service("scene", "create", json!({ "scene_id": LOCKDOWN_SCENE, "snapshot_entities": all }))?;
+        ha.send("scene", "create", json!({ "scene_id": LOCKDOWN_SCENE, "snapshot_entities": all }))?;
     }
     if !red.is_empty() {
-        ha.service("light", "turn_on", json!({ "entity_id": red, "rgb_color": [255, 0, 0], "brightness_pct": 100 }))?;
+        ha.send("light", "turn_on", json!({ "entity_id": red, "rgb_color": [255, 0, 0], "brightness_pct": 100 }))?;
     }
     if !off.is_empty() {
-        ha.service("light", "turn_off", json!({ "entity_id": off }))?;
+        ha.send("light", "turn_off", json!({ "entity_id": off }))?;
     }
     Ok(red.into_iter().map(str::to_owned).collect())
 }
@@ -1206,8 +1221,8 @@ pub fn stand_down(ha: &HomeAssistant) -> Result<bool> {
         return Ok(false);
     }
     let scene = format!("scene.{LOCKDOWN_SCENE}");
-    ha.service("scene", "turn_on", json!({ "entity_id": scene }))?;
-    ha.service("scene", "delete", json!({ "entity_id": scene }))?;
+    ha.send("scene", "turn_on", json!({ "entity_id": scene }))?;
+    ha.send("scene", "delete", json!({ "entity_id": scene }))?;
     Ok(true)
 }
 
@@ -1269,6 +1284,22 @@ pub fn switched_answer(switched: &Switched, except: Option<&str>, lang: Lang) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routine_answers_are_rendered_ahead() {
+        let light = Light { id: "light.a".into(), name: "A".into(), area: "Kitchen".into(), group: false };
+        for lights in [vec![], vec![light]] {
+            for (music, tvs) in [(false, false), (true, false), (false, true), (true, true)] {
+                let switched = Switched { lights: lights.clone(), music, tvs };
+                for except in [None, Some("bedroom")] {
+                    let answer = switched_answer(&switched, except, Lang::English);
+                    for sentence in answer.split_inclusive('.').map(str::trim) {
+                        assert!(ROUTINE_ANSWERS.contains(&sentence), "{sentence}");
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn alarm_covers_whole_red_rooms() {

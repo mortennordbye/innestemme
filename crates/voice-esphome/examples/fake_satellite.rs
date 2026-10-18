@@ -5,7 +5,9 @@
 //! when told `tts_start_streaming`, and prints when the first audio arrived. `--timers` claims a
 //! timer display; `--stay <s>` keeps the connection that long after the answer, to see timers end
 //! and announcements arrive; `--then <wav>` is the reply when the engine keeps the conversation
-//! open (a new run without the wake word, once the answer has played).
+//! open (a new run without the wake word, once the answer has played). Several wavs, comma
+//! separated, are asked one after the other, each in a run of its own with the wake word, 3 s
+//! after the answer before: a latency bench without reconnecting.
 //!
 //! `cargo run -p voice-esphome --example fake_satellite -- 127.0.0.1:16053 question-16k.wav answer.wav [--speaker] [--timers] [--stay 15] [--then reply-16k.wav]`
 
@@ -34,7 +36,8 @@ async fn main() -> Result<()> {
     let read_wav = |path: &str| -> Result<Vec<i16>> {
         Ok(hound::WavReader::open(path)?.samples::<i16>().collect::<Result<_, _>>()?)
     };
-    let mut mic = read_wav(wav)?;
+    let mut questions = wav.split(',').map(read_wav).collect::<Result<std::collections::VecDeque<_>>>()?;
+    let mut mic = questions.pop_front().unwrap_or_default();
     let mut then = match rest.iter().position(|a| a == "--then") {
         Some(i) => Some(read_wav(rest.get(i + 1).context("--then needs a wav")?)?),
         None => None,
@@ -87,6 +90,7 @@ async fn main() -> Result<()> {
     // The URL from the run's start, the conversation staying open, and when the answer has played.
     let (mut run_url, mut keep_open, mut played_at) = (None::<String>, false, None::<Instant>);
     let (mut restart, mut playing_stream, mut quit_when_played) = (false, false, false);
+    let mut next_at: Option<Instant> = None;
     let (fetched_tx, mut fetched) = tokio::sync::mpsc::unbounded_channel();
     loop {
         if leave_at.is_some_and(|at| Instant::now() >= at) {
@@ -94,6 +98,15 @@ async fn main() -> Result<()> {
         }
         tokio::select! {
             _ = housekeeping.tick() => {
+                if next_at.is_some_and(|at| Instant::now() >= at) {
+                    next_at = None;
+                    mic = questions.pop_front().unwrap_or_default();
+                    (sent, streaming, playing_stream, quit_when_played, played_at) = (0, true, false, false, None);
+                    println!("{:6.2}s next question", t0.elapsed().as_secs_f32());
+                    tick.reset();
+                    let start = VoiceAssistantRequest { start: true, flags: proto::REQUEST_USE_WAKE_WORD, ..Default::default() };
+                    w.write(id::VOICE_ASSISTANT_REQUEST, &start.encode()).await?;
+                }
                 // The firmware starts listening again once the answer has played.
                 if restart && played_at.is_some_and(|at| Instant::now() >= at) {
                     let at = t0.elapsed().as_secs_f32();
@@ -114,8 +127,11 @@ async fn main() -> Result<()> {
                 println!("{at:6.2}s streamed answer complete: {seconds:.2} s of audio, first audio {} ms after the go", first.as_millis());
                 played_at = Some(began + first + Duration::from_secs_f32(seconds) + Duration::from_millis(300));
                 answer.extend(audio);
-                if quit_when_played {
+                if quit_when_played && questions.is_empty() {
                     break;
+                }
+                if quit_when_played {
+                    next_at = Some(Instant::now() + Duration::from_secs(3));
                 }
             }
             _ = tick.tick(), if streaming => {
@@ -179,7 +195,11 @@ async fn main() -> Result<()> {
                             }
                             // The run ends before a streamed answer has finished arriving.
                             2 if leave_at.is_none() && playing_stream && played_at.is_none() => quit_when_played = true,
-                            2 if leave_at.is_none() => break,
+                            2 if leave_at.is_none() && questions.is_empty() => break,
+                            2 if leave_at.is_none() => {
+                                streaming = false;
+                                next_at = Some(Instant::now() + Duration::from_secs(3));
+                            }
                             _ => {}
                         }
                     }

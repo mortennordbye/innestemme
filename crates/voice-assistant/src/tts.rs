@@ -15,6 +15,11 @@ pub trait Tts: Send {
     fn speak_live(&mut self, text: &str, lang: Lang, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
         self.speak(text, lang, sink)
     }
+
+    /// Synthesizes `text` for later, unheard: a speech cache keeps it.
+    fn render(&mut self, text: &str, lang: Lang) -> Result<()> {
+        self.speak(text, lang, &mut |_| {})
+    }
 }
 
 /// One engine per language.
@@ -35,6 +40,13 @@ impl Tts for ByLanguage {
         match lang {
             Lang::English => self.english.speak_live(text, lang, sink),
             Lang::Norwegian => self.norwegian.speak_live(text, lang, sink),
+        }
+    }
+
+    fn render(&mut self, text: &str, lang: Lang) -> Result<()> {
+        match lang {
+            Lang::English => self.english.render(text, lang),
+            Lang::Norwegian => self.norwegian.render(text, lang),
         }
     }
 }

@@ -2,6 +2,7 @@
 //! then `light.turn_on` / `light.turn_off` switch the ones a request names. Scenes and scripts are
 //! listed the same way and found by name ("set the living room to relax", "run movie time").
 
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -156,10 +157,18 @@ pub struct Target {
     pub area: bool,
 }
 
+/// A service call queued by [`HomeAssistant::send`], or a marker to wait for those before it.
+enum Write {
+    Call { domain: String, service: String, data: serde_json::Value },
+    Flush(mpsc::SyncSender<()>),
+}
+
 pub struct HomeAssistant {
     base: String,
     token: String,
     agent: ureq::Agent,
+    /// Set by [`HomeAssistant::write_behind`]; shared with detached clients, so all writes keep one order.
+    writes: Option<mpsc::Sender<Write>>,
     lights: Vec<Light>,
     fetched: Option<Instant>,
     scenes: Vec<Named>,
@@ -173,6 +182,7 @@ impl HomeAssistant {
             base: base.trim_end_matches('/').to_owned(),
             token: token.to_owned(),
             agent: ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).build().into(),
+            writes: None,
             lights: Vec::new(),
             fetched: None,
             scenes: Vec::new(),
@@ -184,7 +194,49 @@ impl HomeAssistant {
     /// A client for a call made on another thread. It shares the connection pool, so the call
     /// reuses an open connection instead of opening one.
     pub fn detached(&self) -> Self {
-        Self { agent: self.agent.clone(), ..Self::new(&self.base, &self.token) }
+        Self { agent: self.agent.clone(), writes: self.writes.clone(), ..Self::new(&self.base, &self.token) }
+    }
+
+    /// From now on [`send`](Self::send) queues its call for a thread of its own, which makes the
+    /// calls in order: Home Assistant answers a Hue light call only once the lights have switched
+    /// (0.5-0.7 s), and the answer need not wait for that. `failed` hears of each call that failed.
+    pub fn write_behind(&mut self, failed: impl Fn(&anyhow::Error) + Send + 'static) -> std::io::Result<()> {
+        let (tx, rx) = mpsc::channel();
+        let ha = Self { agent: self.agent.clone(), ..Self::new(&self.base, &self.token) };
+        std::thread::Builder::new().name("ha-writes".into()).spawn(move || {
+            for write in rx {
+                match write {
+                    Write::Call { domain, service, data } => {
+                        if let Err(error) = ha.service(&domain, &service, data) {
+                            tracing::warn!(error = format!("{error:#}"), domain, service, "home assistant call failed");
+                            failed(&error);
+                        }
+                    }
+                    Write::Flush(done) => {
+                        let _ = done.send(());
+                    }
+                }
+            }
+        })?;
+        self.writes = Some(tx);
+        Ok(())
+    }
+
+    /// A service call that nothing waits on: queued after [`write_behind`](Self::write_behind),
+    /// else made at once.
+    pub fn send(&self, domain: &str, service: &str, data: serde_json::Value) -> Result<()> {
+        let Some(writes) = &self.writes else { return self.service(domain, service, data) };
+        let call = Write::Call { domain: domain.to_owned(), service: service.to_owned(), data };
+        writes.send(call).map_err(|_| anyhow::anyhow!("the Home Assistant writer has stopped"))
+    }
+
+    /// Waits until the calls queued so far have been made.
+    pub fn flush(&self) {
+        let Some(writes) = &self.writes else { return };
+        let (done, wait) = mpsc::sync_channel(1);
+        if writes.send(Write::Flush(done)).is_ok() {
+            let _ = wait.recv();
+        }
     }
 
     fn post(&self, path: &str, body: serde_json::Value) -> Result<ureq::http::Response<ureq::Body>> {
@@ -260,8 +312,7 @@ impl HomeAssistant {
             LightLevel::Warm => ("turn_on", json!({ "entity_id": ids, "color_temp_kelvin": 2700 })),
             LightLevel::Cool => ("turn_on", json!({ "entity_id": ids, "color_temp_kelvin": 5500 })),
         };
-        self.post(&format!("/api/services/light/{service}"), data)?;
-        Ok(())
+        self.send("light", service, data)
     }
 
     /// Everyone Home Assistant tracks, and where they are.
@@ -288,9 +339,7 @@ impl HomeAssistant {
     }
 
     pub fn set(&self, target: &Target, on: bool) -> Result<()> {
-        let service = if on { "turn_on" } else { "turn_off" };
-        self.post(&format!("/api/services/light/{service}"), serde_json::json!({ "entity_id": target.ids }))?;
-        Ok(())
+        self.send("light", if on { "turn_on" } else { "turn_off" }, serde_json::json!({ "entity_id": target.ids }))
     }
 
     /// Calls any service, e.g. `media_player.media_pause`.
