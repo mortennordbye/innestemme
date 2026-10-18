@@ -341,6 +341,12 @@ const NOT_FOR_YOU: &[&str] = &[
     "nothing",
     "ignore that",
     "ignore me",
+    // Said over an answer: stop, not a remark to answer.
+    "shut up",
+    "be quiet",
+    "quiet",
+    "hold kjeft",
+    "vær stille",
     "nei",
     "ikke deg",
     "ikke nå",
@@ -1115,6 +1121,8 @@ mod tests {
         assert!(timer("stop the timer"));
         assert!(!timer("play Timer by Sabrina Carpenter"));
         assert_eq!(parse("stop"), Intent::Cancel);
+        assert_eq!(parse("Shut up!"), Intent::Cancel);
+        assert_eq!(parse("Hold kjeft."), Intent::Cancel);
         assert_eq!(parse("pause"), Intent::Music(MusicCommand::Pause));
         assert!(matches!(parse("next bus"), Intent::Transit(_)));
         assert_eq!(parse("next song"), Intent::Music(MusicCommand::Next));

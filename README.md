@@ -41,6 +41,7 @@ focus; Norwegian works with Whisper and Piper.
 | Weather, departures, power | "will it rain in Bergen tomorrow?", "when's the next bus?", "when is electricity cheapest?" (Yr, Entur, hvakosterstrommen.no) |
 | Everyday | "good morning" (a briefing), "what's the latest news?", "who is Jonas Gahr Støre?", "15 percent of 80", "how far is Tokyo?", "tell me a joke", "what time is it?" |
 | Shopping list | "add milk and eggs to the shopping list", "what's on the list?" |
+| Small talk | "do you love me?", "you're useless" (it has comebacks), "will you marry me?", "what's the meaning of life?", "open the pod bay doors"; "shut up" just stops it |
 | Safety alerts | spoken unasked when a smoke, carbon monoxide, gas, water or breaking glass sensor goes off |
 
 The engine's web page lists every skill with its data source, the calls it makes and phrases that reach it.

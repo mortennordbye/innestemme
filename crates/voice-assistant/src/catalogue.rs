@@ -425,11 +425,22 @@ pub const SKILLS: &[Skill] = &[
         name: "Small talk",
         group: "Everyday",
         icon: "chat",
-        does: "Answers how are you, who are you and hello at once, without the language model.",
+        does: "Answers how are you, who are you and hello at once, without the language model, and what people \
+               say to an assistant that no skill is for: insults, flirting, feelings, other assistants, the \
+               meaning of life, the pod bay doors. \"Shut up\" just ends the answer.",
         source: "Built in",
         calls: &[],
-        examples: &["How are you doing today?", "Who are you?", "Hello"],
-        norwegian: &["Hvordan går det?", "Hvem er du?", "Hei"],
+        examples: &[
+            "How are you doing today?",
+            "Who are you?",
+            "Do you love me?",
+            "You're useless",
+            "Will you marry me?",
+            "What's the meaning of life?",
+            "I'm bored",
+            "Open the pod bay doors",
+        ],
+        norwegian: &["Hvordan går det?", "Hvem er du?", "Du er dum", "Elsker du meg?"],
     },
 ];
 
