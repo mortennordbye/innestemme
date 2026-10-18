@@ -16,6 +16,7 @@ use voice_proto::SAMPLE_RATE;
 use crate::assistant::{AssistantHandle, Preview};
 use crate::control::Control;
 use crate::hub::Hub;
+use crate::learned::Learned;
 use crate::metrics::SpeechClips;
 use crate::unhandled::UnhandledLog;
 
@@ -47,6 +48,8 @@ pub struct Web {
     hub: Option<Arc<Hub>>,
     /// Home Assistant's entities and services for the dashboard's views.
     control: Option<Arc<Control>>,
+    /// Corrections learned from repeats, listed on the log view.
+    learned: Option<Arc<Learned>>,
 }
 
 /// Status, content type and body.
@@ -60,7 +63,47 @@ impl Web {
         speech: Arc<SpeechClips>,
         unhandled: Option<Arc<UnhandledLog>>,
     ) -> Self {
-        Self { wake, about, assistant, speech, unhandled, hub: None, control: None }
+        Self { wake, about, assistant, speech, unhandled, hub: None, control: None, learned: None }
+    }
+
+    pub fn with_learned(mut self, learned: Arc<Learned>) -> Self {
+        self.learned = Some(learned);
+        self
+    }
+
+    /// `/api/learned`: the corrections learned from repeats; `POST /api/learned?forget=<heard>`
+    /// drops one.
+    pub fn learned(&self, post: bool, target: &str) -> Option<Response> {
+        let query = target.strip_prefix("/api/learned")?;
+        let query = match query.strip_prefix('?') {
+            Some(query) => query,
+            None if query.is_empty() => "",
+            None => return None,
+        };
+        let Some(learned) = &self.learned else {
+            return Some(json_response(&json!({ "enabled": false, "pairs": [] })));
+        };
+        if post {
+            let Some(heard) = query.split('&').find_map(|pair| pair.strip_prefix("forget=")).map(decode) else {
+                return Some(bad_request("`forget=<heard>`"));
+            };
+            learned.forget(&heard);
+        }
+        let pairs: Vec<serde_json::Value> = learned
+            .list()
+            .into_iter()
+            .map(|p| {
+                json!({
+                    "heard": p.heard,
+                    "said": p.said,
+                    "meant": p.meant,
+                    "count": p.count,
+                    "last": p.last,
+                    "used": p.count >= crate::learned::LEARN_AFTER,
+                })
+            })
+            .collect();
+        Some(json_response(&json!({ "enabled": true, "after": crate::learned::LEARN_AFTER, "pairs": pairs })))
     }
 
     pub fn with_control(mut self, control: Arc<Control>) -> Self {
@@ -310,6 +353,23 @@ mod tests {
 
     fn web() -> Web {
         Web::new(WakeWord::new("Jarvis"), json!({ "name": "Jarvis" }), None, Arc::default(), None)
+    }
+
+    #[test]
+    fn lists_and_forgets_learned_corrections() {
+        let learned = Arc::new(Learned::new(None));
+        for _ in 0..2 {
+            learned.failed("Code rent.");
+            learned.understood("Code red.");
+        }
+        let web = web().with_learned(learned.clone());
+        let body: serde_json::Value = serde_json::from_slice(&web.learned(false, "/api/learned").unwrap().2).unwrap();
+        assert_eq!(body["pairs"][0]["meant"], "Code red.");
+        assert_eq!(body["pairs"][0]["used"], true);
+        let body: serde_json::Value =
+            serde_json::from_slice(&web.learned(true, "/api/learned?forget=code+rent").unwrap().2).unwrap();
+        assert_eq!(body["pairs"].as_array().map(Vec::len), Some(0));
+        assert!(web.learned(false, "/api/learnedx").is_none());
     }
 
     #[test]

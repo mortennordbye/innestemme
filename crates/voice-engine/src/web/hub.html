@@ -170,7 +170,9 @@ body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
 .miss .when { color: var(--dim); font-family: var(--mono); font-size: 13px; }
 .miss .heard { font-size: 17px; overflow-wrap: anywhere; }
 .miss .why { grid-column: 2; color: var(--dim); font-size: 14px; overflow-wrap: anywhere; }
-@media (max-width: 600px) { .miss { grid-template-columns: 1fr; } .miss .why { grid-column: 1; } }
+.miss .forget { grid-column: 2; justify-self: start; margin-top: 4px; }
+#learned-box { display: grid; gap: 4px; margin-bottom: 24px; }
+@media (max-width: 600px) { .miss { grid-template-columns: 1fr; } .miss .why, .miss .forget { grid-column: 1; } }
 
 /* Views */
 .tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); }
@@ -524,6 +526,11 @@ details.device .settings { display: flex; flex-direction: column; gap: 4px; marg
   </section>
 
   <section class="log" id="view-log" role="tabpanel" aria-labelledby="tab-log" hidden>
+    <div id="learned-box" hidden>
+      <span class="map-title">Learned from repeats</span>
+      <span class="label" id="learned-note"></span>
+      <div id="learned"></div>
+    </div>
     <span class="map-title">Not understood yet</span>
     <span class="label">What was said that no skill handled, newest first: ideas for what to build next</span>
     <div id="misses"></div>
@@ -947,6 +954,27 @@ async function loadMisses() {
       return row;
     }));
   } catch {}
+}
+
+// Requests said again right after a miss: what the misheard words meant, used once seen often enough.
+function showLearned({ enabled, after, pairs }) {
+  if (!enabled) return;
+  $("#learned-box").hidden = !pairs.length;
+  $("#learned-note").textContent = `Said again right after a miss. Used once the same pair has come up ${after} times; forget one that is wrong.`;
+  $("#learned").replaceChildren(...pairs.map((p) => {
+    const row = el("div", "miss");
+    row.append(el("div", "when", p.last), el("div", "heard", `“${p.said}” → “${p.meant}”`));
+    row.append(el("div", "why", `${p.count} ${p.count === 1 ? "time" : "times"} · ${p.used ? "used" : "not used yet"}`));
+    const forget = el("button", "btn forget", "Forget");
+    forget.onclick = async () => {
+      try { showLearned(await (await fetch("api/learned?forget=" + encodeURIComponent(p.heard), { method: "POST" })).json()); } catch {}
+    };
+    row.append(forget);
+    return row;
+  }));
+}
+async function loadLearned() {
+  try { showLearned(await (await fetch("api/learned")).json()); } catch {}
 }
 
 // Read-only requests are answered aloud by the raccoon; the rest only say why not.
@@ -1725,7 +1753,7 @@ function show(view) {
   }
   history.replaceState(null, "", view === "home" ? location.pathname : "#" + view);
   if (view === "map") layout();
-  if (view === "log") loadMisses();
+  if (view === "log") { loadMisses(); loadLearned(); }
   if (view === "system") { renderSystem(); loadActivity(); }
   if (HA_VIEWS.includes(view)) { renderHa(); loadHa(); }
 }

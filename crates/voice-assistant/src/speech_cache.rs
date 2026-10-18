@@ -3,6 +3,10 @@
 //! the sentence with live data is synthesized. Sentences with digits are live data and are not
 //! stored, except a few frequent shapes with small numbers ("Volume 60 percent.", "Timer set for 25
 //! minutes."), which come up again and again. English only; Norwegian goes straight through.
+//!
+//! It also counts what is spoken (`spoken.json`, beside the voices' folders, so a new voice starts
+//! with the sentences heard most): any sentence heard `KEEP_AFTER` times is kept, live data or not,
+//! so what this home actually hears gets faster over time.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -64,11 +68,18 @@ const WHOLE_SHAPES: &[&str] = &[
     "# hours and # minutes left.",
 ];
 
+/// A sentence spoken this often is kept, whatever its numbers.
+const KEEP_AFTER: u32 = 3;
+/// Past this many counted sentences, the ones heard once are dropped from the count.
+const MAX_COUNTED: usize = 5000;
+
 pub struct CachedTts {
     inner: Box<dyn Tts>,
     /// One directory per voice: the audio is that voice's.
     dir: Option<PathBuf>,
     memory: HashMap<String, Arc<[i16]>>,
+    /// How often each sentence has been spoken (not rendered ahead), kept in `spoken.json`.
+    spoken: HashMap<String, u32>,
 }
 
 impl CachedTts {
@@ -79,7 +90,44 @@ impl CachedTts {
                 warn!(%error, dir = %dir.display(), "speech cache directory not usable; keeping speech in memory only");
             }
         }
-        Self { inner, dir, memory: HashMap::new() }
+        let spoken = spoken_path(dir.as_deref())
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        Self { inner, dir, memory: HashMap::new(), spoken }
+    }
+
+    /// The `n` sentences spoken most, the most first.
+    pub fn most_spoken(&self, n: usize) -> Vec<String> {
+        let mut counted: Vec<(&String, &u32)> = self.spoken.iter().collect();
+        counted.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        counted.into_iter().take(n).map(|(text, _)| text.clone()).collect()
+    }
+
+    /// Counts a sentence spoken; how often it has been, now.
+    fn count(&mut self, text: &str) -> u32 {
+        let count = self.spoken.entry(text.to_owned()).or_default();
+        *count += 1;
+        let count = *count;
+        if self.spoken.len() > MAX_COUNTED {
+            self.spoken.retain(|_, n| *n > 1);
+        }
+        if let Some(path) = spoken_path(self.dir.as_deref()) {
+            let partial = path.with_extension("part");
+            let result = serde_json::to_vec(&self.spoken)
+                .map_err(std::io::Error::other)
+                .and_then(|bytes| std::fs::write(&partial, bytes))
+                .and_then(|()| std::fs::rename(&partial, &path));
+            if let Err(error) = result {
+                warn!(%error, "could not keep the count of spoken sentences");
+            }
+        }
+        count
+    }
+
+    /// Kept: a shape that is, or a sentence heard often enough.
+    fn keeps(&self, text: &str) -> bool {
+        Self::cacheable(text) || self.spoken.get(text).is_some_and(|&n| n >= KEEP_AFTER)
     }
 
     /// Whether a sentence is worth keeping: fixed text, or one of the [`NUMBER_SHAPES`] within its
@@ -145,7 +193,13 @@ impl CachedTts {
     /// `ahead`: rendered while idle, so a sentence not kept yet is expected, not a miss.
     fn cached(&mut self, text: &str, lang: Lang, ahead: bool, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
         let text = text.trim();
-        if lang != Lang::English || !Self::cacheable(text) {
+        if lang != Lang::English {
+            return self.inner.speak(text, lang, sink);
+        }
+        if !ahead && self.count(text) == KEEP_AFTER && !Self::cacheable(text) {
+            info!(text, "speech kept: heard often");
+        }
+        if !self.keeps(text) {
             return self.inner.speak(text, lang, sink);
         }
         if let Some(pcm) = self.load(text) {
@@ -181,7 +235,7 @@ impl Tts for CachedTts {
     /// each start, and only the ones spoken need to be in memory.
     fn render(&mut self, text: &str, lang: Lang) -> Result<()> {
         let text = text.trim();
-        if lang != Lang::English || !Self::cacheable(text) || self.memory.contains_key(text) {
+        if lang != Lang::English || !self.keeps(text) || self.memory.contains_key(text) {
             return Ok(());
         }
         if self.path(text).is_some_and(|path| path.exists()) {
@@ -189,6 +243,11 @@ impl Tts for CachedTts {
         }
         self.cached(text, lang, true, &mut |_| {})
     }
+}
+
+/// `spoken.json` beside the voices' folders.
+fn spoken_path(dir: Option<&std::path::Path>) -> Option<PathBuf> {
+    Some(dir?.parent()?.join("spoken.json"))
 }
 
 /// A stable hash for file names: the standard library's may change between Rust versions.
@@ -246,7 +305,9 @@ mod tests {
 
     #[test]
     fn fixed_sentences_are_rendered_once_and_kept_on_disk() {
-        let dir = std::env::temp_dir().join(format!("speech-cache-test-{}", std::process::id()));
+        // A voice's folder inside the cache's own, which holds the count of what was spoken.
+        let root = std::env::temp_dir().join(format!("speech-cache-test-{}", std::process::id()));
+        let dir = root.join("voice");
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut tts = CachedTts::new(Box::new(Counting(calls.clone())), Some(dir.clone()));
         assert_eq!(heard(&mut tts, "Very good, sir."), 15);
@@ -272,6 +333,16 @@ mod tests {
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 5);
         assert_eq!(heard(&mut again, "At once, sir."), 13);
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 5);
-        let _ = std::fs::remove_dir_all(dir);
+        // Live data heard often enough is kept too (twice above, the third time here), and
+        // counted across restarts.
+        for _ in 0..3 {
+            heard(&mut again, "It's 4 degrees.");
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 6);
+        let mut later = CachedTts::new(Box::new(Counting(calls.clone())), Some(dir.clone()));
+        heard(&mut later, "It's 4 degrees.");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 6);
+        assert_eq!(later.most_spoken(1), ["It's 4 degrees."]);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

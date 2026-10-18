@@ -5,6 +5,7 @@ pub mod assistant;
 pub mod control;
 pub mod engine;
 pub mod hub;
+pub mod learned;
 pub mod metrics;
 pub mod party;
 pub mod pipeline;

@@ -34,6 +34,9 @@ static ALLOC: voice_rt::noalloc::AllocDisabler = voice_rt::noalloc::AllocDisable
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// The sentences spoken most that are rendered first after a start.
+const OFTEN_SPOKEN: usize = 500;
+
 #[derive(Clone, Copy, ValueEnum)]
 enum Processor {
     /// Mimi encode -> loopback engine -> Mimi decode.
@@ -141,7 +144,8 @@ struct Args {
     #[arg(long, env = "VOICE_DUMP_UTTERANCES")]
     dump_utterances: Option<PathBuf>,
     /// Log requests no skill handled here, one JSON object per line, to see what to build next.
-    /// The web page lists the latest.
+    /// The web page lists the latest. Corrections learned from repeats are kept next to it, in
+    /// `learned.json`.
     #[arg(long, env = "VOICE_UNHANDLED_LOG")]
     unhandled_log: Option<PathBuf>,
     /// Whisper size: base (290 MB) or small (970 MB, more accurate).
@@ -373,6 +377,9 @@ fn main() -> Result<()> {
     let mut handle = None;
     let activity = Arc::new(voice_engine::activity::Activity::default());
     let unhandled = args.unhandled_log.clone().map(|path| Arc::new(voice_engine::unhandled::UnhandledLog::new(path)));
+    let learned = Arc::new(voice_engine::learned::Learned::new(
+        args.unhandled_log.as_ref().map(|path| path.with_file_name("learned.json")),
+    ));
     let processor: Box<dyn FrameProcessor> = match args.processor {
         Processor::Passthrough => Box::new(Passthrough),
         Processor::Mimi => {
@@ -469,7 +476,7 @@ fn main() -> Result<()> {
                 None if args.piper.is_some() && args.norwegian => Box::new(piper()?),
                 _ => Box::new(say()),
             };
-            let mut renderer = None;
+            let (mut renderer, mut often_spoken) = (None, Vec::new());
             let english: Box<dyn voice_assistant::tts::Tts> = match &args.speech_cache {
                 Some(dir) => {
                     let voice = match args.english_tts {
@@ -483,6 +490,7 @@ fn main() -> Result<()> {
                     info!(dir = %dir.display(), "speech cache");
                     // A voice of its own, so rendering ahead never holds up an answer.
                     let ahead = voice_assistant::speech_cache::CachedTts::new(english_voice()?, Some(dir.clone()));
+                    often_spoken = ahead.most_spoken(OFTEN_SPOKEN);
                     renderer = Some(Box::new(ahead) as Box<dyn voice_assistant::tts::Tts>);
                     Box::new(voice_assistant::speech_cache::CachedTts::new(english, Some(dir)))
                 }
@@ -502,6 +510,7 @@ fn main() -> Result<()> {
                     home_assistant: args.ha_url.clone().zip(args.ha_token.clone()),
                     dump_utterances: args.dump_utterances.clone(),
                     unhandled: unhandled.clone(),
+                    learned: Some(learned.clone()),
                     speaker: args.speaker.clone(),
                     room: args.room.clone(),
                     honorific: args.honorific.clone(),
@@ -535,6 +544,7 @@ fn main() -> Result<()> {
                     },
                     activity: activity.clone(),
                     renderer,
+                    often_spoken,
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");
                         voice_assistant::llm::Llm::new(
@@ -616,7 +626,8 @@ fn main() -> Result<()> {
             Arc::new(
                 Web::new(wake, about, handle.clone(), speech.clone(), unhandled.clone())
                     .with_hub(hub)
-                    .with_control(control),
+                    .with_control(control)
+                    .with_learned(learned.clone()),
             )
         });
         tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));

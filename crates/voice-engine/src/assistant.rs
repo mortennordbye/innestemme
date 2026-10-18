@@ -44,6 +44,7 @@ use voice_rt::noalloc::permit_alloc;
 
 use crate::activity::{self, Activity, Outcome};
 use crate::engine::{FrameProcessor, ProcessError};
+use crate::learned::Learned;
 use crate::metrics::Metrics;
 use crate::party::{self, Party};
 use crate::render::{Priority, RenderAhead};
@@ -165,10 +166,15 @@ pub struct AssistantConfig {
     /// Speech is kept once rendered: fixed sentences are rendered ahead of time by this voice, on a
     /// thread of its own, and slow answers open with a lead-in.
     pub renderer: Option<Box<dyn Tts>>,
+    /// The sentences spoken most, rendered before the rest (after a change of voice, the ones
+    /// this home hears are ready first).
+    pub often_spoken: Vec<String>,
     /// Directory for a wav of every utterance (debugging recognition).
     pub dump_utterances: Option<std::path::PathBuf>,
     /// Where requests that no skill handled are logged.
     pub unhandled: Option<Arc<UnhandledLog>>,
+    /// Corrections learned from requests said again after a miss.
+    pub learned: Option<Arc<Learned>>,
     /// The TV's media player entity; default: the media player that is a TV.
     pub tv: Option<String>,
     /// The `/tv` page as the TV reaches it, opened in its browser for "show ... on the TV".
@@ -495,7 +501,13 @@ impl AssistantProcessor {
         if let Some(renderer) = worker.config.renderer.take() {
             let render = RenderAhead::spawn(renderer)?;
             let (soon, idle) = worker.fixed_sentences();
-            info!(soon = soon.len(), idle = idle.len(), "rendering speech ahead");
+            info!(
+                often = worker.config.often_spoken.len(),
+                soon = soon.len(),
+                idle = idle.len(),
+                "rendering speech ahead"
+            );
+            render.add(Priority::Soon, std::mem::take(&mut worker.config.often_spoken));
             render.add(Priority::Soon, soon);
             render.add(Priority::Idle, idle);
             worker.render = Some(render);
@@ -1009,6 +1021,7 @@ impl Worker {
             None if follow_up || self.woken_at.is_some() => first.text.clone(),
             _ => return,
         };
+        let request = self.learned_meaning(request);
         if intent::split_commands(&request).is_some() || !complete_at_once(&intent::parse(&request)) {
             return;
         }
@@ -1063,10 +1076,16 @@ impl Worker {
             }
             _ => request,
         };
+        let request = self.learned_meaning(request);
         // Without the name, only act on something recognisable: in the follow-up window the
         // microphone also hears the room.
         // With a language model, it decides whether unrecognised words were meant for the assistant.
         let unknown = intent::parse(&request) == Intent::Unknown;
+        if let (false, Some(learned)) = (unknown, &self.config.learned) {
+            if let Some(pair) = learned.understood(&request) {
+                info!(heard = pair.said, meant = pair.meant, "correction learned");
+            }
+        }
         // A question waiting for "yes" only takes a yes or a no: other words without the name are the room.
         let confirming = self.pending_confirm.is_some() && confirmation(&request).is_some();
         let pending =
@@ -1694,6 +1713,23 @@ impl Worker {
     fn unhandled(&self, reason: Reason, heard: &str, answer: Option<&str>) {
         if let Some(log) = &self.config.unhandled {
             log.record(reason, heard, answer, self.last_audio.as_deref());
+        }
+        if let (Reason::NotUnderstood | Reason::Unknown | Reason::FollowUpIgnored, Some(learned)) =
+            (reason, &self.config.learned)
+        {
+            learned.failed(heard);
+        }
+    }
+
+    /// The request learned for words that are not understood as they are; else the words.
+    fn learned_meaning(&self, request: String) -> String {
+        let learned = self.config.learned.as_ref().filter(|_| intent::parse(&request) == Intent::Unknown);
+        match learned.and_then(|learned| learned.meant(&request)) {
+            Some(meant) => {
+                info!(heard = request, meant, "learned correction");
+                meant
+            }
+            None => request,
         }
     }
 
