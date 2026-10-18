@@ -299,6 +299,13 @@ impl AssistantHandle {
         answer
     }
 
+    /// A web page button's request, done without a word; its answer's text.
+    pub fn act(&self, text: String) -> tokio::sync::oneshot::Receiver<String> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let _ = self.jobs.send(Job::Act(text, reply));
+        answer
+    }
+
     /// A satellite connected: its names, to look up its room in Home Assistant.
     pub fn satellite(&self, names: Vec<String>) {
         let _ = self.jobs.send(Job::Satellite(names));
@@ -339,6 +346,9 @@ enum Job {
     Alert(String),
     /// A Home Assistant call the answer did not wait for failed: say so.
     Failed(String),
+    /// A button on the web page: a fixed request, acted on without a spoken answer. The answer's
+    /// text comes back.
+    Act(String, tokio::sync::oneshot::Sender<String>),
 }
 
 pub struct AssistantProcessor {
@@ -907,6 +917,18 @@ impl Worker {
                     self.announce(&text, tts::alarm_chime(), Lang::English, false);
                 }
                 Job::Failed(text) => self.announce(&text, Vec::new(), Lang::English, false),
+                Job::Act(text, reply) => {
+                    let start = Instant::now();
+                    let answer = self.compose(&text, Lang::English).unwrap_or_default();
+                    info!(request = text, answer, "done from the web page");
+                    let turn = self.turn_for(&text, Some(answer.clone()), Outcome::Done, start);
+                    self.config.activity.record(turn);
+                    // What follows an answer (the lockdown's music) follows at once: there is none to wait out.
+                    if self.after_answer.is_some() {
+                        self.after_answer_at = Some(Instant::now());
+                    }
+                    let _ = reply.send(answer);
+                }
                 Job::Ready => {
                     info!("ready");
                     (self.follow_up_until, self.last_lights, self.pending_lights) = (None, None, None);

@@ -605,7 +605,12 @@ fn main() -> Result<()> {
             let hub =
                 voice_engine::hub::Hub::new(args.ha_url.clone().zip(args.ha_token.clone()), args.hub_faces.clone());
             info!(url = format!("http://{}/hub", args.metrics_bind), "hub page");
-            Arc::new(Web::new(wake, about, handle.clone(), speech.clone(), unhandled.clone()).with_hub(hub))
+            let control = Arc::new(voice_engine::control::Control::new(args.ha_url.clone().zip(args.ha_token.clone())));
+            Arc::new(
+                Web::new(wake, about, handle.clone(), speech.clone(), unhandled.clone())
+                    .with_hub(hub)
+                    .with_control(control),
+            )
         });
         tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));
         if let Some(address) = args.satellite.clone() {

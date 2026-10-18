@@ -2,6 +2,7 @@
 
 pub mod activity;
 pub mod assistant;
+pub mod control;
 pub mod engine;
 pub mod hub;
 pub mod metrics;

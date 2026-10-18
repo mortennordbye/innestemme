@@ -271,6 +271,8 @@ pub async fn serve_http(
             }
             let page = match &web {
                 Some(web) if target.starts_with("/api/hub") => web.hub_api(method == b"POST", target).await,
+                Some(web) if target.starts_with("/api/ha/") => web.control_api(method == b"POST", target).await,
+                Some(web) if target.starts_with("/api/act?") => web.act(method == b"POST", target).await,
                 Some(web) if target.starts_with("/api/hear?") => web.hear(target).await,
                 Some(web) if target.starts_with("/api/listening") => web.listening(method == b"POST", target),
                 Some(web) => web.route(target),

@@ -14,6 +14,7 @@ use voice_assistant::intent;
 use voice_proto::SAMPLE_RATE;
 
 use crate::assistant::{AssistantHandle, Preview};
+use crate::control::Control;
 use crate::hub::Hub;
 use crate::metrics::SpeechClips;
 use crate::unhandled::UnhandledLog;
@@ -25,6 +26,14 @@ const HEAR_TIMEOUT: Duration = Duration::from_secs(30);
 const UNHANDLED_SHOWN: usize = 200;
 /// Requests the page lists as recent.
 const RECENT_SHOWN: usize = 30;
+/// The page's apartment-wide buttons, as the requests they make.
+const ACTIONS: &[(&str, &str)] = &[
+    ("party", "party mode"),
+    ("party_fast", "fast party mode"),
+    ("party_off", "stop the party"),
+    ("lockdown", "initiate lockdown"),
+    ("stand_down", "stand down"),
+];
 
 pub struct Web {
     wake: WakeWord,
@@ -36,6 +45,8 @@ pub struct Web {
     unhandled: Option<Arc<UnhandledLog>>,
     /// The dashboard at `/hub`.
     hub: Option<Arc<Hub>>,
+    /// Home Assistant's entities and services for the dashboard's views.
+    control: Option<Arc<Control>>,
 }
 
 /// Status, content type and body.
@@ -49,7 +60,41 @@ impl Web {
         speech: Arc<SpeechClips>,
         unhandled: Option<Arc<UnhandledLog>>,
     ) -> Self {
-        Self { wake, about, assistant, speech, unhandled, hub: None }
+        Self { wake, about, assistant, speech, unhandled, hub: None, control: None }
+    }
+
+    pub fn with_control(mut self, control: Arc<Control>) -> Self {
+        self.control = Some(control);
+        self
+    }
+
+    /// `/api/ha/...`: the views' entities, their trends and the weather forecast, images, and
+    /// `POST /api/ha/call` for a service.
+    pub async fn control_api(&self, post: bool, target: &str) -> Option<Response> {
+        let control = self.control.clone()?;
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        let (path, query) = (path.to_owned(), query.to_owned());
+        let result = tokio::task::spawn_blocking(move || match (path.as_str(), post) {
+            ("/api/ha/states", false) => control.states().map(|v| json_response(&v)),
+            ("/api/ha/call", true) => control.call(&query).map(|()| json_response(&json!({ "ok": true }))),
+            ("/api/ha/history", false) => control.history(&query).map(|v| json_response(&v)),
+            ("/api/ha/forecast", false) => control.forecast(&query).map(|v| json_response(&v)),
+            ("/api/ha/image", false) => control.image(&query),
+            _ => Ok(("404 Not Found", "text/plain", b"not found\n".to_vec())),
+        })
+        .await;
+        Some(match result {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                tracing::warn!(error = format!("{error:#}"), "dashboard request failed");
+                (
+                    "502 Bad Gateway",
+                    "application/json",
+                    json!({ "reason": format!("{error:#}") }).to_string().into_bytes(),
+                )
+            }
+            Err(error) => ("500 Internal Server Error", "text/plain", error.to_string().into_bytes()),
+        })
     }
 
     pub fn with_hub(mut self, hub: Arc<Hub>) -> Self {
@@ -110,6 +155,26 @@ impl Web {
         })))
     }
 
+    /// `POST /api/act?do=party`: the page's apartment-wide buttons, each a fixed request.
+    pub async fn act(&self, post: bool, target: &str) -> Option<Response> {
+        let query = target.strip_prefix("/api/act?")?;
+        let Some(assistant) = &self.assistant else {
+            return Some(bad_request("This engine has no assistant."));
+        };
+        if !post {
+            return Some(bad_request("POST"));
+        }
+        let what = query.split('&').find_map(|pair| pair.strip_prefix("do=")).unwrap_or_default();
+        let Some((_, request)) = ACTIONS.iter().find(|(name, _)| *name == what) else {
+            return Some(bad_request("`do` is one of party, party_fast, party_off, lockdown, stand_down"));
+        };
+        let answer = tokio::time::timeout(HEAR_TIMEOUT, assistant.act((*request).to_owned())).await;
+        Some(match answer {
+            Ok(Ok(answer)) => json_response(&json!({ "answer": answer })),
+            _ => bad_request("The assistant did not answer in time."),
+        })
+    }
+
     /// `/api/hear?q=...`: the spoken answer as a URL under `/speech/`, when the request only reads.
     pub async fn hear(&self, target: &str) -> Option<Response> {
         let query = target.strip_prefix("/api/hear?")?;
@@ -161,6 +226,11 @@ impl Web {
             json!({ "sentences": sentences, "mb": bytes / 1_000_000 })
         });
         value["system"] = json!({ "memory_mb": resident_mb(), "speech_cache": cache });
+        value["party"] = match self.assistant.as_ref().and_then(|a| a.party.mode()) {
+            Some(crate::party::Mode::Normal) => json!("normal"),
+            Some(crate::party::Mode::Fast) => json!("fast"),
+            None => json!(null),
+        };
         value["about"] = self.about.clone();
         value
     }
@@ -276,6 +346,14 @@ mod tests {
         }
         let emoji = page.chars().find(|&c| matches!(c, '\u{2600}'..='\u{27bf}' | '\u{1f000}'..));
         assert_eq!(emoji, None, "icons are drawn, not emoji");
+    }
+
+    #[tokio::test]
+    async fn actions_and_activity_are_apart() {
+        // "/api/act?" is a prefix of nothing else the page asks for.
+        assert!(web().act(true, "/api/activity").await.is_none());
+        let (status, ..) = web().act(true, "/api/act?do=party").await.unwrap();
+        assert_eq!(status, "400 Bad Request");
     }
 
     #[test]

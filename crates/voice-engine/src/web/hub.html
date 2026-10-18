@@ -42,7 +42,7 @@ main { min-height: 100vh; display: flex; flex-direction: column; gap: 24px; padd
 
 /* The face */
 .face-col { display: flex; flex-direction: column; align-items: center; gap: 18px; }
-.face { position: relative; width: min(300px, 70vw); aspect-ratio: 1; }
+.face { position: relative; width: min(240px, 60vw); aspect-ratio: 1; }
 .face .ring { position: absolute; inset: 0; border-radius: 50%; border: 3px solid var(--accent); opacity: 0; }
 .face .photo { position: absolute; inset: 0; border-radius: 50%; overflow: hidden; box-shadow: 0 0 0 1px var(--line), 0 24px 60px rgba(0, 0, 0, .6); transition: box-shadow .4s; }
 .face img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .25s; }
@@ -264,6 +264,131 @@ body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
 .facts dd.ok { color: var(--good); }
 .facts dd.off { color: var(--dim); }
 .facts dd.bad { color: var(--bad); }
+
+/* Home Assistant views: lights, climate, media, house */
+.ha-view { display: flex; flex-direction: column; gap: 18px; width: 100%; }
+.ha-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.ha-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; align-items: start; }
+.panel { border: 1px solid var(--line); border-radius: 22px; padding: 18px 20px; background: var(--panel); display: flex; flex-direction: column; gap: 14px; }
+.panel.lit { background: radial-gradient(circle at 90% 0%, rgba(255, 196, 107, .16), transparent 55%), var(--panel); border-color: rgba(255, 196, 107, .3); }
+.panel h3 { margin: 0; font-size: 20px; font-weight: 500; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.row .soft, .soft { color: var(--soft); font-size: 14px; }
+.tog { position: relative; width: 48px; height: 28px; flex: none; border: 0; border-radius: 999px; background: #232833; cursor: pointer; transition: background .2s; }
+.tog i { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #8a92a1; transition: transform .2s, background .2s; }
+.tog.on { background: rgba(124, 245, 212, .3); }
+.tog.on i { transform: translateX(20px); background: var(--accent); }
+.tog.warm.on { background: rgba(255, 196, 107, .32); } .tog.warm.on i { background: var(--warm); }
+.tog:disabled { cursor: not-allowed; opacity: .45; }
+.tog:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 28px; background: transparent; cursor: pointer; }
+input[type=range]::-webkit-slider-runnable-track { height: 8px; border-radius: 4px; background: linear-gradient(90deg, var(--fill, var(--accent)) var(--pct, 0%), #232833 var(--pct, 0%)); }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; margin-top: -7px; border-radius: 50%; background: #f4f6f9; box-shadow: 0 2px 8px rgba(0, 0, 0, .5); }
+input[type=range]::-moz-range-track { height: 8px; border-radius: 4px; background: #232833; }
+input[type=range]::-moz-range-progress { height: 8px; border-radius: 4px; background: var(--fill, var(--accent)); }
+input[type=range]::-moz-range-thumb { width: 22px; height: 22px; border: 0; border-radius: 50%; background: #f4f6f9; }
+.lamps { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.lamp { border: 1px solid var(--line); border-radius: 16px; padding: 12px; display: flex; flex-direction: column; gap: 8px; background: #11141a; }
+.lamp.on { border-color: rgba(255, 196, 107, .35); background: radial-gradient(circle at 80% 0%, var(--glow, rgba(255, 196, 107, .2)), transparent 70%), #12151b; }
+.lamp .name { font-size: 15px; font-weight: 500; }
+.swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+.swatch { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.swatch:hover, .swatch:focus-visible { border-color: #fff; outline: 0; }
+.scenes { display: flex; gap: 6px; flex-wrap: wrap; }
+.scene { font: inherit; font-size: 14px; padding: 7px 13px; border-radius: 999px; border: 1px solid var(--line); background: #11141a; color: var(--text); cursor: pointer; }
+.scene:hover { border-color: var(--accent); }
+.scene:active { transform: scale(.97); }
+.btn { font: inherit; font-size: 14px; padding: 8px 15px; border-radius: 12px; border: 1px solid var(--line); background: #161a21; color: var(--text); cursor: pointer; }
+.btn:hover { border-color: var(--soft); }
+.btn.big { padding: 10px 18px; font-size: 15px; }
+.big-num { font-size: 46px; font-weight: 300; letter-spacing: -.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+.big-num small { font-size: 20px; color: var(--soft); margin-left: 2px; }
+.meters { display: flex; gap: 18px; flex-wrap: wrap; }
+.meter b { display: block; font-size: 20px; font-weight: 400; font-variant-numeric: tabular-nums; }
+.meter span { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+.spark { width: 100%; height: 56px; display: block; }
+.spark path.line { fill: none; stroke-width: 2; }
+.spark path.area { opacity: .15; }
+.days { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.day { text-align: center; padding: 10px 4px; border-radius: 14px; background: #11141a; }
+.day .d { font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: .1em; }
+.day .c { font-size: 13px; color: var(--soft); min-height: 2.4em; display: flex; align-items: center; justify-content: center; }
+.day b { font-weight: 500; }
+.state-ok { color: var(--good); } .state-bad { color: var(--bad); font-weight: 600; } .state-dim { color: var(--dim); }
+.battery { display: grid; grid-template-columns: 1fr 90px 3.2em; gap: 10px; align-items: center; font-size: 14px; color: var(--soft); }
+.battery .bar { height: 6px; border-radius: 3px; background: #232833; overflow: hidden; }
+.battery .bar i { display: block; height: 100%; background: var(--good); }
+.battery .bar i.low { background: var(--bad); }
+.player { display: grid; grid-template-columns: 120px 1fr; gap: 16px; align-items: center; }
+.player .art { width: 120px; height: 120px; border-radius: 16px; background: #161a21 center / cover no-repeat; display: flex; align-items: center; justify-content: center; color: var(--dim); }
+.player .title { font-size: 18px; font-weight: 500; }
+.ctrls { display: flex; gap: 8px; align-items: center; }
+.ctrl { width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: #161a21; color: var(--text); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.ctrl.main { width: 54px; height: 54px; background: var(--accent); color: #04110d; border: 0; }
+.ctrl svg { width: 20px; height: 20px; fill: currentColor; }
+select.pick { font: inherit; font-size: 14px; color: var(--text); background: #161a21; border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; max-width: 60%; }
+.setting { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; font-size: 14px; color: var(--soft); min-height: 34px; }
+.setting.wide { grid-template-columns: 1fr; }
+.setting .val { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+details.device { border-top: 1px solid var(--line); padding-top: 10px; }
+details.device summary { cursor: pointer; font-size: 15px; color: var(--text); list-style: none; display: flex; justify-content: space-between; }
+details.device summary::after { content: "+"; color: var(--dim); }
+details.device[open] summary::after { content: "−"; }
+details.device .settings { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.cam { width: 100%; aspect-ratio: 16 / 9; border-radius: 16px; background: #0b0d11 center / cover no-repeat; display: flex; align-items: center; justify-content: center; color: var(--dim); font-family: var(--mono); font-size: 13px; }
+.people { display: flex; gap: 10px; flex-wrap: wrap; }
+.person { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; background: #11141a; }
+.person i { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
+.person.home i { background: var(--good); }
+.lock { font-family: var(--mono); font-size: 11px; color: var(--dim); letter-spacing: .08em; }
+.toast { position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); padding: 12px 20px; border-radius: 14px; background: #2a1517; border: 1px solid rgba(255, 107, 107, .5); color: #ffd0d0; z-index: 30; max-width: 90vw; }
+.mini { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 14px; font-size: 15px; }
+.mini span:nth-child(3n+2) { font-variant-numeric: tabular-nums; }
+.mini span:nth-child(3n) { color: var(--dim); font-variant-numeric: tabular-nums; }
+.tabs { overflow-x: auto; max-width: 100%; min-width: 0; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs button { padding: 9px 16px; flex: none; }
+.top > * { min-width: 0; }
+@media (max-width: 700px) {
+  /* The tabs get a row of their own and scroll within it; the ticker spans the narrower gutters. */
+  .tabs { order: 3; width: 100%; }
+  .ticker { margin: 0 -16px; }
+  .ticker div { padding-left: 16px; }
+  .pill { max-width: 100%; }
+  .control .buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .home-days { width: 100%; }
+}
+
+/* Home as an overview */
+.room .meta { display: flex; gap: 12px; align-items: baseline; font-family: var(--mono); font-size: 13px; color: var(--dim); }
+.room .climate { color: var(--soft); }
+.room input[type=range] { margin-top: 2px; }
+.mini-player { display: grid; grid-template-columns: 64px 1fr; gap: 14px; align-items: center; }
+.mini-player .art { width: 64px; height: 64px; border-radius: 12px; background: #161a21 center / cover no-repeat; }
+.mini-player .ctrls .ctrl { width: 38px; height: 38px; }
+.mini-player .ctrls .ctrl.main { width: 44px; height: 44px; }
+.quick { display: flex; flex-direction: column; gap: 2px; }
+.home-days { width: min(360px, 90vw); }
+.control { display: flex; flex-direction: column; gap: 12px; margin-bottom: 22px; padding: 16px; border: 1px solid var(--line); border-radius: 22px; background: var(--panel); }
+.control .buttons { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.act { font: inherit; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 14px; border-radius: 16px; border: 1px solid var(--line); background: #11141a; color: var(--text); cursor: pointer; text-align: left; transition: transform .15s, border-color .3s, background .3s; }
+.act:active { transform: scale(.97); }
+.act:hover { border-color: var(--soft); }
+.act b { font-size: 16px; font-weight: 500; }
+.act span { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.act.on { border-color: var(--warm); background: radial-gradient(circle at 80% 0%, rgba(255, 196, 107, .22), transparent 70%), #12151b; }
+.act.party.on { border-color: #b05cff; background: radial-gradient(circle at 80% 0%, rgba(176, 92, 255, .3), transparent 70%), #12151b; animation: partyglow 1.2s ease-in-out infinite alternate; }
+.act.alert.on { border-color: var(--bad); background: radial-gradient(circle at 80% 0%, rgba(255, 107, 107, .3), transparent 70%), #1a1012; animation: blink 1s steps(2) infinite; }
+@keyframes partyglow { from { box-shadow: 0 0 0 rgba(176, 92, 255, 0); } to { box-shadow: 0 0 24px rgba(176, 92, 255, .35); } }
+.control .swatches .swatch { width: 30px; height: 30px; }
+.temps { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; }
+.temp { padding: 10px 12px; border-radius: 14px; background: #11141a; }
+.temp b { display: block; font-size: 30px; font-weight: 300; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.temp span { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+.home-days .day { padding: 8px 2px; }
+.home-days .c { min-height: 0; font-size: 12px; }
+.status-card { cursor: pointer; }
+.status-card .row span:last-child { font-family: var(--mono); font-size: 13px; }
 </style>
 </head>
 <body data-state="idle">
@@ -310,6 +435,10 @@ body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
     <div class="who"><span class="dot"><i></i><b></b></span><strong id="name">Jarvis</strong><span class="label" id="status-line">listening for the wake word</span></div>
     <div class="tabs" role="tablist" aria-label="Views">
       <button type="button" role="tab" id="tab-home" aria-selected="true" aria-controls="view-home">Home</button>
+      <button type="button" role="tab" id="tab-lights" aria-selected="false" aria-controls="view-lights">Lights</button>
+      <button type="button" role="tab" id="tab-climate" aria-selected="false" aria-controls="view-climate">Climate</button>
+      <button type="button" role="tab" id="tab-media" aria-selected="false" aria-controls="view-media">Media</button>
+      <button type="button" role="tab" id="tab-house" aria-selected="false" aria-controls="view-house">House</button>
       <button type="button" role="tab" id="tab-map" aria-selected="false" aria-controls="view-map">Map</button>
       <button type="button" role="tab" id="tab-log" aria-selected="false" aria-controls="view-log" hidden>Log</button>
       <button type="button" role="tab" id="tab-system" aria-selected="false" aria-controls="view-system">System</button>
@@ -350,9 +479,12 @@ body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
       <div class="said" id="said" aria-live="polite"></div>
       <div class="clock"><span class="time" id="time">--:--</span><span class="label" id="date"></span></div>
       <div class="weather" id="weather"></div>
+      <div class="days home-days" id="home-days"></div>
+      <div class="people" id="home-people"></div>
     </section>
 
     <section aria-label="Rooms">
+      <div class="control" id="control" aria-label="The whole apartment"></div>
       <span class="label">Rooms · tap to switch</span>
       <div class="rooms" id="rooms"></div>
       <div class="recent" aria-label="Recent requests">
@@ -363,6 +495,11 @@ body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
 
     <section class="side" id="side" aria-label="Now"></section>
   </div>
+
+  <section class="ha-view" id="view-lights" role="tabpanel" aria-labelledby="tab-lights" hidden></section>
+  <section class="ha-view" id="view-climate" role="tabpanel" aria-labelledby="tab-climate" hidden></section>
+  <section class="ha-view" id="view-media" role="tabpanel" aria-labelledby="tab-media" hidden></section>
+  <section class="ha-view" id="view-house" role="tabpanel" aria-labelledby="tab-house" hidden></section>
 
   <section class="map" id="view-map" role="tabpanel" aria-labelledby="tab-map" hidden>
     <div class="map-head">
@@ -491,19 +628,37 @@ function render() {
   $("#ticker").replaceChildren(...items);
 }
 function renderRooms() {
+  if (Date.now() - touching < 1500) return;
   const box = $("#rooms");
   box.replaceChildren();
   for (const r of data?.rooms || []) {
     const on = r.lit > 0;
-    const b = el("button", "room" + (on ? " on" : ""));
-    b.type = "button";
+    const b = el("div", "room" + (on ? " on" : ""));
+    b.setAttribute("role", "button");
+    b.tabIndex = 0;
     b.setAttribute("aria-pressed", on);
     const head = el("span", "head");
     head.append(el("span", "name", r.area));
     head.insertAdjacentHTML("beforeend", BULB);
-    const state = el("span", "state", on ? (r.lit === r.total ? "ON" : `${r.lit} OF ${r.total} ON`) : "OFF");
-    b.append(head, state);
+    const meta = el("span", "meta");
+    meta.append(el("span", "state", on ? (r.lit === r.total ? "ON" : `${r.lit} OF ${r.total} ON`) : "OFF"));
+    // The room's own climate, when it has a sensor.
+    const [t] = ha.length ? sensorsIn(r.area, "temperature") : [];
+    const [hu] = ha.length ? sensorsIn(r.area, "humidity") : [];
+    if (t) meta.append(el("span", "climate", (+t.state).toFixed(1) + "°" + (hu ? " · " + Math.round(+hu.state) + "%" : "")));
+    b.append(head, meta);
+    // Brightness for the whole room while it is lit: its group light, or each lamp.
+    const lamps = ha.filter((e) => domain(e) === "light" && e.area === r.area && live(e) && !e.network && !/ LED/.test(e.name));
+    const group = lamps.find((e) => Array.isArray(e.a.entity_id));
+    const level = group || lamps.find((e) => e.state === "on" && dims(e));
+    if (on && level && dims(level)) {
+      const range = slider(pct(level), 1, 100, 1, r.area + " brightness", (v) => (group ? [group] : lamps.filter((e) => e.state === "on")).forEach((e) => call("light", "turn_on", e.id, { brightness_pct: v })), "var(--warm)");
+      range.onclick = (e) => e.stopPropagation();
+      range.onpointerdown = (e) => { e.stopPropagation(); touching = Date.now(); };
+      b.append(range);
+    }
     b.onclick = () => toggle(r, b);
+    b.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(r, b); } };
     box.append(b);
   }
   if (!box.children.length) box.append(el("div", "label", data?.error || "No rooms with lights."));
@@ -520,7 +675,9 @@ function renderSide() {
   const side = $("#side");
   side.replaceChildren();
   for (const text of data?.alerts || []) side.append(el("div", "card alert-card big", text));
-  for (const m of data?.media || []) {
+  const playing = ha.find((e) => domain(e) === "media_player" && ["playing", "paused"].includes(e.state) && e.a.media_title);
+  if (playing) side.append(miniPlayer(playing));
+  else for (const m of data?.media || []) {
     const c = el("div", "card");
     c.append(el("span", "label", "Now playing · " + m.name));
     const bars = el("div", "bars"); bars.setAttribute("aria-hidden", "true");
@@ -539,7 +696,12 @@ function renderSide() {
     c.append(text);
     side.append(c);
   }
-  if (activity?.today?.requests) side.append(todayCard(activity.today));
+  const temps = tempsCard();
+  if (temps) side.append(temps);
+  const quick = quickCard();
+  if (quick) side.append(quick);
+  const status = statusCard();
+  if (status) side.append(status);
   const list = data?.shopping || [];
   if (list.length) {
     const c = el("div", "card");
@@ -549,6 +711,7 @@ function renderSide() {
     c.append(items);
     side.append(c);
   }
+  if (activity?.today?.requests) side.append(todayCard(activity.today));
   if (!side.children.length) {
     const c = el("div", "card");
     c.append(el("span", "label", "Try"), el("span", "big", "“Hey Jarvis, is everything okay at home?”"));
@@ -803,6 +966,638 @@ async function hear(phrase) {
   } catch { setState("idle", ""); note.textContent = "The engine didn't answer."; }
 }
 
+
+// --- Home Assistant: the Lights, Climate, Media and House views -----------------------------------
+// One snapshot of every entity the views show, polled while one is open. A control changes the
+// state at once on the page and asks again shortly after, when Home Assistant has switched.
+const VIEWS = ["home", "lights", "climate", "media", "house", "map", "log", "system"];
+const HA_VIEWS = ["lights", "climate", "media", "house"];
+let ha = [], touching = 0;
+const domain = (e) => e.id.split(".")[0];
+const live = (e) => e && !["unavailable", "unknown"].includes(e.state);
+const shown = () => VIEWS.find((v) => !$("#view-" + v).hidden) || "home";
+const svg = (path) => `<svg viewBox="0 0 24 24" aria-hidden="true">${path}</svg>`;
+const ICON = {
+  play: svg('<path d="M8 5v14l11-7z"/>'), pause: svg('<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>'),
+  next: svg('<path d="M6 6v12l8.5-6zM16 6h2v12h-2z"/>'), prev: svg('<path d="M18 6v12l-8.5-6zM6 6h2v12H6z"/>'),
+};
+async function loadHa() {
+  try {
+    const res = await fetch("api/ha/states");
+    if (!res.ok) throw new Error();
+    ha = await res.json();
+  } catch { return; }
+  if (Date.now() - touching > 1500) renderHa();
+  renderSide();
+  if (shown() === "home") { renderRooms(); renderHomeExtras(); renderControl(); }
+}
+function renderHa() {
+  const view = shown();
+  if (view === "lights") renderLights();
+  if (view === "climate") renderClimate();
+  if (view === "media") renderMedia();
+  if (view === "house") renderHouse();
+}
+function toast(text) {
+  const t = el("div", "toast", text);
+  document.body.append(t);
+  setTimeout(() => t.remove(), 4000);
+}
+async function call(dom, service, entity, params = {}) {
+  touching = Date.now();
+  const q = new URLSearchParams({ domain: dom, service, entity_id: entity, ...params });
+  try {
+    const res = await fetch("api/ha/call?" + q, { method: "POST" });
+    if (!res.ok) toast((await res.json().catch(() => ({}))).reason || "Home Assistant said no.");
+  } catch { toast("The engine didn't answer."); }
+  setTimeout(loadHa, 400);
+  setTimeout(loadHa, 1600);
+}
+function tog(on, label, change, opts = {}) {
+  const b = el("button", "tog" + (on ? " on" : "") + (opts.warm ? " warm" : ""));
+  b.type = "button";
+  b.setAttribute("aria-pressed", on);
+  b.setAttribute("aria-label", label);
+  b.disabled = !!opts.disabled;
+  b.append(el("i"));
+  b.onclick = (e) => { e.stopPropagation(); b.classList.toggle("on"); b.setAttribute("aria-pressed", !on); change(!on); };
+  return b;
+}
+function slider(value, min, max, step, label, change, fill) {
+  const i = document.createElement("input");
+  Object.assign(i, { type: "range", min, max, step, value });
+  i.setAttribute("aria-label", label);
+  const paint = () => i.style.setProperty("--pct", ((i.value - min) / (max - min || 1)) * 100 + "%");
+  if (fill) i.style.setProperty("--fill", fill);
+  paint();
+  i.addEventListener("pointerdown", () => { touching = Date.now(); });
+  i.oninput = () => { touching = Date.now(); paint(); clearTimeout(i.wait); i.wait = setTimeout(() => change(+i.value), 250); };
+  return i;
+}
+function picker(entity, options, current, change) {
+  const s = el("select", "pick");
+  s.setAttribute("aria-label", entity.name);
+  for (const o of options) { const opt = el("option", null, o); opt.value = o; opt.selected = o === current; s.append(opt); }
+  s.onfocus = () => { touching = Date.now(); };
+  s.onchange = () => change(s.value);
+  return s;
+}
+// A switch, select, number or light as one settings row, under the device it belongs to.
+function setting(e, prefix) {
+  const label = e.name.replace(prefix, "").trim() || e.name;
+  const row = el("div", "setting");
+  row.append(el("span", null, label));
+  const d = domain(e);
+  if (!live(e)) { row.append(el("span", "val", "unavailable")); return row; }
+  if (["switch", "input_boolean", "automation", "light"].includes(d)) {
+    const locked = e.network && !/guest|gjest/i.test(e.name);
+    if (locked) { row.append(el("span", "lock", (e.state === "on" ? "ON" : "OFF") + " · READ ONLY")); return row; }
+    row.append(tog(e.state === "on", label, (on) => call(d, on ? "turn_on" : "turn_off", e.id)));
+  } else if (d === "select" && e.a.options) {
+    row.append(picker(e, e.a.options, e.state, (o) => call("select", "select_option", e.id, { option: o })));
+  } else if (d === "number") {
+    row.classList.add("wide");
+    const head = el("div", "row");
+    const val = el("span", "val", e.state);
+    head.append(el("span", null, label), val);
+    row.replaceChildren(head, slider(+e.state, e.a.min ?? 0, e.a.max ?? 100, e.a.step ?? 1, label, (v) => { val.textContent = v; call("number", "set_value", e.id, { value: v }); }));
+  } else row.append(el("span", "val", e.state + (e.a.unit_of_measurement ? " " + e.a.unit_of_measurement : "")));
+  return row;
+}
+const controllable = (e) => ["switch", "select", "number", "input_boolean"].includes(domain(e)) && live(e);
+
+// Lights: each room with its lamps and scenes.
+const pct = (e) => Math.round(((e.a.brightness ?? 0) / 255) * 100);
+const dims = (e) => (e.a.supported_color_modes || []).some((m) => m !== "onoff");
+const colours = (e) => (e.a.supported_color_modes || []).some((m) => ["xy", "hs", "rgb", "rgbw", "rgbww"].includes(m));
+const whites = (e) => (e.a.supported_color_modes || []).includes("color_temp");
+const PRESETS = [
+  { name: "Warm", css: "#ffb46b", k: 2700 }, { name: "Neutral", css: "#ffe2b8", k: 4000 }, { name: "Cool", css: "#dfeaff", k: 6000 },
+  { name: "Red", css: "#ff4d4d", rgb: "255,40,40" }, { name: "Orange", css: "#ff9a3c", rgb: "255,140,40" },
+  { name: "Green", css: "#53e07c", rgb: "60,220,110" }, { name: "Blue", css: "#4d7dff", rgb: "60,110,255" },
+  { name: "Purple", css: "#b05cff", rgb: "170,80,255" }, { name: "Pink", css: "#ff6fb1", rgb: "255,100,180" },
+];
+function glow(e) {
+  const c = e.a.rgb_color;
+  return c ? `rgba(${c[0]}, ${c[1]}, ${c[2]}, .28)` : "rgba(255, 196, 107, .2)";
+}
+function lamp(e) {
+  const on = e.state === "on";
+  const card = el("div", "lamp" + (on ? " on" : ""));
+  if (on) card.style.setProperty("--glow", glow(e));
+  const head = el("div", "row");
+  head.append(el("span", "name", e.name), tog(on, e.name, (v) => call("light", v ? "turn_on" : "turn_off", e.id), { warm: true }));
+  card.append(head);
+  if (dims(e)) card.append(slider(on ? pct(e) : 0, 1, 100, 1, e.name + " brightness", (v) => call("light", "turn_on", e.id, { brightness_pct: v }), "var(--warm)"));
+  const sw = el("div", "swatches");
+  for (const p of PRESETS) {
+    if ((p.k && !whites(e)) || (p.rgb && !colours(e))) continue;
+    const b = el("button", "swatch");
+    b.type = "button";
+    b.title = p.name;
+    b.setAttribute("aria-label", `${e.name}: ${p.name}`);
+    b.style.background = p.css;
+    b.onclick = () => call("light", "turn_on", e.id, p.k ? { color_temp_kelvin: p.k } : { rgb_color: p.rgb });
+    sw.append(b);
+  }
+  if (sw.children.length) card.append(sw);
+  return card;
+}
+function renderLights() {
+  const box = $("#view-lights");
+  const lights = ha.filter((e) => domain(e) === "light" && !e.network && live(e) && !/ LED/.test(e.name));
+  const group = (e) => Array.isArray(e.a.entity_id);
+  const areas = [...new Set(lights.filter((e) => e.area).map((e) => e.area))].sort();
+  const lit = lights.filter((e) => !group(e) && e.state === "on");
+  const head = el("div", "ha-head");
+  head.append(el("span", "map-title", lit.length ? `${lit.length} light${lit.length > 1 ? "s" : ""} on` : "Every light is off"));
+  const off = el("button", "btn big", "All off");
+  off.type = "button";
+  off.onclick = () => lit.forEach((e) => call("light", "turn_off", e.id));
+  head.append(off);
+  const grid = el("div", "ha-grid");
+  const sections = areas.map((area) => [area, lights.filter((e) => e.area === area)]);
+  const loose = lights.filter((e) => !e.area && !group(e));
+  if (loose.length) sections.push(["Elsewhere", loose]);
+  for (const [area, all] of sections) {
+    const room = all.find(group);
+    const lamps = all.filter((e) => !group(e));
+    const on = lamps.filter((e) => e.state === "on").length;
+    const panel = el("div", "panel" + (on ? " lit" : ""));
+    const top = el("div", "row");
+    const title = el("div");
+    title.append(el("h3", null, area), el("span", "soft", on ? `${on} of ${lamps.length} on` : "Off"));
+    const target = room ? [room] : lamps;
+    top.append(title, tog(on > 0, area, (v) => target.forEach((e) => call("light", v ? "turn_on" : "turn_off", e.id)), { warm: true }));
+    panel.append(top);
+    if (room && dims(room)) panel.append(slider(on ? pct(room) : 0, 1, 100, 1, area + " brightness", (v) => call("light", "turn_on", room.id, { brightness_pct: v }), "var(--warm)"));
+    const scenes = ha.filter((e) => domain(e) === "scene" && e.area === area);
+    if (scenes.length) {
+      const row = el("div", "scenes");
+      for (const sc of scenes) {
+        const b = el("button", "scene", sc.name.replace(new RegExp("^" + area + "\\s*", "i"), "") || sc.name);
+        b.type = "button";
+        b.onclick = () => call("scene", "turn_on", sc.id);
+        row.append(b);
+      }
+      panel.append(row);
+    }
+    const grid2 = el("div", "lamps");
+    lamps.forEach((e) => grid2.append(lamp(e)));
+    panel.append(grid2);
+    grid.append(panel);
+  }
+  box.replaceChildren(head, grid);
+}
+
+// Climate: each room's readings and trends, the forecast, sensors and batteries.
+const trends = new Map();
+async function trend(entity) {
+  const t = trends.get(entity);
+  if (t && Date.now() - t.at < 300000) return t.points;
+  try {
+    const points = await (await fetch("api/ha/history?entity=" + encodeURIComponent(entity))).json();
+    trends.set(entity, { at: Date.now(), points });
+    return points;
+  } catch { return []; }
+}
+function spark(points, colourCss) {
+  if (points.length < 2) return el("div", "soft", "No trend yet");
+  const w = 300, h = 56, xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const X = (x) => ((x - x0) / (x1 - x0 || 1)) * w, Y = (y) => h - 4 - ((y - y0) / (y1 - y0 || 1)) * (h - 8);
+  const line = points.map((p, i) => (i ? "L" : "M") + X(p[0]).toFixed(1) + " " + Y(p[1]).toFixed(1)).join(" ");
+  const wrap = el("div");
+  wrap.innerHTML = `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="Last 24 hours, ${y0} to ${y1}"><path class="area" fill="${colourCss}" d="${line} L${w} ${h} L0 ${h}Z"/><path class="line" stroke="${colourCss}" d="${line}"/></svg>`;
+  return wrap.firstChild;
+}
+let forecast = { at: 0, days: [] };
+async function loadForecast(entity) {
+  if (Date.now() - forecast.at < 1800000) return forecast.days;
+  try { forecast = { at: Date.now(), days: await (await fetch("api/ha/forecast?entity=" + encodeURIComponent(entity))).json() }; } catch {}
+  return forecast.days;
+}
+const sensorsIn = (area, kind) => ha.filter((e) => domain(e) === "sensor" && e.area === area && e.a.device_class === kind && live(e));
+const WATCHED = {
+  moisture: ["Dry", "Wet"], vibration: ["Still", "Shaking"], motion: ["Clear", "Motion"], occupancy: ["Clear", "Occupied"],
+  door: ["Closed", "Open"], window: ["Closed", "Open"], smoke: ["Clear", "Smoke"], carbon_monoxide: ["Clear", "CO"], gas: ["Clear", "Gas"],
+};
+function renderClimate() {
+  const box = $("#view-climate");
+  const grid = el("div", "ha-grid");
+  const areas = [...new Set(ha.filter((e) => domain(e) === "sensor" && e.a.device_class === "temperature" && e.area && live(e)).map((e) => e.area))].sort();
+  for (const area of areas) {
+    const [t] = sensorsIn(area, "temperature"), [hu] = sensorsIn(area, "humidity"), [pr] = sensorsIn(area, "pressure");
+    const panel = el("div", "panel");
+    panel.append(el("span", "label", area));
+    const num = el("div", "big-num", (+t.state).toFixed(1));
+    num.append(el("small", null, t.a.unit_of_measurement || "°"));
+    panel.append(num);
+    const meters = el("div", "meters");
+    const meter = (v, label) => { const m = el("div", "meter"); m.append(el("b", null, v), el("span", null, label)); meters.append(m); };
+    if (hu) meter(Math.round(+hu.state) + "%", "humidity");
+    if (pr) meter(Math.round(+pr.state) + " hPa", "pressure");
+    panel.append(meters);
+    const holder = el("div");
+    panel.append(el("span", "label", "Last 24 hours"), holder);
+    trend(t.id).then((points) => holder.replaceChildren(spark(points, "var(--warm)")));
+    if (hu) {
+      const holder2 = el("div");
+      panel.append(holder2);
+      trend(hu.id).then((points) => holder2.replaceChildren(spark(points, "var(--accent)")));
+    }
+    grid.append(panel);
+  }
+  const weather = ha.find((e) => domain(e) === "weather" && live(e));
+  if (weather) {
+    const panel = el("div", "panel");
+    panel.append(el("span", "label", "Weather · " + (CONDITIONS[weather.state] || weather.state)));
+    const num = el("div", "big-num", Math.round(weather.a.temperature ?? 0));
+    num.append(el("small", null, weather.a.temperature_unit || "°"));
+    panel.append(num);
+    const meters = el("div", "meters");
+    const meter = (v, label) => { const m = el("div", "meter"); m.append(el("b", null, v), el("span", null, label)); meters.append(m); };
+    if (weather.a.humidity != null) meter(Math.round(weather.a.humidity) + "%", "humidity");
+    if (weather.a.wind_speed != null) meter(Math.round(weather.a.wind_speed) + " " + (weather.a.wind_speed_unit || ""), "wind");
+    panel.append(meters);
+    const days = el("div", "days");
+    panel.append(days);
+    loadForecast(weather.id).then((list) => {
+      days.replaceChildren(...(list || []).slice(0, 5).map((d) => {
+        const c = el("div", "day");
+        const when = new Date(d.datetime).toLocaleDateString([], { weekday: "short" }).toUpperCase();
+        const temps = el("div");
+        temps.append(el("b", null, Math.round(d.temperature) + "°"), " ", el("span", "soft", d.templow != null ? Math.round(d.templow) + "°" : ""));
+        c.append(el("div", "d", when), el("div", "c", CONDITIONS[d.condition] || d.condition || ""), temps);
+        return c;
+      }));
+    });
+    grid.append(panel);
+  }
+  const watched = ha.filter((e) => domain(e) === "binary_sensor" && WATCHED[e.a.device_class] && live(e));
+  if (watched.length) {
+    const panel = el("div", "panel");
+    panel.append(el("span", "label", "Sensors"));
+    for (const e of watched) {
+      const [calm, alarm] = WATCHED[e.a.device_class];
+      const row = el("div", "row");
+      row.append(el("span", null, e.name), el("span", e.state === "on" ? "state-bad" : "state-ok", e.state === "on" ? alarm : calm));
+      panel.append(row);
+    }
+    grid.append(panel);
+  }
+  const batteries = ha.filter((e) => domain(e) === "sensor" && e.a.device_class === "battery" && live(e) && e.device)
+    .reduce((m, e) => (m.has(e.device) && +m.get(e.device).state <= +e.state ? m : m.set(e.device, e)), new Map());
+  if (batteries.size) {
+    const panel = el("div", "panel");
+    panel.append(el("span", "label", "Batteries"));
+    for (const e of [...batteries.values()].sort((a, b) => a.state - b.state)) {
+      const row = el("div", "battery");
+      const bar = el("span", "bar");
+      const fill = el("i", +e.state < 20 ? "low" : null);
+      fill.style.width = Math.max(3, +e.state) + "%";
+      bar.append(fill);
+      row.append(el("span", null, e.device), bar, el("span", null, Math.round(+e.state) + "%"));
+      panel.append(row);
+    }
+    grid.append(panel);
+  }
+  box.replaceChildren(grid);
+}
+
+// Media: what plays where, with its controls and its device's settings.
+function art(e) {
+  const box = el("div", "art");
+  box.innerHTML = svg('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>').replace("<svg", '<svg style="width:34px;height:34px;fill:none;stroke:currentColor;stroke-width:1.5"');
+  if (e.a.entity_picture) { box.innerHTML = ""; box.style.backgroundImage = `url("api/ha/image?path=${encodeURIComponent(e.a.entity_picture)}")`; }
+  return box;
+}
+function renderMedia() {
+  const box = $("#view-media");
+  const active = (e) => ["playing", "paused"].includes(e.state);
+  // A camera's own speaker is not a player anyone means.
+  const cameras = new Set(ha.filter((e) => domain(e) === "camera").map((e) => e.device));
+  const players = ha.filter((e) => domain(e) === "media_player" && live(e) && (e.area || active(e)) && !cameras.has(e.device))
+    .sort((a, b) => active(b) - active(a) || a.name.localeCompare(b.name));
+  const grid = el("div", "ha-grid");
+  for (const e of players) {
+    const panel = el("div", "panel");
+    const top = el("div", "row");
+    const tv = e.a.device_class === "tv" || /\btv\b/i.test(e.name);
+    top.append(el("span", "label", e.name + " · " + e.state));
+    if (tv) top.append(tog(e.state !== "off", e.name, (v) => call("media_player", v ? "turn_on" : "turn_off", e.id)));
+    panel.append(top);
+    const p = el("div", "player");
+    const text = el("div");
+    text.style.display = "flex"; text.style.flexDirection = "column"; text.style.gap = "10px";
+    text.append(el("span", "title", e.a.media_title || (e.state === "off" ? "Off" : "Nothing playing")), el("span", "soft", [e.a.media_artist, e.a.media_album_name].filter(Boolean).join(" · ")));
+    if (e.state !== "off") {
+      const ctrls = el("div", "ctrls");
+      const ctrl = (icon, service, main) => { const b = el("button", "ctrl" + (main ? " main" : "")); b.type = "button"; b.innerHTML = ICON[icon]; b.setAttribute("aria-label", service.replace(/_/g, " ")); b.onclick = () => call("media_player", service, e.id); ctrls.append(b); };
+      ctrl("prev", "media_previous_track"); ctrl(e.state === "playing" ? "pause" : "play", "media_play_pause", true); ctrl("next", "media_next_track");
+      text.append(ctrls);
+    }
+    p.append(art(e), text);
+    panel.append(p);
+    if (e.a.volume_level != null) {
+      const row = el("div", "row");
+      row.append(el("span", "soft", "Volume"), tog(!e.a.is_volume_muted, "Sound on", (v) => call("media_player", "volume_mute", e.id, { is_volume_muted: !v })));
+      panel.append(row, slider(Math.round(e.a.volume_level * 100), 0, 100, 1, e.name + " volume", (v) => call("media_player", "volume_set", e.id, { volume_level: v / 100 })));
+    }
+    if (e.a.source_list?.length) {
+      const row = el("div", "setting");
+      row.append(el("span", null, "Source"), picker(e, e.a.source_list, e.a.source, (src) => call("media_player", "select_source", e.id, { source: src })));
+      panel.append(row);
+    }
+    const settings = ha.filter((x) => x.device && x.device === e.device && controllable(x));
+    if (settings.length) {
+      const d = el("details", "device");
+      d.append(el("summary", null, "Settings"));
+      const list = el("div", "settings");
+      settings.forEach((x) => list.append(setting(x, e.device)));
+      d.append(list);
+      panel.append(d);
+    }
+    grid.append(panel);
+  }
+  if (!players.length) grid.append(el("div", "label", "No players."));
+  box.replaceChildren(grid);
+}
+
+// House: people, the alarm, the camera, automations, the network and every device's settings.
+let camAt = 0;
+function renderHouse() {
+  const box = $("#view-house");
+  const grid = el("div", "ha-grid");
+  const people = ha.filter((e) => domain(e) === "person");
+  const alarm = ha.find((e) => domain(e) === "alarm_control_panel" && live(e));
+  if (people.length || alarm) {
+    const panel = el("div", "panel");
+    panel.append(el("span", "label", "Home"));
+    const row = el("div", "people");
+    for (const p of people) { const c = el("span", "person" + (p.state === "home" ? " home" : "")); c.append(el("i"), p.name + " · " + (p.state === "home" ? "home" : p.state === "not_home" ? "away" : p.state)); row.append(c); }
+    panel.append(row);
+    if (alarm) {
+      const r = el("div", "row");
+      r.append(el("span", null, "Alarm · " + alarm.state.replace(/_/g, " ")));
+      if (alarm.state === "disarmed") {
+        const b = el("button", "btn", "Arm");
+        b.type = "button";
+        b.onclick = () => call("alarm_control_panel", "alarm_arm_away", alarm.id);
+        r.append(b);
+      } else r.append(el("span", "lock", "DISARM IN THE APP"));
+      panel.append(r);
+    }
+    grid.append(panel);
+  }
+  const seen = new Set();
+  for (const cam of ha.filter((e) => domain(e) === "camera" && live(e))) {
+    const panel = el("div", "panel");
+    panel.append(el("span", "label", cam.device || cam.name));
+    const privacy = ha.find((e) => e.device === cam.device && domain(e) === "switch" && /privacy/i.test(e.id));
+    const pic = el("div", "cam", privacy?.state === "on" ? "Privacy mode" : "…");
+    if (privacy?.state !== "on" && cam.a.entity_picture) {
+      pic.textContent = "";
+      pic.style.backgroundImage = `url("api/ha/image?path=${encodeURIComponent(cam.a.entity_picture)}&t=${Math.floor(Date.now() / 10000)}")`;
+    }
+    panel.append(pic);
+    const settings = ha.filter((e) => e.device === cam.device && (controllable(e) || (domain(e) === "binary_sensor" && live(e))));
+    settings.sort((a, b) => (b === privacy) - (a === privacy));
+    const list = el("div", "settings");
+    settings.slice(0, 6).forEach((e) => list.append(domain(e) === "binary_sensor" ? (() => { const r = el("div", "setting"); r.append(el("span", null, e.name.replace(cam.device, "").trim()), el("span", e.state === "on" ? "state-bad" : "state-dim", e.state === "on" ? "detected" : "no")); return r; })() : setting(e, cam.device)));
+    panel.append(list);
+    if (settings.length > 6) {
+      const d = el("details", "device");
+      d.append(el("summary", null, "More"));
+      const more = el("div", "settings");
+      settings.slice(6).forEach((e) => more.append(domain(e) === "binary_sensor" ? el("div", "setting", e.name) : setting(e, cam.device)));
+      d.append(more);
+      panel.append(d);
+    }
+    settings.forEach((e) => seen.add(e.id));
+    grid.append(panel);
+  }
+  const rules = ha.filter((e) => ["automation", "input_boolean"].includes(domain(e)) && live(e));
+  if (rules.length) {
+    const panel = el("div", "panel");
+    panel.append(el("span", "label", "Automations"));
+    rules.forEach((e) => panel.append(setting(e, "")));
+    grid.append(panel);
+  }
+  const net = ha.filter((e) => e.network && domain(e) === "switch");
+  const updates = ha.filter((e) => domain(e) === "update" && e.state === "on");
+  if (net.length || updates.length) {
+    const panel = el("div", "panel");
+    panel.append(el("span", "label", "Network"));
+    // UniFi lists each firewall rule as a switch: kept apart from the Wi-Fi networks.
+    const rule = (e) => /^unifi network /i.test(e.name);
+    net.filter((e) => !rule(e)).forEach((e) => panel.append(setting(e, "")));
+    const rules = net.filter(rule);
+    if (rules.length) {
+      const d = el("details", "device");
+      d.append(el("summary", null, `Firewall rules · ${rules.length}`));
+      const list = el("div", "settings");
+      rules.forEach((e) => list.append(setting(e, "UniFi Network")));
+      d.append(list);
+      panel.append(d);
+    }
+    if (updates.length) {
+      panel.append(el("span", "label", `Updates · ${updates.length}`));
+      for (const u of updates) {
+        const r = el("div", "setting");
+        r.append(el("span", null, u.a.title || u.name.replace(/ update$/i, "")), el("span", "val", `${u.a.installed_version} → ${u.a.latest_version}`));
+        panel.append(r);
+      }
+    }
+    grid.append(panel);
+  }
+  const used = new Set(ha.filter((e) => domain(e) === "media_player").map((e) => e.device));
+  const devices = new Map();
+  for (const e of ha.filter((x) => controllable(x) && x.device && !x.network && !seen.has(x.id) && !used.has(x.device))) {
+    if (!devices.has(e.device)) devices.set(e.device, []);
+    devices.get(e.device).push(e);
+  }
+  if (devices.size) {
+    const panel = el("div", "panel");
+    panel.append(el("span", "label", "Devices"));
+    for (const [name, list] of [...devices].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const d = el("details", "device");
+      d.append(el("summary", null, name));
+      const settings = el("div", "settings");
+      list.forEach((e) => settings.append(setting(e, name)));
+      d.append(settings);
+      panel.append(d);
+    }
+    grid.append(panel);
+  }
+  box.replaceChildren(grid);
+}
+// Home: what plays now, with its controls.
+function miniPlayer(e) {
+  const c = el("div", "card");
+  c.append(el("span", "label", "Now playing · " + e.name));
+  const p = el("div", "mini-player");
+  const pic = el("div", "art");
+  if (e.a.entity_picture) pic.style.backgroundImage = `url("api/ha/image?path=${encodeURIComponent(e.a.entity_picture)}")`;
+  const text = el("div");
+  text.style.display = "flex"; text.style.flexDirection = "column"; text.style.gap = "6px";
+  text.append(el("span", "big", e.a.media_title), el("span", "soft", e.a.media_artist || ""));
+  const ctrls = el("div", "ctrls");
+  const ctrl = (icon, service, main) => { const b = el("button", "ctrl" + (main ? " main" : "")); b.type = "button"; b.innerHTML = ICON[icon]; b.setAttribute("aria-label", service.replace(/_/g, " ")); b.onclick = () => call("media_player", service, e.id); ctrls.append(b); };
+  ctrl("prev", "media_previous_track"); ctrl(e.state === "playing" ? "pause" : "play", "media_play_pause", true); ctrl("next", "media_next_track");
+  text.append(ctrls);
+  p.append(pic, text);
+  c.append(p);
+  if (e.a.volume_level != null) c.append(slider(Math.round(e.a.volume_level * 100), 0, 100, 1, e.name + " volume", (v) => call("media_player", "volume_set", e.id, { volume_level: v / 100 })));
+  return c;
+}
+// Home: the whole apartment at once, lights, colour, party mode and the lockdown.
+const lampsEverywhere = () => ha.filter((e) => domain(e) === "light" && e.area && live(e) && !e.network && !/ LED/.test(e.name) && !Array.isArray(e.a.entity_id));
+async function act(what) {
+  touching = Date.now();
+  try {
+    const res = await fetch("api/act?do=" + what, { method: "POST" });
+    if (!res.ok) toast((await res.json().catch(() => ({}))).reason || "That did not work.");
+  } catch { toast("The engine didn't answer."); }
+  setTimeout(loadActivity, 500);
+  setTimeout(loadHa, 800);
+  setTimeout(loadHa, 2500);
+}
+function renderControl() {
+  const box = $("#control");
+  if (!ha.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const lamps = lampsEverywhere();
+  const lit = lamps.filter((e) => e.state === "on");
+  const ids = (list) => list.map((e) => e.id).join(",");
+  const party = activity?.party;
+  const lockdown = ha.some((e) => e.id === "scene.lockdown_restore");
+  const buttons = el("div", "buttons");
+  const button = (title, sub, cls, onclick) => {
+    const b = el("button", "act " + cls);
+    b.type = "button";
+    b.append(el("b", null, title), el("span", null, sub));
+    b.onclick = onclick;
+    buttons.append(b);
+  };
+  button("All on", `${lamps.length} lights`, lit.length === lamps.length ? "on" : "", () => call("light", "turn_on", ids(lamps)));
+  button("All off", lit.length ? `${lit.length} on now` : "all off", "", () => lit.length && call("light", "turn_off", ids(lit)));
+  if (party) button("Stop party", party === "fast" ? "fast mode on" : "party on", "party on", () => act("party_off"));
+  else {
+    button("Party", "lights follow the music", "party", () => act("party"));
+    button("Fast party", "a flash on every beat", "party", () => act("party_fast"));
+  }
+  if (lockdown) button("Stand down", "lockdown on", "alert on", () => act("stand_down"));
+  else button("Lockdown", "red alert", "alert", () => act("lockdown"));
+  const colourRow = el("div", "row");
+  colourRow.append(el("span", "label", "Colour everywhere"));
+  const sw = el("div", "swatches");
+  for (const p of PRESETS) {
+    const targets = lamps.filter((e) => (p.k ? whites(e) : colours(e)));
+    if (!targets.length) continue;
+    const b = el("button", "swatch");
+    b.type = "button";
+    b.title = p.name + " everywhere";
+    b.setAttribute("aria-label", p.name + " everywhere");
+    b.style.background = p.css;
+    b.onclick = () => call("light", "turn_on", ids(targets), p.k ? { color_temp_kelvin: p.k } : { rgb_color: p.rgb });
+    sw.append(b);
+  }
+  colourRow.append(sw);
+  box.replaceChildren(buttons, colourRow);
+}
+// Home: each room's temperature, large.
+function tempsCard() {
+  const temps = ha.filter((e) => domain(e) === "sensor" && e.a.device_class === "temperature" && e.area && live(e)).sort((a, b) => a.area.localeCompare(b.area));
+  if (!temps.length) return null;
+  const c = el("div", "card status-card");
+  c.title = "Open the Climate view";
+  c.onclick = () => show("climate");
+  c.append(el("span", "label", "Temperature"));
+  const grid = el("div", "temps");
+  for (const t of temps) {
+    const [hu] = sensorsIn(t.area, "humidity");
+    const cell = el("div", "temp");
+    cell.append(el("b", null, (+t.state).toFixed(1) + "°"), el("span", null, t.area + (hu ? " · " + Math.round(+hu.state) + "%" : "")));
+    grid.append(cell);
+  }
+  c.append(grid);
+  return c;
+}
+// Home: the house at a glance, sensors, batteries and updates; the House and Climate tabs have more.
+function statusCard() {
+  if (!ha.length) return null;
+  const watched = ha.filter((e) => domain(e) === "binary_sensor" && WATCHED[e.a.device_class] && live(e) && !["motion", "occupancy"].includes(e.a.device_class));
+  const tripped = watched.filter((e) => e.state === "on");
+  const batteries = ha.filter((e) => domain(e) === "sensor" && e.a.device_class === "battery" && live(e) && e.device);
+  const weakest = batteries.sort((a, b) => a.state - b.state)[0];
+  const updates = ha.filter((e) => domain(e) === "update" && e.state === "on");
+  const c = el("div", "card status-card");
+  c.title = "Open the House view";
+  c.onclick = () => show("house");
+  c.append(el("span", "label", "House"));
+  const row = (text, value, cls) => { const r = el("div", "row"); r.append(el("span", null, text), el("span", cls, value)); c.append(r); };
+  if (tripped.length) tripped.forEach((e) => row(e.name, WATCHED[e.a.device_class][1], "state-bad"));
+  else if (watched.length) row(`${watched.length} sensors`, "all clear", "state-ok");
+  if (weakest) row("Weakest battery · " + weakest.device, Math.round(+weakest.state) + "%", +weakest.state < 20 ? "state-bad" : "state-dim");
+  if (updates.length) row("Updates waiting", String(updates.length), "state-dim");
+  return c;
+}
+// Home: who is home, and the next days' weather, under the clock.
+function renderHomeExtras() {
+  const people = $("#home-people");
+  people.replaceChildren(...ha.filter((e) => domain(e) === "person").map((p) => {
+    const c = el("span", "person" + (p.state === "home" ? " home" : ""));
+    c.append(el("i"), p.name.split(" ")[0] + " · " + (p.state === "home" ? "home" : p.state === "not_home" ? "away" : p.state));
+    return c;
+  }));
+  const weather = ha.find((e) => domain(e) === "weather" && live(e));
+  if (!weather) return;
+  loadForecast(weather.id).then((list) => {
+    $("#home-days").replaceChildren(...(list || []).slice(0, 5).map((d) => {
+      const c = el("div", "day");
+      const temps = el("div");
+      temps.append(el("b", null, Math.round(d.temperature) + "°"), " ", el("span", "soft", d.templow != null ? Math.round(d.templow) + "°" : ""));
+      c.append(el("div", "d", new Date(d.datetime).toLocaleDateString([], { weekday: "short" }).toUpperCase()), el("div", "c", CONDITIONS[d.condition] || d.condition || ""), temps);
+      return c;
+    }));
+  });
+}
+// Home: the switches people reach for, wherever they live in Home Assistant.
+function quickCard() {
+  if (!ha.length) return null;
+  const pickOne = (test) => ha.find((e) => live(e) && test(e));
+  const rows = [
+    ["Camera privacy", pickOne((e) => domain(e) === "switch" && /privacy/i.test(e.id))],
+    ["Guest Wi-Fi", pickOne((e) => domain(e) === "switch" && e.network && /guest|gjest/i.test(e.name))],
+    [(about.name || "Voice") + " muted", pickOne((e) => domain(e) === "switch" && /_mute$/.test(e.id) && /voice/i.test(e.id))],
+  ].filter(([, e]) => e);
+  const alarm = pickOne((e) => domain(e) === "alarm_control_panel");
+  if (!rows.length && !alarm) return null;
+  const c = el("div", "card");
+  c.append(el("span", "label", "Quick"));
+  const list = el("div", "quick");
+  for (const [label, e] of rows) {
+    const r = el("div", "setting");
+    r.append(el("span", null, label), tog(e.state === "on", label, (on) => call("switch", on ? "turn_on" : "turn_off", e.id)));
+    list.append(r);
+  }
+  if (alarm) {
+    const r = el("div", "setting");
+    r.append(el("span", null, "Alarm · " + alarm.state.replace(/_/g, " ")));
+    if (alarm.state === "disarmed") {
+      const b = el("button", "btn", "Arm");
+      b.type = "button";
+      b.onclick = () => call("alarm_control_panel", "alarm_arm_away", alarm.id);
+      r.append(b);
+    } else r.append(el("span", "lock", "ARMED"));
+    list.append(r);
+  }
+  c.append(list);
+  return c;
+}
+setInterval(() => { if (HA_VIEWS.includes(shown()) || shown() === "home") loadHa(); }, 4000);
+
 // --- What was asked lately, and how the engine is -------------------------------------------------
 let activity = null;
 const seconds = (ms) => ms == null ? "" : ms < 10000 ? (ms / 1000).toFixed(2) + " s" : Math.round(ms / 1000) + " s";
@@ -814,7 +1609,8 @@ const ago = (secs) => {
 const span = (s) => s < 3600 ? Math.round(s / 60) + " min" : s < 172800 ? (s / 3600).toFixed(1) + " h" : Math.round(s / 86400) + " days";
 async function loadActivity() {
   try { activity = await (await fetch("api/activity")).json(); } catch { return; }
-  renderRecent($("#recent"), activity.recent.slice(0, 6));
+  renderRecent($("#recent"), activity.recent.slice(0, 4));
+  if (shown() === "home" && Date.now() - touching > 1500) renderControl();
   renderSide();
   if (!$("#view-system").hidden) renderSystem();
 }
@@ -923,7 +1719,7 @@ function renderSystem() {
 }
 
 function show(view) {
-  for (const v of ["home", "map", "log", "system"]) {
+  for (const v of VIEWS) {
     $("#view-" + v).hidden = v !== view;
     $("#tab-" + v).setAttribute("aria-selected", v === view);
   }
@@ -931,7 +1727,9 @@ function show(view) {
   if (view === "map") layout();
   if (view === "log") loadMisses();
   if (view === "system") { renderSystem(); loadActivity(); }
+  if (HA_VIEWS.includes(view)) { renderHa(); loadHa(); }
 }
+for (const v of HA_VIEWS) $("#tab-" + v).onclick = () => show(v);
 $("#tab-home").onclick = () => show("home");
 $("#tab-map").onclick = () => show("map");
 $("#tab-log").onclick = () => show("log");
@@ -956,8 +1754,9 @@ setInterval(loadListening, 30000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadListening(); });
 loadMisses().then(() => loadSkills()).then(() => {
   const view = location.hash.slice(1);
-  show(["map", "log", "system"].includes(view) && !$("#tab-" + view).hidden ? view : "home");
+  show(VIEWS.includes(view) && !$("#tab-" + view).hidden ? view : "home");
   loadActivity();
+  loadHa();
 });
 setInterval(loadActivity, 10000);
 </script>
