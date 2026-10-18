@@ -66,12 +66,18 @@ does, so the engine takes the device's microphone in place of Assist. Answers ar
 (`/speech/<id>.wav`), streamed while they are synthesized; with `answer-player` Home Assistant announces them on
 another media player. Timers count down on the Voice PE's LED ring through the ESPHome timer events.
 
-**Screens.** `web: true` serves on the metrics port: `/` with four tabs (Home: the face, rooms, what is
-playing, timers, the shopping list, the latest requests and today's numbers; Map: every skill and a box that
-shows how a phrase is understood; Log: what no skill handled; System: version, models, connections, the speech
-cache and response times), `/hub` (the same page) and `/tv` (the screen "show the weather on the TV" opens in
-the TV's browser). `/api/activity` has the requests since the start (in memory, about a day's worth) with
-what was heard and answered, the skill and the time to the first answer audio.
+**Screens.** `web: true` serves on the metrics port. `/` is the dashboard: Home (an overview: the face, the
+clock and forecast, every room's lights and climate, buttons for the whole apartment (all on, all off, one colour
+everywhere, party mode, the lockdown), each room's temperature, quick switches, the house's status, what plays, the
+shopping list, the latest requests and today's numbers), Lights, Climate (trends over 24 hours, the forecast,
+sensors, batteries), Media, House (people, the alarm, the camera, automations, the network, updates, every device's
+settings), Map (every skill, and how a phrase is understood), Log (what no skill handled) and System (version,
+models, connections, the speech cache, response times). `/tv` is the screen "show the weather on the TV" opens.
+Rooms and devices come from Home Assistant (`control.rs`, one template call that all screens share); nothing is
+listed in the code. The page has no login and the TV opens it too, so the engine allows it lights, scenes,
+switches, players, selects, numbers, the shopping list and arming the alarm, and refuses disarming, buttons
+(restarts), updates and the network's switches other than the guest Wi-Fi. `/api/activity` has the requests since
+the start (in memory, about a day's worth).
 
 **Real-time audio path.** The UDP transport, jitter buffer and model thread (`voice-proto`, `voice-rt`,
 `voice-engine`) do no heap allocation after start; `tests/loopback.rs` checks that under an allocator that aborts.

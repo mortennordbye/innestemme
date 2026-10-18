@@ -376,6 +376,24 @@ impl HomeAssistant {
             .map_err(Into::into)
     }
 
+    /// Any GET under Home Assistant, as bytes with their content type: images behind its proxies.
+    pub fn get_bytes(&self, path: &str) -> Result<(String, Vec<u8>)> {
+        let mut response = self
+            .agent
+            .get(&format!("{}{path}", self.base))
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| anyhow::anyhow!("Home Assistant request to {path} failed: {e}"))?;
+        let kind = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let bytes = response.body_mut().with_config().limit(10_000_000).read_to_vec()?;
+        Ok((kind, bytes))
+    }
+
     /// An entity's state object (`state`, `attributes`).
     pub fn state(&self, entity_id: &str) -> Result<serde_json::Value> {
         self.get(&format!("/api/states/{entity_id}"))
