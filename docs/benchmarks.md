@@ -264,3 +264,27 @@ renders what the seed cache lacked):
   recorded utterances (15%) hold a pause of 0.48-0.56 s, which would cut them in two.
 - The Mac is faster than the cluster's CPU, but none of these steps is CPU bound; the Sonos still adds about
   0.4 s before the answer is heard.
+
+## Kokoro in the engine, 2026-10-18
+
+`examples/kokoro_speed.rs` on an M4 Pro: sherpa-onnx 1.13.8 with sherpa-onnx's export of Kokoro v1.0 (the model
+Kokoro-FastAPI runs, voice `am_onyx`, speaker 17), 4 threads, against Kokoro-FastAPI 0.2.4 in Docker limited to
+4 CPUs (`docker update --cpus 4`). Time to the whole sentence, and seconds of audio per second of work:
+
+| Sentence | In the engine, f32 | In the engine, int8 | Kokoro-FastAPI |
+|---|---|---|---|
+| It's 23 degrees in the living room, sir. | 581 ms, 4.5x | 1983 ms, 1.3x | 740 ms, 3.7x |
+| Okay, the kitchen lights are off. | 479 ms, 4.1x | 1570 ms, 1.3x | 694 ms, 3.2x |
+| 37 seconds left on the 1 minute timer. | 662 ms, 4.5x | 2179 ms, 1.4x | 899 ms, 3.6x |
+| It's 5 degrees and partly cloudy in Oslo, with a high of 13. | 829 ms, 4.9x | 2711 ms, 1.5x | 1080 ms, 3.8x |
+| Today it ranges from 36 øre to 2.10 kroner. | 837 ms, 4.8x | 2872 ms, 1.4x | 998 ms, 3.8x |
+| The next tram is the 18 to Rikshospitalet, in 4 minutes. | 753 ms, 4.6x | 2708 ms, 1.3x | 989 ms, 3.9x |
+
+- f32 in the engine is 16-31% faster than the server on the same CPUs, and needs no Python sidecar (1.7 GB
+  resident in the cluster). The int8 model is about three times slower on a CPU; the engine uses f32.
+- Pronunciation differs: sherpa-onnx uses its lexicon and espeak-ng, Kokoro-FastAPI its own G2P, so the two
+  voices' speech caches are kept apart (`kokoro-onnx-am_onyx`).
+- Measured on the Mac only; the cluster's x86 CPUs may rank the two differently.
+- Weather and electricity prices fetched ahead (every 4 minutes while idle): "What's the weather like?" was
+  ready 0.4 ms after the request instead of opening with a lead-in of 1.9-2.4 s (the lead-ins' length in the
+  speech cache, with their trailing silence).

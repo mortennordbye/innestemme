@@ -213,6 +213,25 @@ impl Power {
         }
     }
 
+    /// Fetches today's and tomorrow's prices unless kept; tomorrow's are published around 13:00.
+    pub fn refresh(&mut self) -> Result<()> {
+        let today = Zoned::now().date();
+        self.day(today)?;
+        self.day(today.tomorrow()?)?;
+        Ok(())
+    }
+
+    /// Whether the prices `query` needs are kept, so its answer needs no request.
+    pub fn is_ready(&self, query: PowerQuery) -> bool {
+        let today = Zoned::now().date();
+        let kept = |date: Date| self.days.iter().any(|(d, ..)| *d == date);
+        let tomorrow = matches!(
+            query,
+            PowerQuery::Cheapest(When::Tonight | When::Tomorrow) | PowerQuery::Dearest(When::Tonight | When::Tomorrow)
+        );
+        kept(today) && (!tomorrow || today.tomorrow().is_ok_and(kept))
+    }
+
     /// One day's prices, cached; `None` when not published yet.
     fn day(&mut self, date: Date) -> Result<Option<Vec<Interval>>> {
         self.days.retain(|(d, prices, at)| {
@@ -286,6 +305,20 @@ fn per_kwh(lang: Lang) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ready_when_the_days_asked_about_are_kept() {
+        let mut power = Power::new("test", "NO1");
+        assert!(!power.is_ready(PowerQuery::Now));
+        let today = Zoned::now().date();
+        power.days.push((today, Some(Vec::new()), Instant::now()));
+        assert!(power.is_ready(PowerQuery::Now));
+        assert!(power.is_ready(PowerQuery::Cheapest(When::Today)));
+        assert!(!power.is_ready(PowerQuery::Cheapest(When::Tomorrow)));
+        // Not published yet is kept too: the answer says so without a request.
+        power.days.push((today.tomorrow().unwrap(), None, Instant::now()));
+        assert!(power.is_ready(PowerQuery::Dearest(When::Tonight)));
+    }
 
     #[test]
     fn questions() {
