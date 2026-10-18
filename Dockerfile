@@ -35,6 +35,9 @@ COPY --from=planner /src/recipe.json recipe.json
 RUN cargo chef cook --release --locked --target x86_64-unknown-linux-gnu -p voice-engine -p voice-bench \
       --recipe-path recipe.json
 COPY . .
+# The image's tag, which the web page shows; after the dependency layer, so a new tag does not rebuild them.
+ARG INNESTEMME_VERSION
+ENV INNESTEMME_VERSION=${INNESTEMME_VERSION}
 # The explicit --target is what makes .cargo/config.toml apply target-cpu=x86-64-v3.
 RUN cargo build --release --locked --target x86_64-unknown-linux-gnu -p voice-engine -p voice-bench \
     && mkdir -p /out/bin /out/models \

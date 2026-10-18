@@ -146,6 +146,7 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: innestemme:smoke
+          build-args: INNESTEMME_VERSION=${{ steps.version.outputs.tag }}
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
       - name: Smoke-test the image
         run: |
@@ -188,6 +189,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          build-args: INNESTEMME_VERSION=${{ steps.version.outputs.tag }}
           labels: ${{ steps.meta.outputs.labels }}
           # In the registry beside the image rather than the Actions cache, which is capped at 10 GB.
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache

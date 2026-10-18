@@ -138,6 +138,7 @@ pub async fn run(cfg: SatelliteConfig, assistant: AssistantHandle, speech: Arc<S
             Ok(()) => info!(address = cfg.address, "satellite disconnected"),
             Err(error) => warn!(address = cfg.address, error = format!("{error:#}"), "satellite session failed"),
         }
+        assistant.activity.satellite(None);
         if started.elapsed() > Duration::from_secs(60) {
             backoff = Duration::from_secs(1);
         }
@@ -233,6 +234,7 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         },
         "satellite connected"
     );
+    assistant.activity.satellite(Some(&device.info.friendly_name));
     if let Some(words) = &device.wake_words {
         let available: Vec<&str> = words.available.iter().map(|(_, phrase)| phrase.as_str()).collect();
         info!(active = ?words.active, ?available, max = words.max_active, "satellite wake words");

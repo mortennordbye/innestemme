@@ -23,6 +23,8 @@ const HEAR_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Entries the page lists from the unhandled log.
 const UNHANDLED_SHOWN: usize = 200;
+/// Requests the page lists as recent.
+const RECENT_SHOWN: usize = 30;
 
 pub struct Web {
     wake: WakeWord,
@@ -134,6 +136,7 @@ impl Web {
             "/tv" => Some(("200 OK", "text/html; charset=utf-8", crate::screen::PAGE.as_bytes().to_vec())),
             _ if path.starts_with("/hub/") => self.hub.as_ref()?.face(path),
             "/api/skills" => Some(json_response(&json!({ "about": self.about, "skills": SKILLS }))),
+            "/api/activity" => Some(json_response(&self.activity())),
             "/api/unhandled" => {
                 let entries = self.unhandled.as_ref().map(|log| log.recent(UNHANDLED_SHOWN));
                 Some(json_response(&json!({ "enabled": entries.is_some(), "entries": entries.unwrap_or_default() })))
@@ -144,6 +147,22 @@ impl Web {
             }
             _ => None,
         }
+    }
+
+    /// What was asked lately and how fast it was answered, and how the engine is.
+    fn activity(&self) -> serde_json::Value {
+        let midnight = jiff::Zoned::now().start_of_day().map_or(0, |d| d.timestamp().as_second().max(0) as u64);
+        let mut value = match &self.assistant {
+            Some(assistant) => assistant.activity.json(RECENT_SHOWN, midnight),
+            None => json!({ "recent": [], "today": {} }),
+        };
+        let cache = self.about["speech_cache"].as_str().map(|dir| {
+            let (sentences, bytes) = folder_size(std::path::Path::new(dir));
+            json!({ "sentences": sentences, "mb": bytes / 1_000_000 })
+        });
+        value["system"] = json!({ "memory_mb": resident_mb(), "speech_cache": cache });
+        value["about"] = self.about.clone();
+        value
     }
 
     fn parse(&self, text: &str) -> serde_json::Value {
@@ -159,6 +178,29 @@ impl Web {
             "skill": skill,
         })
     }
+}
+
+/// Files and bytes under `dir` and its folders (the speech cache keeps one per voice).
+fn folder_size(dir: &std::path::Path) -> (u64, u64) {
+    let (mut files, mut bytes) = (0, 0);
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            let (f, b) = folder_size(&entry.path());
+            (files, bytes) = (files + f, bytes + b);
+        } else {
+            (files, bytes) = (files + 1, bytes + meta.len());
+        }
+    }
+    (files, bytes)
+}
+
+/// The engine's resident memory, where the system says (Linux).
+fn resident_mb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kb: u64 =
+        status.lines().find_map(|l| l.strip_prefix("VmRSS:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
+    Some(kb / 1024)
 }
 
 fn json_response(value: &serde_json::Value) -> Response {
@@ -234,6 +276,14 @@ mod tests {
         }
         let emoji = page.chars().find(|&c| matches!(c, '\u{2600}'..='\u{27bf}' | '\u{1f000}'..));
         assert_eq!(emoji, None, "icons are drawn, not emoji");
+    }
+
+    #[test]
+    fn activity_without_an_assistant() {
+        let body = web().route("/api/activity").unwrap().2;
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["recent"].as_array().unwrap().len(), 0);
+        assert_eq!(value["about"]["name"], "Jarvis");
     }
 
     #[test]

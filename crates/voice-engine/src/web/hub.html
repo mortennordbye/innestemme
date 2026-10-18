@@ -232,6 +232,38 @@ body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
 @keyframes bar { 0%, 100% { transform: scaleY(.2); } 50% { transform: scaleY(1); } }
 @keyframes ticker { to { transform: translateX(-50%); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Recent requests, today's numbers, the system view */
+.recent { display: flex; flex-direction: column; margin-top: 26px; }
+.turn { display: grid; grid-template-columns: 3.4em 1fr auto; gap: 2px 12px; padding: 11px 0; border-top: 1px solid var(--line); align-items: baseline; }
+.turn .when { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.turn .heard { font-size: 16px; overflow-wrap: anywhere; }
+.turn .answer { grid-column: 2 / -1; color: var(--soft); font-size: 14px; overflow-wrap: anywhere; }
+.turn .skill { display: inline-flex; align-items: center; gap: 6px; margin-right: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+.turn .skill i { width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--dim)); }
+.turn.missed .heard { color: var(--soft); }
+.ms { font-family: var(--mono); font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--soft); white-space: nowrap; }
+.ms.fast { color: var(--good); border-color: rgba(95, 211, 141, .35); }
+.ms.slow { color: var(--warm); border-color: rgba(255, 196, 107, .35); }
+.ms.miss { color: var(--bad); border-color: rgba(255, 107, 107, .35); }
+.stats { display: flex; gap: 22px; flex-wrap: wrap; }
+.stat b { display: block; font-size: 28px; font-weight: 400; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.stat span { font-family: var(--mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+.uses { display: flex; flex-direction: column; gap: 6px; }
+.use { display: grid; grid-template-columns: 9em 1fr 2em; gap: 10px; align-items: center; font-size: 14px; color: var(--soft); }
+.use .track { display: block; }
+.use .bar { display: block; height: 6px; border-radius: 3px; background: var(--c, var(--accent)); opacity: .85; }
+.use .n { font-family: var(--mono); font-size: 12px; color: var(--dim); text-align: right; }
+.items { display: flex; flex-wrap: wrap; gap: 6px; }
+.items span { padding: 4px 11px; border-radius: 999px; background: #161a21; font-size: 15px; }
+.system { display: flex; flex-direction: column; gap: 22px; max-width: 1180px; width: 100%; }
+.sys-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 15px; }
+.facts dt { color: var(--dim); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.facts dd.ok { color: var(--good); }
+.facts dd.off { color: var(--dim); }
+.facts dd.bad { color: var(--bad); }
 </style>
 </head>
 <body data-state="idle">
@@ -280,6 +312,7 @@ body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
       <button type="button" role="tab" id="tab-home" aria-selected="true" aria-controls="view-home">Home</button>
       <button type="button" role="tab" id="tab-map" aria-selected="false" aria-controls="view-map">Map</button>
       <button type="button" role="tab" id="tab-log" aria-selected="false" aria-controls="view-log" hidden>Log</button>
+      <button type="button" role="tab" id="tab-system" aria-selected="false" aria-controls="view-system">System</button>
     </div>
     <div class="mute-wrap">
       <button type="button" class="mute" id="mute" aria-haspopup="true" aria-expanded="false" aria-controls="mute-menu">
@@ -322,6 +355,10 @@ body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
     <section aria-label="Rooms">
       <span class="label">Rooms · tap to switch</span>
       <div class="rooms" id="rooms"></div>
+      <div class="recent" aria-label="Recent requests">
+        <span class="label">Recent</span>
+        <div id="recent"></div>
+      </div>
     </section>
 
     <section class="side" id="side" aria-label="Now"></section>
@@ -355,6 +392,15 @@ body.paused .face .photo { filter: grayscale(.8) brightness(.6) !important; }
     <div id="misses"></div>
   </section>
 
+  <section class="system" id="view-system" role="tabpanel" aria-labelledby="tab-system" hidden>
+    <span class="map-title">How it's doing</span>
+    <div class="sys-grid" id="sys-cards"></div>
+    <div class="card">
+      <span class="label">Every request since the start · newest first</span>
+      <div id="sys-recent"></div>
+    </div>
+  </section>
+
   <div class="ticker" aria-hidden="true"><div id="ticker"></div></div>
 </main>
 <script>
@@ -384,8 +430,10 @@ function setState(state, text) {
   // Missed events must not leave the face stuck.
   if (state === "listening" || state === "thinking") backToIdle = setTimeout(() => setState("idle"), 15000);
 }
+let eventsOk = false;
 function connectEvents() {
   const events = new EventSource("api/events");
+  events.onopen = () => { eventsOk = true; };
   events.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.timer) { onTimer(m.timer); return; }
@@ -394,11 +442,11 @@ function connectEvents() {
       case "thinking": setState("thinking", "“" + m.heard + "”"); break;
       case "speaking": setState("speaking", m.text); break;
       // All audio is out; the speaker still plays it for about that long.
-      case "spoken": clearTimeout(backToIdle); backToIdle = setTimeout(() => { setState("idle"); }, m.seconds * 1000 + 1200); break;
+      case "spoken": setTimeout(loadActivity, 600); clearTimeout(backToIdle); backToIdle = setTimeout(() => { setState("idle"); }, m.seconds * 1000 + 1200); break;
       case "idle": if (document.body.dataset.state !== "speaking") setState("idle"); break;
     }
   };
-  events.onerror = () => { events.close(); setTimeout(connectEvents, 3000); };
+  events.onerror = () => { eventsOk = false; events.close(); setTimeout(connectEvents, 3000); };
 }
 
 // --- Timers, counted down here between notices --------------------------------------------------
@@ -430,6 +478,7 @@ function render() {
   }
   renderRooms();
   renderSide();
+  if (!$("#view-system").hidden) renderSystem();
   const tick = [];
   if (data?.sunset) tick.push("SUNSET " + hhmm(data.sunset));
   if (data?.sunrise) tick.push("SUNRISE " + hhmm(data.sunrise));
@@ -490,11 +539,14 @@ function renderSide() {
     c.append(text);
     side.append(c);
   }
+  if (activity?.today?.requests) side.append(todayCard(activity.today));
   const list = data?.shopping || [];
   if (list.length) {
     const c = el("div", "card");
-    c.append(el("span", "label", "Shopping list"), el("span", "big", list.slice(0, 3).join(", ")));
-    if (list.length > 3) c.append(el("span", "soft", `and ${list.length - 3} more`));
+    c.append(el("span", "label", `Shopping list · ${list.length}`));
+    const items = el("div", "items");
+    list.forEach((item) => items.append(el("span", null, item)));
+    c.append(items);
     side.append(c);
   }
   if (!side.children.length) {
@@ -751,18 +803,139 @@ async function hear(phrase) {
   } catch { setState("idle", ""); note.textContent = "The engine didn't answer."; }
 }
 
+// --- What was asked lately, and how the engine is -------------------------------------------------
+let activity = null;
+const seconds = (ms) => ms == null ? "" : ms < 10000 ? (ms / 1000).toFixed(2) + " s" : Math.round(ms / 1000) + " s";
+const skillId = (name) => skills.find((s) => s.name === name)?.id;
+const ago = (secs) => {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - secs));
+  return s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " min" : s < 172800 ? Math.round(s / 3600) + " h" : Math.round(s / 86400) + " days";
+};
+const span = (s) => s < 3600 ? Math.round(s / 60) + " min" : s < 172800 ? (s / 3600).toFixed(1) + " h" : Math.round(s / 86400) + " days";
+async function loadActivity() {
+  try { activity = await (await fetch("api/activity")).json(); } catch { return; }
+  renderRecent($("#recent"), activity.recent.slice(0, 6));
+  renderSide();
+  if (!$("#view-system").hidden) renderSystem();
+}
+function renderRecent(box, turns) {
+  box.replaceChildren();
+  if (!turns.length) { box.append(el("div", "label", "Nothing asked since the start.")); return; }
+  for (const t of turns) {
+    const row = el("div", "turn" + (t.outcome === "not_understood" ? " missed" : ""));
+    const when = new Date(t.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    const heard = el("span", "heard");
+    if (t.skill) {
+      const tag = el("span", "skill");
+      const dot = el("i");
+      dot.style.setProperty("--c", colour(skillId(t.skill)));
+      tag.append(dot, t.skill);
+      heard.append(tag);
+    }
+    heard.append("“" + t.heard + "”");
+    const ms = el("span", "ms", t.outcome === "not_understood" ? "missed" : t.outcome === "done" ? "done " + seconds(t.after_ms) : seconds(t.after_ms));
+    ms.classList.add(t.outcome === "not_understood" ? "miss" : t.after_ms != null && t.after_ms < 800 ? "fast" : t.after_ms > 1500 ? "slow" : "ok");
+    ms.title = "From the end of speech to the first answer audio; the skill took " + t.decide_ms + " ms";
+    row.append(el("span", "when", when), heard, ms);
+    if (t.answer) row.append(el("span", "answer", t.answer));
+    box.append(row);
+  }
+}
+function todayCard(today) {
+  const c = el("div", "card");
+  c.append(el("span", "label", "Today"));
+  const stats = el("div", "stats");
+  const stat = (value, label) => { const s = el("div", "stat"); s.append(el("b", null, value), el("span", null, label)); stats.append(s); };
+  stat(today.requests, "requests");
+  if (today.median_ms != null) stat(seconds(today.median_ms), "typical answer");
+  stat(today.not_understood, "missed");
+  c.append(stats);
+  return c;
+}
+function renderSystem() {
+  const a = activity?.about || about, sys = activity?.system || {}, today = activity?.today || {};
+  const cards = $("#sys-cards");
+  cards.replaceChildren();
+  const card = (title, facts) => {
+    const c = el("div", "card");
+    c.append(el("span", "label", title));
+    const dl = el("dl", "facts");
+    for (const [k, v, cls] of facts) {
+      if (v == null || v === "") continue;
+      const dd = el("dd", cls || null, String(v));
+      dl.append(el("dt", null, k), dd);
+    }
+    c.append(dl);
+    cards.append(c);
+    return c;
+  };
+  card("Engine", [
+    ["Version", a.version],
+    ["Running for", activity ? span(activity.uptime_s) : null],
+    ["Memory", sys.memory_mb != null ? sys.memory_mb + " MB" : null],
+    ["CPU threads", a.threads],
+  ]);
+  card("Listening", [
+    ["Wake word", (a.wake_words || []).join(", ") || a.name],
+    ["Wake word model", a.wake_model ? `${a.wake_model}, above ${Number(a.wake_threshold).toFixed(2)}` : "the name in the transcript"],
+    ["Speech to text", { parakeet: "Parakeet TDT 0.6B (English)", whisper: "Whisper" }[a.listener] || a.listener],
+    ["Norwegian groceries", a.norwegian_groceries ? "on · Whisper small" : "off", a.norwegian_groceries ? "ok" : "off"],
+    ["Understanding", a.language_model ? "rules + language model" : "rules only"],
+    ["Muted", listening.available ? (listening.listening ? "no" : "yes") : null, listening.listening ? null : "bad"],
+  ]);
+  card("Voice", [
+    ["Voice", a.voice],
+    ["Calls you", a.honorific],
+    ["Rendered ahead", sys.speech_cache ? `${sys.speech_cache.sentences.toLocaleString()} sentences · ${sys.speech_cache.mb} MB` : null],
+    ["Answers on", a.answer_player || "the device"],
+  ]);
+  const sat = activity?.satellite;
+  card("Connections", [
+    ["Voice PE", sat ? `${sat.name} · ${ago(sat.since)}` : "not connected", sat ? "ok" : "bad"],
+    ["Home Assistant", data?.error ? data.error : data ? "connected" : "…", data?.error ? "bad" : "ok"],
+    ["Events to this page", eventsOk ? "live" : "reconnecting", eventsOk ? "ok" : "bad"],
+  ]);
+  const t = card("Today", [
+    ["Requests", today.requests],
+    ["Answered aloud", today.answered],
+    ["Done without words", today.done],
+    ["Not understood", today.not_understood, today.not_understood ? "bad" : null],
+    ["Typical answer", seconds(today.median_ms)],
+    ["Slowest 1 in 10", seconds(today.p90_ms)],
+    ["Fastest", seconds(today.fastest_ms)],
+  ]);
+  if (today.skills?.length) {
+    const uses = el("div", "uses");
+    const most = today.skills[0].count;
+    for (const s of today.skills) {
+      const row = el("div", "use");
+      const bar = el("span", "bar");
+      bar.style.width = Math.max(6, (s.count / most) * 100) + "%";
+      bar.style.setProperty("--c", colour(skillId(s.name)));
+      const track = el("span", "track");
+      track.append(bar);
+      row.append(el("span", null, s.name), track, el("span", "n", s.count));
+      uses.append(row);
+    }
+    t.append(el("span", "label", "Most used"), uses);
+  }
+  renderRecent($("#sys-recent"), activity?.recent || []);
+}
+
 function show(view) {
-  for (const v of ["home", "map", "log"]) {
+  for (const v of ["home", "map", "log", "system"]) {
     $("#view-" + v).hidden = v !== view;
     $("#tab-" + v).setAttribute("aria-selected", v === view);
   }
   history.replaceState(null, "", view === "home" ? location.pathname : "#" + view);
   if (view === "map") layout();
   if (view === "log") loadMisses();
+  if (view === "system") { renderSystem(); loadActivity(); }
 }
 $("#tab-home").onclick = () => show("home");
 $("#tab-map").onclick = () => show("map");
 $("#tab-log").onclick = () => show("log");
+$("#tab-system").onclick = () => show("system");
 window.addEventListener("resize", () => { if (!$("#view-map").hidden) layout(); });
 
 // --- Clock -------------------------------------------------------------------------------------
@@ -783,8 +956,10 @@ setInterval(loadListening, 30000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) loadListening(); });
 loadMisses().then(() => loadSkills()).then(() => {
   const view = location.hash.slice(1);
-  show(["map", "log"].includes(view) && !$("#tab-" + view).hidden ? view : "home");
+  show(["map", "log", "system"].includes(view) && !$("#tab-" + view).hidden ? view : "home");
+  loadActivity();
 });
+setInterval(loadActivity, 10000);
 </script>
 </body>
 </html>

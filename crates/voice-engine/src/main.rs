@@ -71,7 +71,7 @@ enum NorwegianTts {
     Piper,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum ListenerKind {
     /// NB-Whisper per utterance: English and Norwegian.
     Whisper,
@@ -371,6 +371,7 @@ fn main() -> Result<()> {
         None => MimiCodec::fetch_weights(),
     };
     let mut handle = None;
+    let activity = Arc::new(voice_engine::activity::Activity::default());
     let unhandled = args.unhandled_log.clone().map(|path| Arc::new(voice_engine::unhandled::UnhandledLog::new(path)));
     let processor: Box<dyn FrameProcessor> = match args.processor {
         Processor::Passthrough => Box::new(Passthrough),
@@ -525,6 +526,7 @@ fn main() -> Result<()> {
                         }
                         false => None,
                     },
+                    activity: activity.clone(),
                     prerender: args.speech_cache.is_some(),
                     llm: args.llm_url.as_deref().map(|url| {
                         info!(url, model = args.llm_model, "language model");
@@ -589,6 +591,14 @@ fn main() -> Result<()> {
                 "honorific": args.honorific,
                 "norwegian": args.norwegian,
                 "language_model": args.llm_url.is_some(),
+                "version": option_env!("INNESTEMME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+                "listener": format!("{:?}", args.listener).to_lowercase(),
+                "wake_model": args.wake_model,
+                "wake_threshold": args.wake_threshold,
+                "norwegian_groceries": args.norwegian_groceries,
+                "answer_player": args.answer_player,
+                "threads": threads,
+                "speech_cache": args.speech_cache.as_ref().map(|dir| dir.display().to_string()),
             });
             info!(url = format!("http://{}/", args.metrics_bind), "web page");
             let wake = WakeWord::new(&args.wake_name).with_spellings(&args.wake_spellings);
