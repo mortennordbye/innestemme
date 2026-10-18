@@ -213,11 +213,16 @@ impl Persona {
     /// are in [`Persona::phrases`]), for rendering ahead of time.
     pub fn forms(&self, answer: &str) -> Vec<String> {
         let answer = answer.trim();
+        if has_word(answer, &self.honorific) {
+            return vec![answer.to_owned()];
+        }
         // Only these are worded at random; the rest have one form, and the time alone is 1440 answers.
         let varies = answer.starts_with("Okay") || answer.starts_with("Sorry, ") || answer == "You're welcome.";
         let seeds = if varies { 256 } else { 1 };
         let mut forms: Vec<String> =
             (0..seeds).map(|seed| Persona::with_seed(&self.honorific, seed).addressed(answer)).collect();
+        // After a greeting or a lead-in, which already addressed the user.
+        forms.push(plain(answer));
         forms.sort();
         forms.dedup();
         forms
@@ -319,8 +324,16 @@ mod tests {
     #[test]
     fn forms_cover_every_styling() {
         let p = Persona::with_seed("sir", 1);
-        assert_eq!(p.forms("Okay, paused."), ["Paused, sir."]);
-        assert_eq!(p.forms("Okay.").len(), OPENERS.len());
+        assert_eq!(p.forms("Okay, paused."), ["Paused, sir.", "Paused."]);
+        assert_eq!(p.forms("What a question, sir."), ["What a question, sir."]);
+        for seed in 0..20 {
+            let mut greeted = Persona::with_seed("sir", seed);
+            let styled = greeted.style("Sorry, I didn't catch that.", 14);
+            let last = styled.split_inclusive('.').next_back().unwrap().trim().to_owned();
+            assert!(p.forms("Sorry, I didn't catch that.").contains(&last) || p.phrases().contains(&last), "{styled}");
+        }
+        // Each opener, and "Done." after a greeting.
+        assert_eq!(p.forms("Okay.").len(), OPENERS.len() + 1);
         for seed in 0..20 {
             let styled = Persona::with_seed("sir", seed).addressed("Okay, the TV is off.");
             assert!(p.forms("Okay, the TV is off.").contains(&styled), "{styled}");

@@ -452,7 +452,7 @@ impl AssistantProcessor {
             draft: None,
             follow_up_until: None,
             woken_at: None,
-            wake_audio: None,
+            wake_named: None,
             said: VecDeque::new(),
             answered_draft: None,
             hushed: None,
@@ -769,8 +769,8 @@ struct Worker {
     follow_up_until: Option<Instant>,
     /// A satellite woke on its own wake word and nothing has been answered since.
     woken_at: Option<Instant>,
-    /// The audio of that wake word, when the engine detected it.
-    wake_audio: Option<Vec<i16>>,
+    /// Whether that wake word's audio held the assistant's name, when the engine detected it.
+    wake_named: Option<bool>,
     /// Sentences spoken lately, to tell the answer coming back through the microphone from a request.
     said: VecDeque<(Instant, String)>,
     /// A command was acted on from its draft, of this many samples: the utterance it ends in is
@@ -894,10 +894,12 @@ impl Worker {
                 Job::Woken(at, wake) => {
                     info!("device wake word");
                     self.woken_at = Some(at);
-                    self.wake_audio = wake;
                     self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
                     self.emit(AssistantEvent::Listening);
                     self.hush();
+                    // Checked while the request is still being said: done when a reply needs it,
+                    // it held up "didn't catch that" by a quarter of a second on the cluster.
+                    self.wake_named = wake.and_then(|audio| self.name_in(&audio));
                 }
                 Job::Satellite(names) => self.satellite(&names),
                 Job::Preview(text, reply) => {
@@ -1125,12 +1127,11 @@ impl Worker {
 
     /// A device woke on its wake word and the request was not understood: say so, once, rather
     /// than end the run in silence, which sounds as if the device never woke.
-    /// Whether the last wake word's audio holds the assistant's name; `None` without the audio.
-    fn name_in_wake(&mut self) -> Option<bool> {
-        let audio = self.wake_audio.take()?;
+    /// Whether a wake word's audio holds the assistant's name.
+    fn name_in(&mut self, audio: &[i16]) -> Option<bool> {
         let transcriber = &mut self.transcriber;
         let start = Instant::now();
-        let heard = match transcriber.transcribe(&audio) {
+        let heard = match transcriber.transcribe(audio) {
             Ok(candidates) => candidates.into_iter().next().map(|c| c.text).unwrap_or_default(),
             Err(error) => {
                 warn!(%error, "could not transcribe the wake word");
@@ -1164,9 +1165,9 @@ impl Worker {
         }
         // "I'm not a fan of the music video.": the TV or the room after a false wake. A reply over
         // it is worse than none; a real request said wrong is said again. Whether the name was in
-        // the wake word tells best; it is checked only here, so understood requests do not wait
-        // for it. It is no gate for requests: it misses the name in about one real wake in twenty.
-        let addressed = match self.name_in_wake() {
+        // the wake word tells best. It is no gate for requests: it misses the name in about one
+        // real wake in twenty.
+        let addressed = match self.wake_named.take() {
             Some(named) => named,
             None => sounds_like_a_request(text),
         };
@@ -1428,14 +1429,15 @@ impl Worker {
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
             .chain(&["Okay, party mode is on.", "Okay, fast party mode is on.", "Okay, the party's over."])
             .chain(house::LOCKDOWN_ANSWERS)
-            .chain(house::ROUTINE_ANSWERS);
+            .chain(house::ROUTINE_ANSWERS)
+            .chain(Jokes::english())
+            .chain(&["Sorry, I didn't catch that."])
+            .map(|a| a.to_string())
+            .chain(voice_assistant::smalltalk::all_english(self.config.wake.name()));
         match &self.persona {
-            Some(persona) => texts.extend(answers.flat_map(|a| persona.forms(a))),
-            None => texts.extend(answers.map(|a| a.to_string())),
+            Some(persona) => texts.extend(answers.flat_map(|a| persona.forms(&a))),
+            None => texts.extend(answers),
         }
-        texts.extend(Jokes::english().iter().map(|j| j.to_string()));
-        texts.extend(voice_assistant::smalltalk::all_english(self.config.wake.name()));
-        texts.push("Sorry, I didn't catch that.".to_owned());
         let mut sentences: Vec<String> = texts
             .iter()
             .flat_map(|t| {
@@ -1456,6 +1458,7 @@ impl Worker {
         for seconds in [10, 15, 20, 30, 45, 90] {
             numbered.push(format!("Timer set for {}.", timer::say_duration(seconds, Lang::English)));
         }
+        numbered.extend(timer::english_left_sentences());
         // Every time of day, from now on: the next hours are ready soon after a start, the rest in
         // idle time over a day, and then kept on disk.
         let now = jiff::Zoned::now();
@@ -1502,6 +1505,8 @@ impl Worker {
         if let Ok(lights) = ha.lights() {
             let mut areas: Vec<String> =
                 lights.iter().map(|l| l.area.to_lowercase()).filter(|a| !a.is_empty()).collect();
+            // "Turn off all the lights": every lamp, under the house's name.
+            areas.push("house".to_owned());
             areas.sort();
             areas.dedup();
             for area in &areas {
@@ -3295,6 +3300,8 @@ fn complete_at_once(intent: &Intent) -> bool {
         Intent::LightLevel { level: LightLevel::Percent(_) | LightLevel::Color(_), target } => {
             ha::names_something(target)
         }
+        // Small talk is a whole short phrase; a bare "hey" is often a request still to come.
+        Intent::SmallTalk(chat) => *chat != voice_assistant::smalltalk::Chat::Hello,
         _ => complete_command(intent),
     }
 }
@@ -3611,6 +3618,8 @@ mod tests {
         assert!(!complete_at_once(&parse("what's the temperature")));
         assert!(complete_at_once(&parse("good night")));
         assert!(complete_at_once(&parse("initiate lockdown")));
+        assert!(complete_at_once(&parse("how you doing")));
+        assert!(!complete_at_once(&parse("hey")));
     }
 
     #[test]

@@ -621,6 +621,8 @@ impl Timers {
             let left = say_left(t.left(now), lang);
             let label = t.label(lang);
             match (no, t.is_running(), single) {
+                // The only timer needs no name, and the time left alone is a sentence rendered ahead.
+                (false, true, true) if self.list.len() == 1 => format!("{} left", capitalize(&left)),
                 (false, true, true) => format!("{} left on {label}", capitalize(&left)),
                 (false, true, false) => format!("{label} has {left} left"),
                 (false, false, _) => format!("{label} is paused, with {left} left"),
@@ -776,6 +778,15 @@ pub fn say_duration(seconds: u32, lang: Lang) -> String {
         };
     }
     join(&parts, lang == Lang::Norwegian)
+}
+
+/// "6 minutes and 40 seconds left.": the time left on the only timer, every way it is said up
+/// to two hours, to render ahead.
+pub fn english_left_sentences() -> Vec<String> {
+    (1..600)
+        .chain((600..=7200).step_by(60))
+        .map(|seconds| format!("{} left.", capitalize(&say_left(Duration::from_secs(seconds), Lang::English))))
+        .collect()
 }
 
 /// Time left, rounded the way people say it: seconds only under ten minutes.
@@ -940,7 +951,10 @@ mod tests {
         assert_eq!(notices[0].seconds_left, 600);
         assert_eq!(timers.next_deadline(), Some(t0 + Duration::from_secs(600)));
         let (text, _) = timers.run(Remaining(Which::default()), Lang::English, t0 + Duration::from_secs(200));
-        assert_eq!(text, "6 minutes and 40 seconds left on the 10 minute timer.");
+        assert_eq!(text, "6 minutes and 40 seconds left.");
+        let left = english_left_sentences();
+        assert!(left.contains(&text));
+        assert!(left.iter().all(|s| crate::speech_cache::CachedTts::cacheable(s)), "{left:?}");
         assert!(timers.due(t0 + Duration::from_secs(599)).is_empty());
         let done = timers.due(t0 + Duration::from_secs(600));
         assert_eq!(done.len(), 1);
@@ -968,7 +982,7 @@ mod tests {
         assert_eq!(timers.list().len(), 1);
         // With one timer left, a name that fits nothing still means it.
         let (text, _) = timers.run(Remaining(which), Lang::English, t0 + Duration::from_secs(60));
-        assert_eq!(text, "9 minutes left on the 10 minute timer.");
+        assert_eq!(text, "9 minutes left.");
     }
 
     #[test]

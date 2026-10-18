@@ -35,7 +35,8 @@ weather?"), with known misspellings (`dialog.rs`).
 **Turns.** After an answer the assistant listens a few seconds more without the wake word (6 s on a satellite,
 8 s on the Mac), for recognised requests only, so room chatter is ignored. Speech that repeats an answer of the last 30 s is the Sonos heard back and is dropped. An
 unrecognised request after a wake gets "Sorry, I didn't catch that." only when Parakeet hears the name in the wake
-word itself, so a false wake by the TV stays silent.
+word itself, so a false wake by the TV stays silent. That check runs as soon as the device wakes, while the
+request is still being said, so the reply does not wait for it.
 
 **Rules first.** `intent.rs` handles every skill in the catalogue in English and Norwegian. A request the rules do
 not understand goes to a language model when `llm-url` is set (any OpenAI-compatible API, with the skills as
@@ -53,8 +54,9 @@ Hue call only once the lights have switched (0.5-0.7 s). A failed queued call is
 **Speech.** English through Kokoro, voice `am_onyx`: from a Kokoro-FastAPI server (`english-tts: kokoro`, a
 Python sidecar in the cluster) or inside the engine through sherpa-onnx (`english-tts: kokoro-onnx`, the f32
 v1.0 model, 16-31% faster on the same CPUs and no server). Norwegian through Piper over Wyoming or macOS `say`. `speech-cache` keeps every fixed sentence on disk, one folder per voice, and
-renders them ahead while idle (about 4,600: openers, remarks, lead-ins, jokes, confirmations, every volume level,
-every minute of the day, the home's lights and room temperatures from Home Assistant). Sentences with numbers are
+renders them ahead while idle (about 5,500: openers, remarks, lead-ins, jokes and small talk in each way the persona puts them, confirmations,
+every volume level, the time left on a single timer, every minute of the day, the home's lights and room
+temperatures from Home Assistant). Sentences with numbers are
 kept only for a few frequent shapes. Fixed wording and live data are separate sentences, so only the data is
 synthesized. A slow skill opens with a cached lead-in ("Checking the forecast, sir.") while it fetches. The home's forecast
 and the electricity prices are fetched every 4 minutes while idle, so those answers need no request and skip the

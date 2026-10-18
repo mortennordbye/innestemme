@@ -76,6 +76,8 @@ const PHRASES: &[(Chat, &[&str])] = &[
         &[
             "how are you",
             "how are you doing",
+            "how you doing",
+            "how ya doing",
             "how's it going",
             "how is it going",
             "how have you been",
