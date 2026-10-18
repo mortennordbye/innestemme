@@ -38,6 +38,12 @@ unrecognised request after a wake gets "Sorry, I didn't catch that." only when P
 word itself, so a false wake by the TV stays silent. That check runs as soon as the device wakes, while the
 request is still being said, so the reply does not wait for it.
 
+**Learning from repeats.** A request that is not understood and said again within 20 s in words that are
+("Code rent." then "Code red.", at least half the words shared) pairs the two. Once the same pair has come up
+twice, those words mean that request, without a code change; only words that are not understood are ever
+rewritten. The pairs are kept in `learned.json` beside the unhandled log, and the web page's Log tab lists them
+with a button to forget one.
+
 **Rules first.** `intent.rs` handles every skill in the catalogue in English and Norwegian. A request the rules do
 not understand goes to a language model when `llm-url` is set (any OpenAI-compatible API, with the skills as
 tools), else gets the short fallback. The cluster runs without one.
@@ -60,7 +66,9 @@ temperatures from Home Assistant). They are rendered ahead on a thread of its ow
 voice, so an answer never waits for a sentence being rendered, and no new one is started while a conversation
 lasts. What is said most goes first, back to back; the long tail follows at half speed. Only sentences missing
 from the folder are rendered, so after a deploy only new wording costs time. After each refresh of the
-forecast and the prices, today's own answers to them are rendered first. Sentences with numbers are
+forecast and the prices, today's own answers to them are rendered first. The cache also counts what is spoken
+(`spoken.json` beside the voices' folders): a sentence heard three times is kept even with live numbers in it, and
+the 500 heard most are rendered first after a start, so a new voice has them ready soonest. Sentences with numbers are
 kept only for a few frequent shapes. Fixed wording and live data are separate sentences, so only the data is
 synthesized. A slow skill opens with a cached lead-in ("Checking the forecast, sir.") while it fetches. The home's forecast
 and the electricity prices are fetched every 4 minutes while idle, so those answers need no request and skip the
