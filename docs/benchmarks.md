@@ -288,3 +288,27 @@ Kokoro-FastAPI runs, voice `am_onyx`, speaker 17), 4 threads, against Kokoro-Fas
 - Weather and electricity prices fetched ahead (every 4 minutes while idle): "What's the weather like?" was
   ready 0.4 ms after the request instead of opening with a lead-in of 1.9-2.4 s (the lead-ins' length in the
   speech cache, with their trailing silence).
+
+## Norwegian groceries, 2026-10-18
+
+`examples/grocery_eval.rs`: 209 items (Norwegian groceries and everyday items), each said by macOS's Norwegian
+voice Nora, either inside "Add ... to the shopping list." in an English voice or by itself, as after "What should
+I add?". "Heard right": the transcript names the item as written; "on the list": what `groceries` makes of it.
+M4 Pro, 4 threads.
+
+| Listener | Said | Heard right | On the list right | Time |
+|---|---|---|---|---|
+| Parakeet (the engine's) | in a sentence | 2% | 34% | 186 ms |
+| Parakeet | by itself | 3% | 21% (with the first matcher) | 74 ms |
+| Whisper small, told Norwegian | in a sentence | 2% | 9% (with the first matcher) | 484 ms |
+| Whisper base, told Norwegian | by itself | 7% | 39% (with the first matcher) | 84 ms |
+| Whisper small, told Norwegian | by itself | 15% | 57% | 299 ms |
+
+- So the engine hears an item said by itself (the list open after an add) with Whisper small in Norwegian, and
+  maps every item to a Norwegian grocery by its English word or by sound; in a whole English sentence only the
+  mapping helps.
+- The matcher spells both languages alike ("kj"/"sh", "j"/"y") and weighs the consonants: "Gråvbru" is Grovbrød,
+  "Lumpa" Lompe, "Gottere" Godteri. Below a score of 0.7 it also turned "Cola" into Kål, so everyday words that
+  sound like groceries are in the list under their own names.
+- A synthetic voice saying single words is harder than a person: these are a floor. Misses get "Added ..."
+  with what was written, so "undo" takes them back.

@@ -8,6 +8,7 @@ engine made it relative to the answer.
 """
 
 import http.server
+import json
 import sys
 import time
 import urllib.request
@@ -24,6 +25,25 @@ DELAYS = {
     ("media_player", "media_play"): 0.29,
     ("music_assistant", "play_media"): 1.2,
 }
+
+
+# To-do lists kept here, so the shopping list works without changing the real one.
+TODO = {}
+
+
+def todo(service, body):
+    """A to-do service call against the kept lists; the response Home Assistant would give."""
+    data = json.loads(body or b"{}")
+    items = TODO.setdefault(data.get("entity_id", "todo.shopping_list"), [])
+    if service == "get_items":
+        return {"service_response": {data.get("entity_id", "todo.shopping_list"): {"items": items}}}
+    if service == "add_item":
+        items.append({"summary": data["item"], "uid": str(len(items) + 1), "status": "needs_action"})
+    if service == "update_item":
+        for item in items:
+            if data["item"] in (item["uid"], item["summary"]):
+                item["status"] = data.get("status", item["status"])
+    return []
 
 
 def delay(domain, service):
@@ -65,6 +85,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             time.sleep(delay(domain, service))
             with open(LOG, "a") as log:
                 log.write(f"{start:.3f}\t{time.time():.3f}\t{domain}.{service}\t{body.decode()[:120]}\n")
+            if domain == "todo":
+                self.reply(200, json.dumps(todo(service, body)).encode())
+                return
             self.reply(200, b'{"changed_states": [], "service_response": {}}' if "return_response" in self.path else b"[]")
             return
         self.forward(body)

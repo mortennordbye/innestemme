@@ -97,6 +97,30 @@ const ALARM_LONGEST: Duration = Duration::from_secs(30 * 60);
 const SCREEN_MOMENT: Duration = Duration::from_secs(25);
 /// How long bedtime keeps a power-cycled plug off: long enough for the lights behind it to lose power.
 const POWER_CYCLE_OFF: Duration = Duration::from_secs(3);
+/// After an item is added the list stays open this long: each short reply is more items.
+const LIST_OPEN: Duration = Duration::from_secs(60);
+/// A reply longer than this while the list is open is the room talking, not items.
+const LIST_REPLY_WORDS: usize = 6;
+/// Replies that close the list.
+const LIST_DONE: &[&str] = &[
+    "that's all",
+    "that's it",
+    "that is all",
+    "that is it",
+    "that's everything",
+    "done",
+    "i'm done",
+    "all done",
+    "nothing else",
+    "nothing more",
+    "no more",
+    "finished",
+    "det var alt",
+    "det er alt",
+    "ferdig",
+    "ikke noe mer",
+    "ikke mer",
+];
 /// Where a sentence's speech starts (about -38 dBFS, above Kokoro's noise floor), and how much before
 /// that is kept (10 ms).
 const SPEECH_ONSET: u16 = 400;
@@ -155,6 +179,8 @@ pub struct AssistantConfig {
     pub lockdown_volume: u8,
     /// The Hue lights following the music, when a bridge is configured.
     pub party: Party,
+    /// Shopping list items written under their Norwegian names, and Whisper for items said alone.
+    pub norwegian_groceries: Option<voice_assistant::norwegian::Norwegian>,
 }
 
 /// What the assistant is doing, for satellites that show it (listening lights, speech URLs).
@@ -382,6 +408,10 @@ impl AssistantProcessor {
         }
         let power = price_area.map(|area| Power::new(&user_agent, &area));
         let news = News::new(&user_agent, &config.news_feeds.0, &config.news_feeds.1);
+        let shopping = match config.norwegian_groceries {
+            Some(_) => ShoppingList::default().with_norwegian_names(),
+            None => ShoppingList::default(),
+        };
         let mut worker = Worker {
             events: events.clone(),
             reply: reply_tx,
@@ -414,9 +444,10 @@ impl AssistantProcessor {
             history: VecDeque::new(),
             last_lights: None,
             pending_lights: None,
-            shopping: ShoppingList::default(),
+            shopping,
             last_list: None,
-            pending_list_add: false,
+            list_open: None,
+            request_audio: Vec::new(),
             pending_scene: None,
             pending_confirm: None,
             timers: Timers::default(),
@@ -742,7 +773,10 @@ struct Worker {
     /// The last change to the shopping list and when, for "undo".
     last_list: Option<(Change, Instant)>,
     /// "Add to the shopping list" named nothing: the next answer is the items.
-    pending_list_add: bool,
+    /// When an item was last added: the list takes more without "add" until `LIST_OPEN` later.
+    list_open: Option<Instant>,
+    /// The audio of the request being answered, for a second listener (Norwegian items).
+    request_audio: Vec<i16>,
     /// A scene request that exists in several rooms: the next answer is the room.
     pending_scene: Option<String>,
     /// A camera or alarm change waiting for "yes": a misheard request must not switch them.
@@ -985,14 +1019,17 @@ impl Worker {
         let unknown = intent::parse(&request) == Intent::Unknown;
         // A question waiting for "yes" only takes a yes or a no: other words without the name are the room.
         let confirming = self.pending_confirm.is_some() && confirmation(&request).is_some();
-        let pending = self.pending_lights.is_some() || confirming || self.timers.awaiting_duration();
+        let pending =
+            self.pending_lights.is_some() || confirming || self.timers.awaiting_duration() || self.list_is_open();
         if !addressed && !pending && unknown && self.config.llm.is_none() {
             info!(text = heard.text, "not addressed");
             self.not_understood(&heard.text, audio, ended, heard.lang, start);
             return;
         }
         self.busy.store(true, Relaxed);
+        self.request_audio = audio.to_vec();
         self.answer(&request, heard.lang, start);
+        self.request_audio.clear();
     }
 
     /// The answer to a typed request, for requests that only read: they are answered for real
@@ -1280,7 +1317,7 @@ impl Worker {
     /// ahead of time. Not when a pending question takes the words ("Which room?" "The kitchen.").
     fn lead_in(&mut self, text: &str, lang: Lang) -> Option<String> {
         let pending = self.pending_lights.is_some()
-            || self.pending_list_add
+            || self.list_is_open()
             || self.pending_scene.is_some()
             || self.pending_confirm.is_some()
             || self.timers.awaiting_duration();
@@ -1332,7 +1369,7 @@ impl Worker {
         let answers = voice_assistant::music::ENGLISH_ANSWERS
             .iter()
             .chain(&questions)
-            .chain(&["Okay, I'll leave it."])
+            .chain(&["Okay, I'll leave it.", "Anything else?", "Okay, that's everything."])
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
             .chain(&["Okay, party mode is on.", "Okay, fast party mode is on.", "Okay, the party's over."])
             .chain(house::LOCKDOWN_ANSWERS)
@@ -1498,11 +1535,21 @@ impl Worker {
                 return Some(self.lights(text, on, lang));
             }
         }
-        if std::mem::take(&mut self.pending_list_add) && intent == Intent::Unknown {
-            // "Milk and eggs": the same splitting as a full request.
-            if let Some(ListCommand::Add(items)) = voice_assistant::shopping::parse(&format!("add {text} to the list"))
-            {
-                return Some(self.shopping_list(ListCommand::Add(items), lang));
+        // "Milk and eggs", "og brunost", "add bacon too": more items while the list is open.
+        if self.list_open.take().is_some_and(|at| at.elapsed() < LIST_OPEN) {
+            let said: Vec<String> =
+                text.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
+            let said = said.join(" ");
+            if LIST_DONE.contains(&said.as_str()) {
+                return Some(
+                    if lang == Lang::Norwegian { "Ok, det var alt." } else { "Okay, that's everything." }.into(),
+                );
+            }
+            if intent == Intent::Unknown && text.split_whitespace().count() <= LIST_REPLY_WORDS {
+                let items = self.items_heard(text);
+                if !items.is_empty() {
+                    return Some(self.shopping_list(ListCommand::Add(items), lang, true));
+                }
             }
         }
         if let Some((command, at)) = self.pending_confirm.take() {
@@ -1702,7 +1749,7 @@ impl Worker {
                     .into()
                 }
             },
-            Intent::ShoppingList(command) => self.shopping_list(command, lang),
+            Intent::ShoppingList(command) => self.shopping_list(command, lang, false),
             Intent::Scene(request) => self.scene(&request, lang),
             Intent::Script(request) => self.script(&request, lang),
             Intent::Undo => self.undo(lang),
@@ -2424,23 +2471,52 @@ impl Worker {
         }
     }
 
-    fn shopping_list(&mut self, command: ListCommand, lang: Lang) -> String {
+    /// `brief`: one of several items said one after the other.
+    fn shopping_list(&mut self, command: ListCommand, lang: Lang, brief: bool) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &self.home_assistant else {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
         };
-        self.pending_list_add = command == ListCommand::Add(Vec::new());
+        let adding = matches!(command, ListCommand::Add(_));
+        self.list_open = adding.then(Instant::now);
+        self.shopping.brief = brief;
         match self.shopping.run(ha, &command, lang) {
             Ok((answer, change)) => {
                 info!(?command, ?change, "shopping list");
+                let added = matches!(change, Some(Change::Added(_)));
                 if let Some(change) = change {
                     self.last_list = Some((change, Instant::now()));
                 }
-                answer
+                // The first item of a few: say that more may follow without "add".
+                match (added && !brief, no) {
+                    (true, false) => format!("{answer} Anything else?"),
+                    (true, true) => format!("{answer} Noe mer?"),
+                    (false, _) => answer,
+                }
             }
             Err(error) => unreachable(&error, no),
         }
+    }
+
+    /// The items in a reply while the list is open. Said alone, a Norwegian item is better heard by
+    /// Whisper told the language, when it is set up; otherwise the listener's words.
+    fn items_heard(&mut self, text: &str) -> Vec<String> {
+        let norwegian = self.config.norwegian_groceries.as_ref().filter(|_| !self.request_audio.is_empty());
+        if let Some(norwegian) = norwegian {
+            let start = Instant::now();
+            let heard = norwegian.transcribe(&self.request_audio);
+            info!(heard, english = text, took = ?start.elapsed(), "items heard in norwegian");
+            let items = voice_assistant::shopping::items_of(&heard);
+            if !items.is_empty() {
+                return items;
+            }
+        }
+        voice_assistant::shopping::items_of(text)
+    }
+
+    fn list_is_open(&self) -> bool {
+        self.list_open.is_some_and(|at| at.elapsed() < LIST_OPEN)
     }
 
     /// "Which lights are on?": the rooms with lights on; with a room or light named, yes or no.

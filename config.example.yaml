@@ -84,6 +84,9 @@ whisper-size: base
 # "Initiate lockdown" (just for fun): every light blinking red, this song at this volume. "Stand down" puts it all back.
 # lockdown-music: Mombasa by Hans Zimmer
 # lockdown-volume: 50
+# Shopping list items under their Norwegian names ("milk" becomes Melk, a misheard "brynost" Brunost),
+# and items said by themselves after an add heard again by Whisper in Norwegian (about 380 MB, first start).
+# norwegian-groceries: true
 # "Party mode" / "fast party mode": every Hue light follows the music the satellite hears, through the
 # bridge's Entertainment API. The keys come from POST {"devicetype": "innestemme#engine",
 # "generateclientkey": true} to https://<bridge>/api after pressing the bridge's link button

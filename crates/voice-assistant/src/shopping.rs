@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::dialog::normalize;
+use crate::groceries::Groceries;
 use crate::ha::HomeAssistant;
 use crate::lang::Lang;
 
@@ -66,6 +67,12 @@ pub fn parse(text: &str) -> Option<ListCommand> {
                 && (NORWEGIAN_PREPOSITIONS.contains(&words[i - 1].as_str())
                     || words.get(i.wrapping_sub(2)).is_some_and(|w| NORWEGIAN_PREPOSITIONS.contains(&w.as_str()))))
     })?;
+    // "Shopping list", "handlelista": the list by itself, to add to it.
+    let list_word = |w: &String| LIST_WORDS.contains(&w.as_str()) || NORWEGIAN_LIST.contains(&w.as_str());
+    let filler = |w: &String| w.is_empty() || POLITE.contains(&w.as_str()) || EDGE_FILLER.contains(&w.as_str());
+    if words.iter().all(|w| list_word(w) || filler(w) || ["open", "åpne"].contains(&w.as_str())) {
+        return Some(ListCommand::Add(Vec::new()));
+    }
     // "the shopping list" is two list words; items stop at the first.
     let verb_at = words.iter().position(|w| !w.is_empty() && !POLITE.contains(&w.as_str()))?;
     let verb = words[verb_at].as_str();
@@ -93,6 +100,17 @@ pub fn parse(text: &str) -> Option<ListCommand> {
         return Some(ListCommand::Read);
     }
     None
+}
+
+/// The items in a reply that is only items ("milk and eggs", "og brunost"), as to "what should I
+/// add?".
+pub fn items_of(text: &str) -> Vec<String> {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let skip = tokens.iter().take_while(|t| {
+        let w = normalize(t);
+        ADD_VERBS.contains(&w.as_str()) || POLITE.contains(&w.as_str())
+    });
+    items(&tokens[skip.count()..])
 }
 
 /// Splits "milk, eggs and bread" into items, dropping filler at both ends of each.
@@ -145,6 +163,10 @@ const LISTS_TEMPLATE: &str = r#"[{% for s in states.todo %}{"id": {{ s.entity_id
 #[derive(Default)]
 pub struct ShoppingList {
     entity: Option<String>,
+    /// Items are written under their Norwegian names (`groceries`).
+    norwegian: bool,
+    /// "Added milk." rather than "Added milk to the shopping list.", while items come one by one.
+    pub brief: bool,
 }
 
 /// What changed, for "undo".
@@ -155,6 +177,12 @@ pub enum Change {
 }
 
 impl ShoppingList {
+    /// Items said in English or misheard are written under their Norwegian names.
+    pub fn with_norwegian_names(mut self) -> Self {
+        self.norwegian = true;
+        self
+    }
+
     /// What is still to buy, in list order.
     pub fn open_items(&mut self, ha: &HomeAssistant) -> Result<Vec<String>> {
         let entity = self.entity(ha)?;
@@ -173,7 +201,10 @@ impl ShoppingList {
             ListCommand::Add(new) => {
                 let mut added = Vec::new();
                 let mut already = Vec::new();
-                for name in new {
+                // What has been on the list counts as a name too: brands, the household's own words.
+                let groceries = self.norwegian.then(|| Groceries::new(items.iter().map(|i| i.summary.as_str())));
+                for heard in new {
+                    let name = &groceries.as_ref().map_or_else(|| heard.clone(), |g| g.norwegian(heard));
                     let key = name.to_lowercase();
                     match items.iter().find(|i| i.summary.to_lowercase() == key) {
                         Some(item) if item.open() => already.push(item.summary.clone()),
@@ -193,6 +224,8 @@ impl ShoppingList {
                     }
                 }
                 let answer = match (no, added.is_empty()) {
+                    (false, false) if self.brief => format!("Added {}.", join(&lower(&added), lang)),
+                    (true, false) if self.brief => format!("La til {}.", join(&lower(&added), lang)),
                     (false, false) => format!("Added {} to the shopping list.", join(&lower(&added), lang)),
                     (true, false) => format!("La til {} på handlelista.", join(&lower(&added), lang)),
                     (false, true) => format!("{} is already on the list.", capitalize(&join(&lower(&already), lang))),
