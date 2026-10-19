@@ -662,6 +662,35 @@ fn is_lights_question(words: &[String]) -> bool {
 const LIGHT_WORDS: &[&str] =
     &["light", "lights", "lamp", "lamps", "lys", "lyset", "lysene", "lampe", "lampen", "lampene"];
 
+/// Words for Hue's standard scenes, and the scene's own name. "Read" is left out: "the reading
+/// lamp" is a light.
+const MOODS: &[(&str, &str)] = &[
+    ("relax", "relax"),
+    ("relaxing", "relax"),
+    ("relaxed", "relax"),
+    ("unwind", "relax"),
+    ("concentrate", "concentrate"),
+    ("concentrating", "concentrate"),
+    ("focus", "concentrate"),
+    ("energize", "energize"),
+    ("energise", "energize"),
+    ("energizing", "energize"),
+];
+
+/// The scene a mood asks for: "put on relaxing lights", or on its own, "I want to relax". Without
+/// a light word only short sentences, so "relax" in a longer question is no scene.
+fn mood(words: &[String]) -> Option<&'static str> {
+    let lights = words.iter().any(|w| LIGHT_WORDS.contains(&w.as_str()));
+    // "Slappe av" ends in "av", which is "off" anywhere else.
+    if words.windows(2).any(|p| ["slappe", "slapp"].contains(&p[0].as_str()) && p[1] == "av") {
+        return Some("relax");
+    }
+    if !lights && words.len() > 6 {
+        return None;
+    }
+    words.iter().find_map(|w| MOODS.iter().find(|(said, _)| said == w).map(|(_, scene)| *scene))
+}
+
 pub fn parse(text: &str) -> Intent {
     // A lookup only when no skill takes the words: "what is the weather" stays the weather.
     match rules(text) {
@@ -800,6 +829,12 @@ fn rules(text: &str) -> Intent {
     let not_scene = ["volume", "volumet", "temperature", "temperaturen", "alarm", "timer"].iter().any(|w| has(w));
     if (scene_word || setting) && !not_scene {
         return Intent::Scene(text.to_owned());
+    }
+    if let Some(mood) = mood(&words) {
+        return Intent::Scene(match crate::ha::room_named(&words) {
+            Some(room) => format!("{mood} in {room}"),
+            None => mood.to_owned(),
+        });
     }
     let switching = ["turn", "switch", "skru", "slå"].iter().any(|w| has(w));
     let pronoun = ["them", "it", "those", "these", "they", "that", "dem", "den", "det", "de"].iter().any(|w| has(w));
@@ -1153,6 +1188,15 @@ mod tests {
         assert!(matches!(parse("activate the reading scene"), Intent::Scene(_)));
         assert!(matches!(parse("relax mode in the bedroom"), Intent::Scene(_)));
         assert!(matches!(parse("sett soverommet til relax"), Intent::Scene(_)));
+        // Heard on the device.
+        assert_eq!(parse("Put on relaxing lights."), Intent::Scene("relax".into()));
+        assert_eq!(parse("Wanted to put on relaxing lights."), Intent::Scene("relax".into()));
+        assert_eq!(parse("Want to relax?"), Intent::Scene("relax".into()));
+        assert_eq!(parse("I want to relax"), Intent::Scene("relax".into()));
+        assert_eq!(parse("relaxing lights in the bedroom"), Intent::Scene("relax in bedroom".into()));
+        assert_eq!(parse("jeg vil slappe av"), Intent::Scene("relax".into()));
+        assert!(matches!(parse("play relaxing music"), Intent::Music(_)));
+        assert!(matches!(parse("turn on the reading lamp"), Intent::Lights { on: true, .. }));
         assert!(matches!(parse("run movie time"), Intent::Script(_)));
         assert!(matches!(parse("kjør skriptet movie time"), Intent::Script(_)));
         assert!(matches!(parse("set a timer for ten minutes"), Intent::Timer(_)));
