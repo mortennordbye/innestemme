@@ -29,7 +29,7 @@ focus; Norwegian works with Whisper and Piper.
 | Skill | Examples |
 |---|---|
 | Lights | "turn off the kitchen lights", "dim the living room to 30 percent", "make the bedroom red", "which lights are on?", "undo" |
-| Scenes and scripts | "set the living room to relax", "run movie time" |
+| Scenes and scripts | "set the living room to relax", "I want to relax", "run movie time" |
 | Music | "play my liked songs", "play Hello by Adele", "next song", "volume 40 percent" (Music Assistant) |
 | Timers and reminders | "set a pasta timer for 8 minutes", "remind me in 20 minutes to check the oven" |
 | TV and its screen | "turn off the TV", "put Netflix on the TV", "show the weather on the TV" |
