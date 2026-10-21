@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use voice_assistant::ha::HomeAssistant;
+use voice_assistant::ha::{self, HomeAssistant};
 
 use crate::web::Response;
 
@@ -132,6 +132,10 @@ impl Control {
             let Some(raw) = param(key) else { continue };
             data[*key] = match kind {
                 Kind::Int => raw.parse::<i64>().map(Value::from).context("not a whole number")?,
+                // The page's sliders send whole percents as a fraction.
+                Kind::Float if *key == "volume_level" => {
+                    raw.parse::<f64>().map(|v| Value::from(ha::volume_level(v * 100.0))).context("not a number")?
+                }
                 Kind::Float => raw.parse::<f64>().map(Value::from).context("not a number")?,
                 Kind::Bool => Value::from(raw == "true" || raw == "1"),
                 Kind::Text => Value::from(raw),

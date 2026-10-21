@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use tracing::{info, warn};
 
-use crate::ha::HomeAssistant;
+use crate::ha::{volume_level, HomeAssistant};
 use crate::lang::Lang;
 use crate::names::Names;
 
@@ -343,9 +343,8 @@ impl Tv {
             TvCommand::Louder | TvCommand::Quieter => {
                 let now = state["attributes"]["volume_level"].as_f64().unwrap_or(0.2);
                 let step = if *command == TvCommand::Louder { VOLUME_STEP } else { -VOLUME_STEP };
-                let level = (now + step).clamp(0.0, 1.0);
-                call("volume_set", json!({ "volume_level": level }))?;
-                let percent = (level * 100.0).round();
+                let percent = ((now + step) * 100.0).round().clamp(0.0, 100.0);
+                call("volume_set", json!({ "volume_level": volume_level(percent) }))?;
                 if no {
                     format!("TV-volumet er {percent}.")
                 } else {
@@ -353,7 +352,7 @@ impl Tv {
                 }
             }
             TvCommand::Volume(n) => {
-                call("volume_set", json!({ "volume_level": f64::from(*n) / 100.0 }))?;
+                call("volume_set", json!({ "volume_level": volume_level(f64::from(*n)) }))?;
                 if no {
                     format!("TV-volumet er {n}.")
                 } else {
