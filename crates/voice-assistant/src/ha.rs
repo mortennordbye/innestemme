@@ -433,6 +433,12 @@ impl HomeAssistant {
 
 /// Like [`resolve`], but also finds a name the transcriber misspelled ("the round lamb", "the sync
 /// light") by matching against the light and room names.
+/// `volume_level` for a whole percent. Sonos stores `int(level * 100)`, so 0.29 became 28 and
+/// 0.69 + 0.1 became 78 while the answer said 79: a hair above the percent truncates to it.
+pub fn volume_level(percent: f64) -> f64 {
+    ((percent.round().clamp(0.0, 100.0) + 0.001) / 100.0).min(1.0)
+}
+
 pub fn resolve_heard(lights: &[Light], request: &str) -> Option<Target> {
     if let Some(target) = resolve(lights, request) {
         return Some(target);
@@ -638,6 +644,15 @@ fn normalize_phrase(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn volume_levels_truncate_to_the_same_percent() {
+        for percent in 0..=100 {
+            assert_eq!((volume_level(f64::from(percent)) * 100.0) as i32, percent);
+        }
+        assert_eq!((volume_level(69.0 + 10.0) * 100.0) as i32, 79);
+        assert_eq!(volume_level(120.0), 1.0);
+    }
+
     use super::*;
 
     fn light(id: &str, name: &str, area: &str) -> Light {

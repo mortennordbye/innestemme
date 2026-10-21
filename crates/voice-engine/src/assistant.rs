@@ -2026,7 +2026,7 @@ impl Worker {
                 ha.service(
                     "media_player",
                     "volume_set",
-                    serde_json::json!({ "entity_id": entity, "volume_level": level }),
+                    serde_json::json!({ "entity_id": entity, "volume_level": ha::volume_level(level * 100.0) }),
                 )
             });
             if let Err(error) = set {

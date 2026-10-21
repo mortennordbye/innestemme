@@ -8,13 +8,13 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::dialog::normalize;
-use crate::ha::HomeAssistant;
+use crate::ha::{volume_level, HomeAssistant};
 use crate::intent::{MusicCommand, Repeat};
 use crate::lang::Lang;
 use crate::names::Names;
 
-/// Volume change per "louder" / "quieter".
-const VOLUME_STEP: f64 = 0.1;
+/// Volume change in percent per "louder" / "quieter".
+const VOLUME_STEP: f64 = 10.0;
 
 /// Music Assistant's media players with their names, rendered by Home Assistant.
 const PLAYERS_TEMPLATE: &str = r#"[{% for id in integration_entities("music_assistant") | select("match", "media_player[.]") %}{"id": {{ id | tojson }}, "name": {{ (state_attr(id, "friendly_name") or id) | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
@@ -299,17 +299,18 @@ impl Player {
                     MusicCommand::VolumeTo(_) => None,
                     _ => Some(ha.state(&entity)?["attributes"]["volume_level"].as_f64().unwrap_or(0.3)),
                 };
-                let level = match (command, now.unwrap_or(0.0)) {
+                let percent = match (command, now.unwrap_or(0.0) * 100.0) {
                     (MusicCommand::Louder, now) => now + VOLUME_STEP,
                     (MusicCommand::Quieter, now) => now - VOLUME_STEP,
-                    (MusicCommand::VolumeBy(points), now) => now + f64::from(*points) / 100.0,
-                    (MusicCommand::VolumeTo(percent), _) => f64::from(*percent) / 100.0,
+                    (MusicCommand::VolumeBy(points), now) => now + f64::from(*points),
+                    (MusicCommand::VolumeTo(percent), _) => f64::from(*percent),
                     _ => unreachable!(),
                 }
-                .clamp(0.0, 1.0);
+                .round()
+                .clamp(0.0, 100.0);
+                let level = volume_level(percent);
                 ha.service("media_player", "volume_set", json!({ "entity_id": entity, "volume_level": level }))?;
-                info!(from = ?now, to = level, "volume set");
-                let percent = (level * 100.0).round();
+                info!(from = ?now, to = percent, "volume set");
                 return Ok(if no {
                     format!("Volumet er {percent} prosent.")
                 } else {
