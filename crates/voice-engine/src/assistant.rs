@@ -107,8 +107,6 @@ const ALARM_REPEAT: Duration = Duration::from_secs(14);
 const ALARM_LONGEST: Duration = Duration::from_secs(30 * 60);
 /// A scene, a joke or coming home: a moment, not something to read.
 const SCREEN_MOMENT: Duration = Duration::from_secs(25);
-/// How long bedtime keeps a power-cycled plug off: long enough for the lights behind it to lose power.
-const POWER_CYCLE_OFF: Duration = Duration::from_secs(3);
 /// After an item is added the list stays open this long: each short reply is more items.
 const LIST_OPEN: Duration = Duration::from_secs(60);
 /// A reply longer than this while the list is open is the room talking, not items.
@@ -184,8 +182,6 @@ pub struct AssistantConfig {
     pub alerts: bool,
     /// Percent the bedroom lights that are on dim to at bedtime.
     pub bedtime_light: u8,
-    /// Lights or switches bedtime turns off and, after a moment, on again.
-    pub bedtime_power_cycle: Vec<String>,
     /// The room lit on coming home, whatever the time; else this room after dark.
     pub home_room: Option<String>,
     /// Music on coming home: "liked", or a playlist's name.
@@ -1187,7 +1183,12 @@ impl Worker {
             },
         };
         match self.plan_of(&intent, &lamps) {
-            Ok(plan) => {
+            Ok(mut plan) => {
+                for (id, effect) in &mut plan.lights {
+                    if effect.kind == "off" && ha::power_cycled(id) {
+                        effect.text = "off, power back on".into();
+                    }
+                }
                 info!(request, lights = plan.lights.len(), "light preview for the hub");
                 serde_json::json!({ "request": request, "lights": plan.lights, "also": plan.also })
             }
@@ -1263,12 +1264,6 @@ impl Worker {
                             let bedroom: Vec<Light> = on.into_iter().filter(in_bedroom).collect();
                             let text = format!("{} %, warm", config.bedtime_light);
                             plan.set(lamps, &bedtime_dimmed(&bedroom), |_| plan::Effect::new("level", text.clone()));
-                            plan.set(lamps, &config.bedtime_power_cycle, |l| {
-                                plan::Effect::new(
-                                    "surprise",
-                                    if l.on { "off, then back on" } else { "off and on, ends on" },
-                                )
-                            });
                         }
                         let snapshot = house::snapshot(ha).map_err(failed)?;
                         if !snapshot.playing.is_empty() {
@@ -3195,32 +3190,6 @@ fn house_answer(
     })
 }
 
-/// Turns the bedtime plugs off and on again, on a thread of its own with its own Home Assistant
-/// client so the answer is not held up: lights behind a plug that are not smart enough to switch
-/// off by themselves come back right after losing power.
-fn power_cycle(config: &AssistantConfig) {
-    let (Some((url, token)), false) = (&config.home_assistant, config.bedtime_power_cycle.is_empty()) else {
-        return;
-    };
-    let (ha, ids) = (HomeAssistant::new(url, token), config.bedtime_power_cycle.clone());
-    let cycle = move || {
-        let data = serde_json::json!({ "entity_id": ids });
-        ha.service("homeassistant", "turn_off", data.clone())?;
-        std::thread::sleep(POWER_CYCLE_OFF);
-        ha.service("homeassistant", "turn_on", data)?;
-        info!(?ids, "power cycled at bedtime");
-        anyhow::Ok(())
-    };
-    let spawned = std::thread::Builder::new().name("power-cycle".into()).spawn(move || {
-        if let Err(error) = cycle() {
-            warn!(error = format!("{error:#}"), "bedtime power cycle failed");
-        }
-    });
-    if let Err(error) = spawned {
-        warn!(%error, "could not start the bedtime power cycle");
-    }
-}
-
 /// Whether any lamp of `ids` is on, a group through its own state.
 fn plan_lit(lamps: &[plan::Lamp], ids: &[String]) -> bool {
     lamps.iter().any(|l| l.on && ids.contains(&l.id))
@@ -3266,9 +3235,6 @@ fn routine_answer(
             let bedtime = routine == Routine::Bedtime;
             let keep = |l: &Light| bedtime && in_bedroom(l);
             let switched = house::everything_off(ha, keep)?;
-            if bedtime {
-                power_cycle(config);
-            }
             let except = if bedtime && !switched.lights.is_empty() {
                 Some(if no { "soverommet" } else { "bedroom" })
             } else {

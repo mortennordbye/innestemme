@@ -74,9 +74,10 @@ whisper-size: base
 # alerts: true
 # Bedtime ("good night"): the bedroom lights that are on dim to this percent, warm white.
 # bedtime-light: 20
-# Lights or switches bedtime turns off and, a few seconds later, on again: a smart plug in front of lights
-# that need a power cut to reset.
-# bedtime-power-cycle: [light.kitchen_plug]
+# Lights or switches whose off is a power cycle: whatever turns them off (a request, a routine, the lockdown,
+# the hub) turns them off and, a few seconds later, on again. A smart plug in front of lights with their own
+# sensor: the cut turns them off, the power back lets the sensor switch them on next time.
+# power-cycle: [light.kitchen_plug]
 # Coming home ("I'm home", "daddy's home"): this room's lights come on, whatever the time, and this music
 # starts: liked for Liked Songs, or a playlist's name. Unset: this room's lights after dark, no music.
 # home-room: Living Room

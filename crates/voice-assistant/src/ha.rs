@@ -2,7 +2,7 @@
 //! then `light.turn_on` / `light.turn_off` switch the ones a request names. Scenes and scripts are
 //! listed the same way and found by name ("set the living room to relax", "run movie time").
 
-use std::sync::mpsc;
+use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -350,12 +350,47 @@ impl HomeAssistant {
         self.send("light", if on { "turn_on" } else { "turn_off" }, serde_json::json!({ "entity_id": target.ids }))
     }
 
-    /// Calls any service, e.g. `media_player.media_pause`.
-    pub fn service(&self, domain: &str, service: &str, data: serde_json::Value) -> Result<()> {
+    /// Calls any service, e.g. `media_player.media_pause`. Turning off a power-cycled light (see
+    /// [`set_power_cycle`]) turns it off and, a moment later, on again.
+    pub fn service(&self, domain: &str, service: &str, mut data: serde_json::Value) -> Result<()> {
+        if service == "turn_off" {
+            let cycled = POWER_CYCLE.get().map(|ids| take_cycled(&mut data, ids)).unwrap_or_default();
+            if !cycled.is_empty() {
+                self.power_cycle(cycled);
+                if data["entity_id"].as_array().is_some_and(Vec::is_empty) {
+                    return Ok(());
+                }
+            }
+        }
+        self.call(domain, service, data)
+    }
+
+    fn call(&self, domain: &str, service: &str, data: serde_json::Value) -> Result<()> {
         let start = Instant::now();
         self.post_within(&format!("/api/services/{domain}/{service}"), data, SERVICE_TIMEOUT)?;
         tracing::info!(domain, service, ms = start.elapsed().as_millis() as u64, "home assistant service");
         Ok(())
+    }
+
+    /// Off, then on again, on a thread of its own so nothing waits for it.
+    fn power_cycle(&self, ids: Vec<String>) {
+        let ha = self.detached();
+        let cycle = move || {
+            let data = serde_json::json!({ "entity_id": ids });
+            ha.call("homeassistant", "turn_off", data.clone())?;
+            std::thread::sleep(POWER_CYCLE_OFF);
+            ha.call("homeassistant", "turn_on", data)?;
+            tracing::info!(?ids, "power cycled");
+            anyhow::Ok(())
+        };
+        let spawned = std::thread::Builder::new().name("power-cycle".into()).spawn(move || {
+            if let Err(error) = cycle() {
+                tracing::warn!(error = format!("{error:#}"), "power cycle failed");
+            }
+        });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "could not start a power cycle");
+        }
     }
 
     /// Calls a service that answers, e.g. `music_assistant.search`; the answer.
@@ -437,6 +472,37 @@ impl HomeAssistant {
         }
         Ok(count)
     }
+}
+
+/// Lights or switches whose off is a power cycle (the `power-cycle` setting). A plug in front of
+/// lights with a sensor of their own: cutting the power turns them off, and the power back lets the
+/// sensor switch them on next time. Process-wide, so every client and the hub's calls obey it.
+static POWER_CYCLE: OnceLock<Vec<String>> = OnceLock::new();
+/// How long a power cycle keeps the power off: long enough for the lights behind it to lose it.
+pub const POWER_CYCLE_OFF: Duration = Duration::from_secs(3);
+
+/// Sets the power-cycled lights, once at start.
+pub fn set_power_cycle(ids: Vec<String>) {
+    let _ = POWER_CYCLE.set(ids);
+}
+
+/// Whether turning `id` off is a power cycle.
+pub fn power_cycled(id: &str) -> bool {
+    POWER_CYCLE.get().is_some_and(|ids| ids.iter().any(|i| i == id))
+}
+
+/// Takes the power-cycled ones out of a call's `entity_id` (one id or a list); those taken.
+fn take_cycled(data: &mut serde_json::Value, cycle: &[String]) -> Vec<String> {
+    let ids: Vec<String> = match &data["entity_id"] {
+        serde_json::Value::String(id) => vec![id.clone()],
+        serde_json::Value::Array(ids) => ids.iter().filter_map(|id| id.as_str().map(str::to_owned)).collect(),
+        _ => return Vec::new(),
+    };
+    let (cycled, rest): (Vec<String>, Vec<String>) = ids.into_iter().partition(|id| cycle.contains(id));
+    if !cycled.is_empty() {
+        data["entity_id"] = rest.into();
+    }
+    cycled
 }
 
 /// Like [`resolve`], but also finds a name the transcriber misspelled ("the round lamb", "the sync
@@ -652,6 +718,20 @@ fn normalize_phrase(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn power_cycled_lights_leave_the_off_call() {
+        let cycle = vec!["light.plug".to_owned()];
+        let mut data = serde_json::json!({ "entity_id": ["light.a", "light.plug"] });
+        assert_eq!(take_cycled(&mut data, &cycle), cycle);
+        assert_eq!(data["entity_id"], serde_json::json!(["light.a"]));
+        let mut data = serde_json::json!({ "entity_id": "light.plug" });
+        assert_eq!(take_cycled(&mut data, &cycle), cycle);
+        assert_eq!(data["entity_id"], serde_json::json!([]));
+        let mut data = serde_json::json!({ "entity_id": "light.a" });
+        assert!(take_cycled(&mut data, &cycle).is_empty());
+        assert_eq!(data["entity_id"], "light.a");
+    }
+
     #[test]
     fn volume_levels_truncate_to_the_same_percent() {
         for percent in 0..=100 {
