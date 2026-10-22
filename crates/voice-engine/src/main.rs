@@ -185,9 +185,14 @@ struct Args {
     /// Brightness in percent the bedroom lights that are on dim to at bedtime ("good night"), warm white.
     #[arg(long, env = "VOICE_BEDTIME_LIGHT", default_value_t = 20, value_parser = clap::value_parser!(u8).range(1..=100))]
     bedtime_light: u8,
-    /// Lights or switches that bedtime turns off and, a few seconds later, on again, comma-separated:
-    /// a smart plug in front of lights that need a power cut to reset.
-    #[arg(long, env = "VOICE_BEDTIME_POWER_CYCLE", value_delimiter = ',')]
+    /// Lights or switches whose off is a power cycle, comma-separated: whatever turns them off (a
+    /// request, a routine, the lockdown, the hub) turns them off and, a few seconds later, on again.
+    /// A smart plug in front of lights with their own sensor: the cut turns them off, the power back
+    /// lets the sensor switch them on next time.
+    #[arg(long, env = "VOICE_POWER_CYCLE", value_delimiter = ',')]
+    power_cycle: Vec<String>,
+    /// The old name of `power-cycle`, from when only bedtime did it.
+    #[arg(long, env = "VOICE_BEDTIME_POWER_CYCLE", value_delimiter = ',', hide = true)]
     bedtime_power_cycle: Vec<String>,
     /// The room whose lights come on when you come home ("I'm home"), whatever the time. Unset:
     /// the microphone's room, after dark only.
@@ -359,6 +364,7 @@ fn main() -> Result<()> {
     for (name, source) in layered.sources() {
         info!(name, source, "setting");
     }
+    voice_assistant::ha::set_power_cycle(args.power_cycle.iter().chain(&args.bedtime_power_cycle).cloned().collect());
 
     let threads = args.threads.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
     voice_rt::threads::configure_compute_threads(threads);
@@ -518,7 +524,6 @@ fn main() -> Result<()> {
                     screen_url: args.screen_url.clone(),
                     alerts: args.alerts,
                     bedtime_light: args.bedtime_light,
-                    bedtime_power_cycle: args.bedtime_power_cycle.clone(),
                     home_room: args.home_room.clone(),
                     home_music: args.home_music.clone(),
                     lockdown_music: args.lockdown_music.clone(),
