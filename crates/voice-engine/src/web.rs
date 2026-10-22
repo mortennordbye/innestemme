@@ -237,6 +237,23 @@ impl Web {
         Some(json_response(&value))
     }
 
+    /// `/api/plan?q=...`: what a request would do to each light, from the code that runs it.
+    /// Nothing is switched.
+    pub async fn plan(&self, target: &str) -> Option<Response> {
+        let query = target.strip_prefix("/api/plan?")?;
+        let text = query.split('&').find_map(|pair| pair.strip_prefix("q=")).map(decode).unwrap_or_default();
+        let Some(assistant) = &self.assistant else {
+            return Some(json_response(&json!({ "reason": "This engine has no assistant." })));
+        };
+        let reply = tokio::time::timeout(HEAR_TIMEOUT, assistant.plan(text)).await;
+        Some(json_response(
+            &reply
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_else(|| json!({ "reason": "The assistant did not answer in time." })),
+        ))
+    }
+
     pub fn route(&self, target: &str) -> Option<Response> {
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         match path {

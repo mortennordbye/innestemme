@@ -83,7 +83,9 @@ another media player. Timers count down on the Voice PE's LED ring through the E
 **Screens.** `web: true` serves on the metrics port. `/` is the dashboard: Home (an overview: the face, the
 clock and forecast, every room's lights and climate, buttons for the whole apartment (all on, all off, one colour
 everywhere, party mode, the lockdown), each room's temperature, quick switches, the house's status, what plays, the
-shopping list, the latest requests and today's numbers), Lights, Climate (trends over 24 hours, the forecast,
+shopping list, the latest requests and today's numbers), Lights (with "What would it do?": a request, picked or
+typed, and what it would change on each lamp, worked out by the code that runs it through `/api/plan`, without
+switching anything), Climate (trends over 24 hours, the forecast,
 sensors, batteries), Media, House (people, the alarm, the camera, automations, the network, updates, every device's
 settings), Map (every skill, and how a phrase is understood), Log (what no skill handled) and System (version,
 models, connections, the speech cache, response times). `/tv` is the screen "show the weather on the TV" opens.

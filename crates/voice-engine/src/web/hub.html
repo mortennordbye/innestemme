@@ -300,6 +300,19 @@ input[type=range]::-moz-range-thumb { width: 22px; height: 22px; border: 0; bord
 .scene { font: inherit; font-size: 14px; padding: 7px 13px; border-radius: 999px; border: 1px solid var(--line); background: #11141a; color: var(--text); cursor: pointer; }
 .scene:hover { border-color: var(--accent); }
 .scene:active { transform: scale(.97); }
+.plan .try { flex: none; max-width: none; }
+.scene[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.plan-out { display: flex; flex-direction: column; gap: 4px; font-size: 15px; }
+.plan-out:empty { display: none; }
+.will { align-self: flex-start; font-family: var(--mono); font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); }
+.will.on { color: #1a1206; background: var(--warm); border-color: transparent; }
+.will.off { color: var(--text); background: #232833; border-color: transparent; }
+.will.level { color: var(--warm); border-color: rgba(255, 196, 107, .5); }
+.will.scene, .will.restore { color: var(--accent); border-color: rgba(124, 245, 212, .45); }
+.will.red { color: #fff; background: #c8302b; border-color: transparent; }
+.will.party { color: #ecdcff; background: rgba(176, 92, 255, .35); border-color: transparent; }
+.will.surprise { color: #ffd59a; background: rgba(255, 154, 60, .16); border-color: rgba(255, 154, 60, .6); }
+.lamp.changes { border-style: dashed; border-color: var(--soft); }
 .btn { font: inherit; font-size: 14px; padding: 8px 15px; border-radius: 12px; border: 1px solid var(--line); background: #161a21; color: var(--text); cursor: pointer; }
 .btn:hover { border-color: var(--soft); }
 .btn.big { padding: 10px 18px; font-size: 15px; }
@@ -498,7 +511,18 @@ details.device .settings { display: flex; flex-direction: column; gap: 4px; marg
     <section class="side" id="side" aria-label="Now"></section>
   </div>
 
-  <section class="ha-view" id="view-lights" role="tabpanel" aria-labelledby="tab-lights" hidden></section>
+  <section class="ha-view" id="view-lights" role="tabpanel" aria-labelledby="tab-lights" hidden>
+    <div class="panel plan" id="plan">
+      <div class="row">
+        <div><h3>What would it do?</h3><span class="soft">Pick a request or type one: each lamp shows what it would change. Nothing is switched.</span></div>
+        <button type="button" class="btn" id="plan-clear" hidden>Clear</button>
+      </div>
+      <div class="scenes" id="plan-picks"></div>
+      <label class="try"><svg class="ico" aria-hidden="true"><use href="#i-search"></use></svg><input id="plan-q" autocomplete="off" spellcheck="false" placeholder="Turn off the house lights" aria-label="Request to preview"></label>
+      <div class="plan-out" id="plan-out" aria-live="polite"></div>
+    </div>
+    <div class="ha-view" id="lights-body"></div>
+  </section>
   <section class="ha-view" id="view-climate" role="tabpanel" aria-labelledby="tab-climate" hidden></section>
   <section class="ha-view" id="view-media" role="tabpanel" aria-labelledby="tab-media" hidden></section>
   <section class="ha-view" id="view-house" role="tabpanel" aria-labelledby="tab-house" hidden></section>
@@ -1021,7 +1045,7 @@ async function loadHa() {
 }
 function renderHa() {
   const view = shown();
-  if (view === "lights") renderLights();
+  if (view === "lights") { renderPlan(); renderLights(); if (plan) preview(plan.q); }
   if (view === "climate") renderClimate();
   if (view === "media") renderMedia();
   if (view === "house") renderHouse();
@@ -1116,6 +1140,11 @@ function lamp(e) {
   const head = el("div", "row");
   head.append(el("span", "name", e.name), tog(on, e.name, (v) => call("light", v ? "turn_on" : "turn_off", e.id), { warm: true }));
   card.append(head);
+  if (plan?.lights) {
+    const will = plan.lights[e.id];
+    card.classList.toggle("changes", changes(will));
+    card.append(el("span", "will " + (will?.kind || ""), will ? will.text : "unchanged"));
+  }
   if (dims(e)) card.append(slider(on ? pct(e) : 0, 1, 100, 1, e.name + " brightness", (v) => call("light", "turn_on", e.id, { brightness_pct: v }), "var(--warm)"));
   const sw = el("div", "swatches");
   for (const p of PRESETS) {
@@ -1131,8 +1160,51 @@ function lamp(e) {
   if (sw.children.length) card.append(sw);
   return card;
 }
+// "What would it do?": the engine works out a request's lights with the code that runs it
+// (`api/plan`), and each lamp below shows its part. Asked again with every refresh while shown.
+const PLAN_PICKS = [
+  ["All on", "turn on all the lights"], ["All off", "turn off all the lights"], ["Off in here", "turn off the lights"],
+  ["House lights off", "turn off the house lights"], ["I'm leaving", "i'm leaving"], ["Good night", "good night"],
+  ["I'm home", "i'm home"], ["Relax", "i want to relax"], ["Lockdown", "initiate lockdown"], ["Stand down", "stand down"],
+  ["Party", "party mode"], ["Stop the party", "stop the party"], ["Undo", "undo"],
+];
+let plan = null;
+const changes = (will) => !!will && will.kind !== "same";
+async function preview(q) {
+  q = q.trim();
+  if (!q) { plan = null; renderPlan(); renderLights(); return; }
+  try {
+    const res = await fetch("api/plan?q=" + encodeURIComponent(q));
+    plan = { ...(await res.json()), q };
+  } catch { plan = { q, reason: "The engine didn't answer." }; }
+  renderPlan();
+  if (shown() === "lights") renderLights();
+}
+function renderPlan() {
+  const picks = $("#plan-picks");
+  if (!picks.children.length) {
+    for (const [label, q] of PLAN_PICKS) {
+      const b = el("button", "scene", label);
+      b.type = "button";
+      b.dataset.q = q;
+      b.onclick = () => { $("#plan-q").value = q; preview(q); };
+      picks.append(b);
+    }
+    $("#plan-q").onkeydown = (e) => { if (e.key === "Enter") preview(e.target.value); };
+    $("#plan-clear").onclick = () => { $("#plan-q").value = ""; preview(""); };
+  }
+  for (const b of picks.children) b.setAttribute("aria-pressed", !!plan && plan.q === b.dataset.q);
+  $("#plan-clear").hidden = !plan;
+  const out = $("#plan-out");
+  out.replaceChildren();
+  if (!plan) return;
+  if (plan.reason) { out.append(el("span", "soft", plan.reason)); return; }
+  const n = Object.values(plan.lights || {}).filter(changes).length;
+  out.append(el("span", null, n ? `${n} light${n > 1 ? "s" : ""} would change.` : "No light would change."));
+  for (const also of plan.also || []) out.append(el("span", "soft", also));
+}
 function renderLights() {
-  const box = $("#view-lights");
+  const box = $("#lights-body");
   const lights = ha.filter((e) => domain(e) === "light" && !e.network && live(e) && !/ LED/.test(e.name));
   const group = (e) => Array.isArray(e.a.entity_id);
   const areas = [...new Set(lights.filter((e) => e.area).map((e) => e.area))].sort();
@@ -1154,7 +1226,8 @@ function renderLights() {
     const panel = el("div", "panel" + (on ? " lit" : ""));
     const top = el("div", "row");
     const title = el("div");
-    title.append(el("h3", null, area), el("span", "soft", on ? `${on} of ${lamps.length} on` : "Off"));
+    const changing = plan?.lights ? lamps.filter((e) => changes(plan.lights[e.id])).length : 0;
+    title.append(el("h3", null, area), el("span", "soft", (on ? `${on} of ${lamps.length} on` : "Off") + (changing ? ` · ${changing} would change` : "")));
     const target = room ? [room] : lamps;
     top.append(title, tog(on > 0, area, (v) => target.forEach((e) => call("light", v ? "turn_on" : "turn_off", e.id)), { warm: true }));
     panel.append(top);

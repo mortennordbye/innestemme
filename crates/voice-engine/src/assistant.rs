@@ -30,6 +30,7 @@ use voice_assistant::music::Player;
 use voice_assistant::news::News;
 use voice_assistant::party::PartyCommand;
 use voice_assistant::persona::Persona;
+use voice_assistant::plan;
 use voice_assistant::power::{self, Power};
 use voice_assistant::shopping::{Change, ListCommand, ShoppingList};
 use voice_assistant::timer::{self, Notice, TimerCommand, Timers};
@@ -314,6 +315,13 @@ impl AssistantHandle {
         answer
     }
 
+    /// What a typed request would do to each light, for the hub: nothing is switched.
+    pub fn plan(&self, text: String) -> tokio::sync::oneshot::Receiver<serde_json::Value> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let _ = self.jobs.send(Job::Plan(text, reply));
+        answer
+    }
+
     /// A web page button's request, done without a word; its answer's text.
     pub fn act(&self, text: String) -> tokio::sync::oneshot::Receiver<String> {
         let (reply, answer) = tokio::sync::oneshot::channel();
@@ -357,6 +365,8 @@ enum Job {
     Satellite(Vec<String>),
     /// The web page's "hear the answer".
     Preview(String, tokio::sync::oneshot::Sender<Preview>),
+    /// The hub's "what would it do": the lights a request changes, as JSON.
+    Plan(String, tokio::sync::oneshot::Sender<serde_json::Value>),
     /// A safety sensor went off: speak this warning.
     Alert(String),
     /// A Home Assistant call the answer did not wait for failed: say so.
@@ -932,6 +942,9 @@ impl Worker {
                 Job::Preview(text, reply) => {
                     let _ = reply.send(self.preview(&text));
                 }
+                Job::Plan(text, reply) => {
+                    let _ = reply.send(self.plan(&text));
+                }
                 Job::Utterance(audio, ended) => self.utterance(&audio, ended),
                 Job::Draft(audio) => {
                     queued.extend(jobs.try_iter());
@@ -1157,6 +1170,143 @@ impl Worker {
         }
         info!(request, answer, "preview for the web page");
         Preview::Spoken { text: answer, audio }
+    }
+
+    /// What a typed request would do to each light, worked out by the code that runs it, without
+    /// running it: `{"request", "lights": {id: {kind, text}}, "also": [...]}`, or `{"reason"}` when
+    /// it would switch nothing.
+    fn plan(&mut self, text: &str) -> serde_json::Value {
+        let request = self.config.wake.strip(text).unwrap_or_else(|| text.to_owned());
+        let intent = intent::parse(&request);
+        let reason = |reason: &str| serde_json::json!({ "request": request, "reason": reason });
+        let lamps = match &self.home_assistant {
+            None => return reason("Home Assistant isn't connected yet."),
+            Some(ha) => match plan::lamps(ha) {
+                Ok(lamps) => lamps,
+                Err(error) => return reason(&format!("Home Assistant didn't answer: {error:#}")),
+            },
+        };
+        match self.plan_of(&intent, &lamps) {
+            Ok(plan) => {
+                info!(request, lights = plan.lights.len(), "light preview for the hub");
+                serde_json::json!({ "request": request, "lights": plan.lights, "also": plan.also })
+            }
+            Err(why) => reason(&why),
+        }
+    }
+
+    fn plan_of(&mut self, intent: &Intent, lamps: &[plan::Lamp]) -> Result<plan::Plan, String> {
+        let mut plan = plan::Plan::default();
+        let target = |this: &mut Self, request: &str| match this.light_target(request, Lang::English) {
+            Ok(Some(target)) => Ok(target),
+            Ok(None) => Err("It would ask which room.".to_owned()),
+            Err(answer) => Err(answer),
+        };
+        let here = self.room.clone();
+        let failed = |error: anyhow::Error| format!("Home Assistant didn't answer: {error:#}");
+        match intent {
+            Intent::Lights { on, target: request } => {
+                let found = target(self, request)?;
+                plan.set(lamps, &found.ids, |_| plan::Effect::switch(*on));
+            }
+            Intent::LightLevel { level, target: request } => {
+                let found = target(self, request)?;
+                plan.set(lamps, &found.ids, |l| plan::Effect::level(level, l.on));
+            }
+            Intent::Undo => {
+                let Some((found, on)) = self.recent_lights() else {
+                    return Err("There's nothing to undo.".into());
+                };
+                plan.set(lamps, &found.ids, |_| plan::Effect::switch(!on));
+            }
+            Intent::Scene(request) => {
+                let ha = self.home_assistant.as_mut().ok_or("Home Assistant isn't connected yet.")?;
+                let scenes = ha.scenes().map_err(failed)?.to_vec();
+                let scene = match ha::resolve_scene(&scenes, request, here.as_deref()) {
+                    ha::SceneMatch::Found(scene) => scene.clone(),
+                    ha::SceneMatch::WhichRoom => return Err("It would ask which room.".into()),
+                    ha::SceneMatch::NotFound => return Err("There is no such scene.".into()),
+                };
+                // Hue scenes do not list their lights in Home Assistant: the scene's room.
+                let room = ha.find(&scene.area).map_err(failed)?.map(|t| t.ids).unwrap_or_default();
+                plan.set(lamps, &room, |_| plan::Effect::new("scene", scene.name.clone()));
+            }
+            Intent::Party(command) => {
+                let ha = self.home_assistant.as_ref().ok_or("Home Assistant isn't connected yet.")?;
+                match command {
+                    PartyCommand::On { .. } if !self.config.party.configured() => {
+                        return Err("Party mode needs a Hue bridge.".into())
+                    }
+                    // The bridge streams to its colour lights; the rest keep what they show.
+                    PartyCommand::On { .. } => {
+                        let (colour, _) = house::lockdown_lights(ha).map_err(failed)?;
+                        plan.set(lamps, &colour, |_| plan::Effect::new("party", "follows the music"));
+                    }
+                    PartyCommand::Off => {
+                        let ids = house::snapshot_lights(ha, house::PARTY_SCENE).map_err(failed)?;
+                        let ids = ids.ok_or("There's no party on.")?;
+                        plan.set(lamps, &ids, |_| plan::Effect::new("restore", "put back"));
+                    }
+                }
+            }
+            Intent::Routine(routine) => {
+                let config = &self.config;
+                let ha = self.home_assistant.as_mut().ok_or("Home Assistant isn't connected yet.")?;
+                match routine {
+                    Routine::Leaving | Routine::Bedtime => {
+                        let bedtime = *routine == Routine::Bedtime;
+                        let on = ha.lights_on().map_err(failed)?;
+                        let off = house::to_switch_off(on.clone(), |l| bedtime && in_bedroom(l));
+                        let ids: Vec<&str> = off.iter().map(|l| l.id.as_str()).collect();
+                        plan.set(lamps, &ids, |_| plan::Effect::switch(false));
+                        if bedtime {
+                            let bedroom: Vec<Light> = on.into_iter().filter(in_bedroom).collect();
+                            let text = format!("{} %, warm", config.bedtime_light);
+                            plan.set(lamps, &bedtime_dimmed(&bedroom), |_| plan::Effect::new("level", text.clone()));
+                            plan.set(lamps, &config.bedtime_power_cycle, |l| {
+                                plan::Effect::new(
+                                    "surprise",
+                                    if l.on { "off, then back on" } else { "off and on, ends on" },
+                                )
+                            });
+                        }
+                        let snapshot = house::snapshot(ha).map_err(failed)?;
+                        if !snapshot.playing.is_empty() {
+                            plan.also.push("The music pauses.".into());
+                        }
+                        if !tv::on_tvs(ha).map_err(failed)?.is_empty() {
+                            plan.also.push("The TV turns off.".into());
+                        }
+                    }
+                    Routine::Home => {
+                        let found = home_target(ha, config, here.as_deref()).map_err(failed)?;
+                        let found = found.ok_or("Coming home would switch no lights now.")?;
+                        let lit = plan_lit(lamps, &found.ids);
+                        plan.set(lamps, &found.ids, |l| match lit {
+                            true => plan::Effect::new("same", if l.on { "already on" } else { "left off" }),
+                            false => plan::Effect::new("on", "on"),
+                        });
+                        if let Some(music) = &config.home_music {
+                            plan.also.push(format!("Music starts: {music}."));
+                        }
+                    }
+                    Routine::Lockdown => {
+                        let (red, off) = house::lockdown_lights(ha).map_err(failed)?;
+                        plan.set(lamps, &red, |_| plan::Effect::new("red", "red, pulsing"));
+                        plan.set(lamps, &off, |_| plan::Effect::switch(false));
+                        plan.also.push(format!("Plays {} at {} %.", config.lockdown_music, config.lockdown_volume));
+                    }
+                    Routine::StandDown => {
+                        let ids = house::snapshot_lights(ha, house::LOCKDOWN_SCENE).map_err(failed)?;
+                        let ids = ids.ok_or("There is no lockdown to end.")?;
+                        plan.set(lamps, &ids, |_| plan::Effect::new("restore", "put back"));
+                    }
+                }
+            }
+            Intent::Unknown => return Err("Not understood without the language model.".into()),
+            _ => return Err("This request doesn't switch any lights.".into()),
+        }
+        Ok(plan)
     }
 
     /// A device woke on its wake word and the request was not understood: say so, once, rather
@@ -3071,8 +3221,34 @@ fn power_cycle(config: &AssistantConfig) {
     }
 }
 
+/// Whether any lamp of `ids` is on, a group through its own state.
+fn plan_lit(lamps: &[plan::Lamp], ids: &[String]) -> bool {
+    lamps.iter().any(|l| l.on && ids.contains(&l.id))
+}
+
 /// Bedtime light colour: warm white.
 const BEDTIME_KELVIN: u32 = 2700;
+
+/// What bedtime leaves on.
+fn in_bedroom(light: &Light) -> bool {
+    ha::is_room(&light.area, "bedroom") || ha::is_room(&light.name, "bedroom")
+}
+
+/// The bedroom lights that are on which bedtime dims. A Hue room is also its own lights: the
+/// lights, or the room when that is all there is.
+fn bedtime_dimmed(bedroom: &[Light]) -> Vec<&str> {
+    let single: Vec<&Light> = bedroom.iter().filter(|l| !l.group).collect();
+    if single.is_empty() { bedroom.iter().collect() } else { single }.iter().map(|l| l.id.as_str()).collect()
+}
+
+/// The lights coming home switches on, when none of them is on yet.
+fn home_target(ha: &mut HomeAssistant, config: &AssistantConfig, here: Option<&str>) -> anyhow::Result<Option<Target>> {
+    let room = match &config.home_room {
+        Some(room) => Some(room.as_str()),
+        None => here.filter(|_| ha.state("sun.sun").is_ok_and(|s| s["state"] == "below_horizon")),
+    };
+    Ok(room.map(|room| ha.find(room)).transpose()?.flatten())
+}
 
 /// A routine's answer, and the lights it switched for "undo".
 fn routine_answer(
@@ -3088,7 +3264,7 @@ fn routine_answer(
     match routine {
         Routine::Leaving | Routine::Bedtime => {
             let bedtime = routine == Routine::Bedtime;
-            let keep = |l: &Light| bedtime && (ha::is_room(&l.area, "bedroom") || ha::is_room(&l.name, "bedroom"));
+            let keep = |l: &Light| bedtime && in_bedroom(l);
             let switched = house::everything_off(ha, keep)?;
             if bedtime {
                 power_cycle(config);
@@ -3101,12 +3277,7 @@ fn routine_answer(
             parts.push(house::switched_answer(&switched, except, lang));
             if bedtime {
                 let bedroom: Vec<Light> = ha.lights_on()?.into_iter().filter(|l| keep(l)).collect();
-                // A Hue room is also its own lights: dim the lights, or the room when that is all there is.
-                let single: Vec<&Light> = bedroom.iter().filter(|l| !l.group).collect();
-                let ids: Vec<&str> = if single.is_empty() { bedroom.iter().collect() } else { single }
-                    .iter()
-                    .map(|l| l.id.as_str())
-                    .collect();
+                let ids = bedtime_dimmed(&bedroom);
                 if !ids.is_empty() {
                     let data = serde_json::json!({
                         "entity_id": ids,
@@ -3148,11 +3319,7 @@ fn routine_answer(
         Routine::Lockdown | Routine::StandDown => unreachable!("the worker runs these itself"),
         Routine::Home => {
             parts.push(if no { "Velkommen hjem." } else { "Welcome home." }.into());
-            let room = match &config.home_room {
-                Some(room) => Some(room.as_str()),
-                None => here.filter(|_| ha.state("sun.sun").is_ok_and(|s| s["state"] == "below_horizon")),
-            };
-            if let Some(target) = room.map(|room| ha.find(room)).transpose()?.flatten() {
+            if let Some(target) = home_target(ha, config, here)? {
                 let on = ha.lights_on()?;
                 if !on.iter().any(|l| target.ids.contains(&l.id)) {
                     ha.set(&target, true)?;
