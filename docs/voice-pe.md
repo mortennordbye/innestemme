@@ -43,6 +43,9 @@ can hold a device: stop a laptop instance before the cluster's starts, or the tw
 - **The room.** "Turn off the lights" without a room means the satellite's room: its area in Home Assistant,
   looked up by the device's name when it connects. `room` overrides it. Renaming the device in Home Assistant
   breaks the lookup.
+- **The LED ring is not a lamp.** Home Assistant lists the ring (and network gear's status LEDs) as lights;
+  "all the lights", "everything off" and a room leave anything with "LED" in its name alone. Naming it
+  ("turn off the LED ring") still works.
 - **Timers.** The Voice PE's LED ring gets the ESPHome timer events and counts down and rings itself; it stops
   on "stop", the wake word or the button (15 minutes at most), and the engine cannot stop it, since the device
   does not stream while ringing. Reminders, and timers on devices without a display, are announced instead.

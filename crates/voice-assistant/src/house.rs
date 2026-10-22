@@ -1127,12 +1127,11 @@ pub struct Switched {
 
 /// Switches off the lights (all but `keep`), pauses the music and turns off the TVs.
 pub fn everything_off(ha: &mut HomeAssistant, keep: impl Fn(&Light) -> bool) -> Result<Switched> {
-    // Network gear reports its status LED as a light; nobody means that. A group with no area
-    // ("House Lights") would also switch the lights kept on.
+    // A group with no area ("House Lights") would also switch the lights kept on.
     let lights: Vec<Light> = ha
         .lights_on()?
         .into_iter()
-        .filter(|l| !l.name.ends_with(" LED") && !(l.group && l.area.is_empty()) && !keep(l))
+        .filter(|l| !l.status_led() && !(l.group && l.area.is_empty()) && !keep(l))
         .collect();
     if !lights.is_empty() {
         let ids: Vec<&str> = lights.iter().map(|l| l.id.as_str()).collect();
