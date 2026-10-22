@@ -1127,12 +1127,7 @@ pub struct Switched {
 
 /// Switches off the lights (all but `keep`), pauses the music and turns off the TVs.
 pub fn everything_off(ha: &mut HomeAssistant, keep: impl Fn(&Light) -> bool) -> Result<Switched> {
-    // A group with no area ("House Lights") would also switch the lights kept on.
-    let lights: Vec<Light> = ha
-        .lights_on()?
-        .into_iter()
-        .filter(|l| !l.status_led() && !(l.group && l.area.is_empty()) && !keep(l))
-        .collect();
+    let lights = to_switch_off(ha.lights_on()?, keep);
     if !lights.is_empty() {
         let ids: Vec<&str> = lights.iter().map(|l| l.id.as_str()).collect();
         ha.send("light", "turn_off", json!({ "entity_id": ids }))?;
@@ -1149,8 +1144,14 @@ pub fn everything_off(ha: &mut HomeAssistant, keep: impl Fn(&Light) -> bool) -> 
     Ok(Switched { lights, music: !snapshot.playing.is_empty(), tvs: !tvs.is_empty() })
 }
 
+/// The lights on now that [`everything_off`] switches off.
+pub fn to_switch_off(on: Vec<Light>, keep: impl Fn(&Light) -> bool) -> Vec<Light> {
+    // A group with no area ("House Lights") would also switch the lights kept on.
+    on.into_iter().filter(|l| !l.status_led() && !(l.group && l.area.is_empty()) && !keep(l)).collect()
+}
+
 /// The scene `scene.create` keeps the lights in while the house is locked down.
-const LOCKDOWN_SCENE: &str = "lockdown_restore";
+pub const LOCKDOWN_SCENE: &str = "lockdown_restore";
 
 /// Lights in a room (a neighbour's light that shows up in Home Assistant has none), not room
 /// groups, and not status LEDs (network gear, the Voice PE's ring). `color`: it can go red.
@@ -1165,12 +1166,9 @@ struct LockdownLight {
 /// Every light that can go red goes full red, the rest go off; a snapshot of them all is kept
 /// first, for standing down. A second lockdown keeps the first snapshot. The red lights.
 pub fn lockdown(ha: &HomeAssistant) -> Result<Vec<String>> {
-    let lights: Vec<LockdownLight> =
-        serde_json::from_str(&ha.template(LOCKDOWN_LIGHTS_TEMPLATE)?).context("parsing the lockdown lights")?;
-    let ids = |color: bool| lights.iter().filter(|l| l.color == color).map(|l| l.id.as_str()).collect::<Vec<_>>();
-    let (red, off) = (ids(true), ids(false));
+    let (red, off) = lockdown_lights(ha)?;
     if !locked_down(ha) {
-        let all: Vec<&str> = lights.iter().map(|l| l.id.as_str()).collect();
+        let all: Vec<&String> = red.iter().chain(&off).collect();
         ha.send("scene", "create", json!({ "scene_id": LOCKDOWN_SCENE, "snapshot_entities": all }))?;
     }
     if !red.is_empty() {
@@ -1179,7 +1177,23 @@ pub fn lockdown(ha: &HomeAssistant) -> Result<Vec<String>> {
     if !off.is_empty() {
         ha.send("light", "turn_off", json!({ "entity_id": off }))?;
     }
-    Ok(red.into_iter().map(str::to_owned).collect())
+    Ok(red)
+}
+
+/// The lights a lockdown turns red, and the ones without colour it turns off. Party mode keeps a
+/// snapshot of both, and streams to the red ones.
+pub fn lockdown_lights(ha: &HomeAssistant) -> Result<(Vec<String>, Vec<String>)> {
+    let lights: Vec<LockdownLight> =
+        serde_json::from_str(&ha.template(LOCKDOWN_LIGHTS_TEMPLATE)?).context("parsing the lockdown lights")?;
+    let ids = |color: bool| lights.iter().filter(|l| l.color == color).map(|l| l.id.clone()).collect::<Vec<_>>();
+    Ok((ids(true), ids(false)))
+}
+
+/// The lights a snapshot scene puts back; `None` when there is no such snapshot.
+pub fn snapshot_lights(ha: &HomeAssistant, scene: &str) -> Result<Option<Vec<String>>> {
+    let Ok(state) = ha.state(&format!("scene.{scene}")) else { return Ok(None) };
+    let ids = state["attributes"]["entity_id"].as_array().into_iter().flatten();
+    Ok(Some(ids.filter_map(|id| id.as_str().map(str::to_owned)).collect()))
 }
 
 /// Hue rooms and zones in Home Assistant, as `[{"id": ..., "members": [...]}]`.
@@ -1233,16 +1247,15 @@ pub fn stand_down(ha: &HomeAssistant) -> Result<bool> {
 }
 
 /// The scene the lights are kept in while party mode streams to them.
-const PARTY_SCENE: &str = "party_restore";
+pub const PARTY_SCENE: &str = "party_restore";
 
 /// Keeps the lights as they are, for after party mode; a second start keeps the first snapshot.
 pub fn party_snapshot(ha: &HomeAssistant) -> Result<()> {
     if ha.state(&format!("scene.{PARTY_SCENE}")).is_ok() {
         return Ok(());
     }
-    let lights: Vec<LockdownLight> =
-        serde_json::from_str(&ha.template(LOCKDOWN_LIGHTS_TEMPLATE)?).context("parsing the lights")?;
-    let all: Vec<&str> = lights.iter().map(|l| l.id.as_str()).collect();
+    let (colour, plain) = lockdown_lights(ha)?;
+    let all: Vec<&String> = colour.iter().chain(&plain).collect();
     ha.service("scene", "create", json!({ "scene_id": PARTY_SCENE, "snapshot_entities": all }))?;
     Ok(())
 }

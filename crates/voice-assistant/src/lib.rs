@@ -23,6 +23,7 @@ pub mod norwegian;
 pub mod parakeet;
 pub mod party;
 pub mod persona;
+pub mod plan;
 pub mod power;
 pub mod resample;
 pub mod shopping;
