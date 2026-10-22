@@ -138,6 +138,14 @@ pub struct Light {
     pub group: bool,
 }
 
+impl Light {
+    /// A status LED (network gear, the Voice PE's ring) that reports itself as a light. Nobody means it
+    /// by "all the lights" or a room; only by its name.
+    pub fn status_led(&self) -> bool {
+        self.name.split_whitespace().any(|w| w.eq_ignore_ascii_case("led"))
+    }
+}
+
 /// A media player that is playing.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Playing {
@@ -614,7 +622,7 @@ pub fn resolve(lights: &[Light], request: &str) -> Option<Target> {
         return Some(Target { label, ids: vec![light.id.clone()], area: true });
     }
 
-    let in_area: Vec<&Light> = lights.iter().filter(|l| area_matches(&l.area)).collect();
+    let in_area: Vec<&Light> = lights.iter().filter(|l| area_matches(&l.area) && !l.status_led()).collect();
     if let Some(first) = in_area.first() {
         return Some(Target {
             label: first.area.clone(),
@@ -702,6 +710,18 @@ mod tests {
         let t = resolve(&home(), "the desk lamp").unwrap();
         assert_eq!(t.ids, vec!["light.desk"]);
         assert_eq!(t.label, "Desk lamp");
+    }
+
+    #[test]
+    fn status_leds_are_left_out_of_a_room_but_found_by_name() {
+        let lights = vec![
+            light("light.ceiling", "Ceiling", "Living Room"),
+            light("light.ring", "Home Assistant Voice 0a1f4d LED Ring", "Living Room"),
+            light("light.u6_led", "U6 LED", "Living Room"),
+        ];
+        assert_eq!(resolve(&lights, "the living room lights").unwrap().ids, ["light.ceiling"]);
+        assert_eq!(resolve(&lights, "the led ring").unwrap().ids, ["light.ring"]);
+        assert!(!light("light.sled", "Sled lamp", "").status_led());
     }
 
     #[test]

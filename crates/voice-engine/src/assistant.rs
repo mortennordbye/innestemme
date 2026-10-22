@@ -2358,7 +2358,7 @@ impl Worker {
             None if mentions_everywhere(request) => {
                 let lights = ha.lights().map_err(|error| unreachable(&error, no))?;
                 // Each lamp, not the room groups as well, so nothing is switched twice.
-                let ids = lights.iter().filter(|l| !l.group).map(|l| l.id.clone()).collect();
+                let ids = lights.iter().filter(|l| !l.group && !l.status_led()).map(|l| l.id.clone()).collect();
                 let label = if no { "huset" } else { "house" }.to_owned();
                 Ok(Some(Target { label, ids, area: true }))
             }
