@@ -389,12 +389,19 @@ impl Tv {
             ha.service("media_player", "turn_on", json!({ "entity_id": entity }))?;
             self.wait_until_on(ha, &entity)?;
         }
-        info!(entity, url, "opening the screen on the tv");
-        ha.service(
-            "webostv",
-            "command",
-            json!({ "entity_id": entity, "command": "system.launcher/open", "payload": { "target": url } }),
-        )
+        open_url(ha, &entity, url)
+    }
+
+    /// The TV and what it shows (`source`), when it is on. A lockdown takes over only a TV that is
+    /// already on, and puts that back when it ends.
+    pub fn on_source(&self, ha: &HomeAssistant) -> Result<Option<(String, Option<String>)>> {
+        let Some(entity) = self.find(ha)? else { return Ok(None) };
+        let state = ha.state(&entity)?;
+        if ["off", "standby", "unavailable"].contains(&state["state"].as_str().unwrap_or("off")) {
+            return Ok(None);
+        }
+        let source = state["attributes"]["source"].as_str().map(str::to_owned);
+        Ok(Some((entity, source)))
     }
 
     fn wait_until_on(&self, ha: &HomeAssistant, entity: &str) -> Result<()> {
@@ -409,6 +416,22 @@ impl Tv {
         }
         anyhow::bail!("the TV did not start within {START_TIMEOUT:?}")
     }
+}
+
+/// Opens `url` in the browser of a TV that is on.
+pub fn open_url(ha: &HomeAssistant, entity: &str, url: &str) -> Result<()> {
+    info!(entity, url, "opening the screen on the tv");
+    ha.service(
+        "webostv",
+        "command",
+        json!({ "entity_id": entity, "command": "system.launcher/open", "payload": { "target": url } }),
+    )
+}
+
+/// Switches the TV to `source` ("LG Gallery+", "HDMI 1").
+pub fn select_source(ha: &HomeAssistant, entity: &str, source: &str) -> Result<()> {
+    info!(entity, source, "tv source");
+    ha.service("media_player", "select_source", json!({ "entity_id": entity, "source": source }))
 }
 
 #[cfg(test)]

@@ -79,16 +79,35 @@ body { color: var(--text); font: 15px/1.45 var(--sans); }
 .m-scene h2 { margin: 0; font-family: var(--meme); font-weight: 400; font-size: 220px; line-height: .92; text-transform: uppercase; letter-spacing: .01em; text-shadow: 0 10px 60px rgba(0,0,0,.5); text-wrap: balance; }
 
 /* lockdown */
-.stage[data-module="lockdown"] { background: #140405; }
-.stage[data-module="lockdown"] .who .name, .stage[data-module="lockdown"] .clock { color: #ffb3b3; }
-.m-lockdown { flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 30px; }
-.m-lockdown .pulse { position: absolute; inset: 0; z-index: -1; background: radial-gradient(circle at 50% 50%, rgba(255,40,40,.45), transparent 65%); animation: alarm 1.6s ease-in-out infinite; }
-.m-lockdown .stripes { position: absolute; left: 0; right: 0; height: 56px; z-index: -1; opacity: .9;
-  background: repeating-linear-gradient(-45deg, var(--bad) 0 40px, #140405 40px 80px); background-size: 226px 56px; animation: march 2s linear infinite; }
+.stage[data-module="lockdown"] { background: #0a0000; }
+.stage[data-module="lockdown"] .who .name, .stage[data-module="lockdown"] .clock { color: #ff4040; }
+.stage[data-module="lockdown"] .who .state { visibility: hidden; }
+.stage[data-module="lockdown"] .bubble .ph { box-shadow: 0 0 0 4px #ff2020, 0 0 60px rgba(255,0,0,.8); }
+.stage[data-module="lockdown"] .face-img { filter: grayscale(1) sepia(1) hue-rotate(-50deg) saturate(6) contrast(1.3); }
+.stage[data-module="lockdown"] .subs .said { color: #ffb0b0; }
+.m-lockdown { flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 26px; padding-top: 170px; }
+.m-lockdown > .fx { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.m-lockdown .flash { background: #c00000; animation: flash 1.2s steps(1, end) infinite; }
+.m-lockdown .beam { inset: -60%; background: conic-gradient(from 0deg, transparent 0 300deg, rgba(255,30,30,.55) 340deg, transparent 360deg); animation: spin 2.4s linear infinite; }
+.m-lockdown .vignette { background: radial-gradient(ellipse at center, transparent 30%, rgba(0,0,0,.92) 85%); }
+.m-lockdown .scan { background: repeating-linear-gradient(0deg, rgba(0,0,0,.35) 0 2px, transparent 2px 5px); }
+.m-lockdown .sweep { height: 180px; inset: auto 0 auto 0; background: linear-gradient(transparent, rgba(255,60,60,.18), transparent); animation: sweep 3.5s linear infinite; }
+.m-lockdown .stripes { position: absolute; left: 0; right: 0; height: 30px; z-index: 0;
+  background: repeating-linear-gradient(-45deg, #ffcc00 0 40px, #000 40px 80px); background-size: 226px 30px; animation: march 1.2s linear infinite; }
 .m-lockdown .stripes.top { top: 0; } .m-lockdown .stripes.bot { bottom: 0; animation-direction: reverse; }
-.m-lockdown h2 { margin: 0; font-family: var(--meme); font-weight: 400; font-size: 300px; line-height: .9; letter-spacing: .04em; color: #fff; text-shadow: 0 0 80px rgba(255,60,60,.8); }
-.m-lockdown .line { font-family: var(--mono); font-size: 34px; color: #ffd0d0; letter-spacing: .04em; }
-.m-lockdown .end { font-size: 36px; color: #fff; padding: 14px 32px; border: 2px solid rgba(255,255,255,.5); border-radius: 999px; margin-top: 20px; }
+.m-lockdown .breach { display: flex; align-items: center; gap: 28px; font-family: var(--mono); font-size: 34px; font-weight: 500; letter-spacing: .5em; color: #ff3030; animation: blink 1s steps(1, end) infinite; }
+.m-lockdown .breach svg { width: 64px; height: 56px; }
+.m-lockdown h2 { position: relative; margin: 0; font-family: var(--meme); font-weight: 400; font-size: 280px; line-height: .9; letter-spacing: .06em; color: #fff;
+  text-shadow: 0 0 40px #ff0000, 0 0 120px #ff0000; animation: shake 4s infinite; }
+.m-lockdown h2::before, .m-lockdown h2::after { content: attr(data-text); position: absolute; inset: 0; z-index: -1; text-shadow: none; }
+.m-lockdown h2::before { color: #ff0000; animation: glitch 2.6s infinite; }
+.m-lockdown h2::after { color: #00e5ff; opacity: .6; animation: glitch 3.3s infinite reverse; }
+.m-lockdown .status { display: grid; grid-template-columns: auto auto; gap: 10px 60px; font-family: var(--mono); font-size: 32px; letter-spacing: .14em; text-align: left; margin-top: 10px; }
+.m-lockdown .status span { color: #ff8080; opacity: 0; animation: appear .1s ease-out forwards; }
+.m-lockdown .status b { font-weight: 500; color: #fff; opacity: 0; animation: appear .1s ease-out forwards; }
+.m-lockdown .status b.hot { color: #ff2020; animation: appear .1s ease-out forwards, blink .8s steps(1, end) infinite; }
+.m-lockdown .timer { font-family: var(--mono); font-size: 44px; color: #ff3030; letter-spacing: .2em; font-variant-numeric: tabular-nums; }
+.m-lockdown .end { font-family: var(--mono); font-size: 24px; letter-spacing: .3em; color: rgba(255,120,120,.6); text-transform: uppercase; }
 
 /* music */
 .m-music { align-items: center; gap: 100px; }
@@ -176,6 +195,12 @@ body { color: var(--text); font: 15px/1.45 var(--sans); }
 @keyframes bar { 0%, 100% { transform: scaleY(.2); } 50% { transform: scaleY(1); } }
 @keyframes wander { from { transform: translate(0,0) scale(1); } to { transform: translate(300px,-160px) scale(1.3); } }
 @keyframes alarm { 50% { opacity: .25; } }
+@keyframes flash { 0% { opacity: .55; } 12% { opacity: .08; } 50% { opacity: .4; } 62% { opacity: 0; } }
+@keyframes blink { 50% { opacity: .15; } }
+@keyframes sweep { from { top: -200px; } to { top: 1100px; } }
+@keyframes appear { to { opacity: 1; } }
+@keyframes shake { 0%, 86%, 100% { transform: none; } 88% { transform: translate(-8px, 3px) skewX(-4deg); } 90% { transform: translate(7px, -2px); } 92% { transform: translate(-3px, 0) skewX(3deg); } 94% { transform: none; } }
+@keyframes glitch { 0%, 80%, 100% { transform: none; clip-path: inset(0 0 0 0); } 82% { transform: translate(-14px, 0); clip-path: inset(10% 0 55% 0); } 85% { transform: translate(12px, 0); clip-path: inset(60% 0 8% 0); } 88% { transform: translate(-6px, 0); clip-path: inset(35% 0 35% 0); } }
 @keyframes march { to { background-position: 226px 0; } }
 @keyframes flap { from { transform: rotateX(90deg); opacity: 0; } }
 @keyframes slide { from { transform: translateX(120%); } }
@@ -251,9 +276,22 @@ const MODULES = {
     },
   },
   lockdown: {
-    render: (d) => `<div class="mod m-lockdown"><div class="pulse"></div><div class="stripes top"></div><div class="stripes bot"></div>
-      <div class="eyebrow" style="color:#ffb3b3">Protocol engaged</div><h2>LOCKDOWN</h2>
-      <div class="line">Every light red${d.music ? " · " + esc(d.music) : ""}</div><div class="end">Say “stand down” to end</div></div>`,
+    render: () => {
+      const status = [["PERIMETER", "SEALED"], ["ALL EXITS", "LOCKED"], ["MOTION SENSORS", "TRACKING"], ["OCCUPANTS", "CONTAINED"], ["THREAT LEVEL", "CRITICAL"]];
+      const warn = '<svg viewBox="0 0 64 56"><path d="M32 3 61 53H3z" fill="none" stroke="#ff3030" stroke-width="5" stroke-linejoin="round"/><path d="M32 20v16M32 42v4" stroke="#ff3030" stroke-width="6" stroke-linecap="round"/></svg>';
+      return `<div class="mod m-lockdown"><div class="fx flash"></div><div class="fx beam"></div><div class="fx sweep"></div><div class="fx scan"></div><div class="fx vignette"></div>
+        <div class="stripes top"></div><div class="stripes bot"></div>
+        <div class="breach">${warn}SECURITY BREACH${warn}</div><h2 data-text="LOCKDOWN">LOCKDOWN</h2>
+        <div class="status">${status.map(([k, v], i) => `<span style="animation-delay:${0.4 + i * 0.35}s">${k}</span><b class="${i === status.length - 1 ? "hot" : ""}" style="animation-delay:${0.55 + i * 0.35}s">${v}</b>`).join("")}</div>
+        <div class="timer" data-t></div><div class="end">Authorisation required · say “stand down”</div></div>`;
+    },
+    start(el, d) {
+      const since = d.since || Date.now();
+      const draw = () => { $("[data-t]", el).textContent = "T+ " + mmss(Math.max(0, Math.floor((Date.now() - since) / 1000))); };
+      draw();
+      const id = setInterval(draw, 1000);
+      return () => clearInterval(id);
+    },
   },
   music: {
     render: (d) => {

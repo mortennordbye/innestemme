@@ -188,7 +188,7 @@ pub struct AssistantConfig {
     pub home_music: Option<String>,
     /// What a lockdown plays: a song search ("Mombasa by Hans Zimmer").
     pub lockdown_music: String,
-    /// The music's volume during a lockdown, in percent.
+    /// The music's volume during a lockdown, in percent; music already louder stays as loud.
     pub lockdown_volume: u8,
     /// The Hue lights following the music, when a bridge is configured.
     pub party: Party,
@@ -497,6 +497,7 @@ impl AssistantProcessor {
             room: None,
             warmed_prompt: String::new(),
             lockdown_volume: None,
+            lockdown_tv: None,
             after_answer: None,
             after_answer_at: None,
             alarm: None,
@@ -848,6 +849,8 @@ struct Worker {
     warmed_prompt: String,
     /// The music's volume before a lockdown raised it, for standing down.
     lockdown_volume: Option<f64>,
+    /// The TV a lockdown put its screen on, and what the TV showed before, for standing down.
+    lockdown_tv: Option<(String, Option<String>)>,
     /// Music to start or stop, and the volume to set, once the answer has played: the lockdown's
     /// music and its stand-down.
     after_answer: Option<(MusicCommand, Option<f64>)>,
@@ -1289,7 +1292,10 @@ impl Worker {
                         let (red, off) = house::lockdown_lights(ha).map_err(failed)?;
                         plan.set(lamps, &red, |_| plan::Effect::new("red", "red, pulsing"));
                         plan.set(lamps, &off, |_| plan::Effect::switch(false));
-                        plan.also.push(format!("Plays {} at {} %.", config.lockdown_music, config.lockdown_volume));
+                        plan.also.push(format!(
+                            "Plays {} at {} % or louder.",
+                            config.lockdown_music, config.lockdown_volume
+                        ));
                     }
                     Routine::StandDown => {
                         let ids = house::snapshot_lights(ha, house::LOCKDOWN_SCENE).map_err(failed)?;
@@ -2145,17 +2151,50 @@ impl Worker {
             }
             Err(error) => return unreachable(&error, no),
         }
+        let mut level = f64::from(self.config.lockdown_volume) / 100.0;
         if let Ok(entity) = self.player.check(ha) {
             let volume = ha.state(&entity).ok().and_then(|s| s["attributes"]["volume_level"].as_f64());
+            // Music already playing louder than the setting stays as loud: a lockdown never quietens it.
+            level = level.max(volume.unwrap_or(0.0));
             // A second lockdown keeps the volume from before the first.
             self.lockdown_volume = self.lockdown_volume.or(volume);
         }
+        self.lockdown_screen();
         // The lockdown's music replaces what was paused for the request.
         self.hushed = None;
         let music = MusicCommand::Song(self.config.lockdown_music.clone());
-        self.after_answer = Some((music, Some(f64::from(self.config.lockdown_volume) / 100.0)));
-        self.show("lockdown", serde_json::json!({ "music": self.config.lockdown_music }), None);
+        self.after_answer = Some((music, Some(level)));
+        // When it began, so a TV that opens the screen later still counts from the start.
+        let since = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        if !self.screen.showing("lockdown") {
+            self.show("lockdown", serde_json::json!({ "since": since }), None);
+        }
         if no { "Nedstengning startet. Huset er forseglet." } else { "Lockdown initiated. The house is sealed." }.into()
+    }
+
+    /// Puts the lockdown's screen on a TV that is on and not showing it yet. On a thread of its own:
+    /// the TV takes a while to answer, and the answer need not wait for it.
+    fn lockdown_screen(&mut self) {
+        let Some(url) = self.config.screen_url.clone() else { return };
+        let Some(ha) = &self.home_assistant else { return };
+        if self.lockdown_tv.is_some() || self.screen.watched() {
+            return;
+        }
+        let (entity, source) = match self.tv.on_source(ha) {
+            Ok(Some(on)) => on,
+            Ok(None) => return,
+            Err(error) => return warn!(error = format!("{error:#}"), "no tv for the lockdown"),
+        };
+        let (tv_ha, tv_entity) = (ha.detached(), entity.clone());
+        let opened = std::thread::Builder::new().name("tv".into()).spawn(move || {
+            if let Err(error) = tv::open_url(&tv_ha, &tv_entity, &url) {
+                warn!(error = format!("{error:#}"), "could not open the lockdown on the tv");
+            }
+        });
+        match opened {
+            Ok(_) => self.lockdown_tv = Some((entity, source)),
+            Err(error) => warn!(%error, "could not start the tv thread"),
+        }
     }
 
     /// Starts or stops the music the last answer was about, and sets the volume, now that the
@@ -2211,6 +2250,18 @@ impl Worker {
         self.hushed = None;
         self.after_answer = Some((MusicCommand::Stop, volume));
         info!(restored, ?volume, "lockdown over");
+        // Back to what the TV showed, unless someone has since switched it to something else.
+        if let Some((entity, Some(source))) = self.lockdown_tv.take().filter(|_| self.screen.watched()) {
+            let tv_ha = ha.detached();
+            let back = std::thread::Builder::new().name("tv".into()).spawn(move || {
+                if let Err(error) = tv::select_source(&tv_ha, &entity, &source) {
+                    warn!(error = format!("{error:#}"), "could not put the tv back");
+                }
+            });
+            if let Err(error) = back {
+                warn!(%error, "could not start the tv thread");
+            }
+        }
         if self.screen.showing("lockdown") {
             self.hide();
         }

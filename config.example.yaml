@@ -68,7 +68,8 @@ whisper-size: base
 # The TV's media player. Default: the media player that is a TV by its device class or name.
 # tv: media_player.living_room_tv
 # The engine's /tv page as the TV reaches it. "Show the weather on the TV" opens it in the TV's browser
-# through Home Assistant's LG webOS integration; scenes, lockdown and jokes show there while it is open.
+# through Home Assistant's LG webOS integration; scenes and jokes show there while it is open. A lockdown
+# opens it on a TV that is on, and standing down switches the TV back.
 # screen-url: https://voice.example.lan/tv
 # Speak at once when a smoke, carbon monoxide, gas, water or breaking glass sensor goes off.
 # alerts: true
@@ -82,9 +83,10 @@ whisper-size: base
 # starts: liked for Liked Songs, or a playlist's name. Unset: this room's lights after dark, no music.
 # home-room: Living Room
 # home-music: liked
-# "Initiate lockdown" (just for fun): every light blinking red, this song at this volume. "Stand down" puts it all back.
+# "Initiate lockdown" (just for fun): every light blinking red, this song at this volume or
+# louder. "Stand down" puts it all back.
 # lockdown-music: Mombasa by Hans Zimmer
-# lockdown-volume: 50
+# lockdown-volume: 85
 # Shopping list items under their Norwegian names ("milk" becomes Melk, a misheard "brynost" Brunost),
 # and items said by themselves after an add heard again by Whisper in Norwegian (about 380 MB, first start).
 # norwegian-groceries: true

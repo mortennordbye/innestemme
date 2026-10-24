@@ -204,8 +204,9 @@ struct Args {
     /// What "initiate lockdown" plays, as a song search.
     #[arg(long, env = "VOICE_LOCKDOWN_MUSIC", default_value = "Mombasa by Hans Zimmer")]
     lockdown_music: String,
-    /// The music's volume during a lockdown, in percent; standing down puts the old one back.
-    #[arg(long, env = "VOICE_LOCKDOWN_VOLUME", default_value_t = 50, value_parser = clap::value_parser!(u8).range(1..=100))]
+    /// The music's volume during a lockdown, in percent (music already louder stays as loud); standing
+    /// down puts the old one back.
+    #[arg(long, env = "VOICE_LOCKDOWN_VOLUME", default_value_t = 85, value_parser = clap::value_parser!(u8).range(1..=100))]
     lockdown_volume: u8,
     /// Shopping list items under their Norwegian names: an English or misheard item is matched to a
     /// Norwegian grocery, and an item said by itself after "add" is heard again by Whisper in Norwegian.
