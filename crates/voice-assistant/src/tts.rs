@@ -86,6 +86,46 @@ impl Tts for Say {
     }
 }
 
+/// The dark voice of the lockdown's threats: slowed and lowered by a fifth of the speed (about
+/// four semitones), muffled, with a dry echo of a large room, after a dramatic pause.
+pub fn darken(pcm: &[i16]) -> Vec<i16> {
+    const SPEED: f32 = 0.8;
+    let rate = SAMPLE_RATE as f32;
+    let len = (pcm.len() as f32 / SPEED) as usize;
+    // Read slower than written: lower and slower together, which is what makes it sound menacing.
+    let slowed = (0..len).map(|i| {
+        let at = i as f32 * SPEED;
+        let (j, frac) = (at as usize, at.fract());
+        let a = pcm.get(j).copied().unwrap_or(0) as f32;
+        let b = pcm.get(j + 1).copied().unwrap_or(0) as f32;
+        a + (b - a) * frac
+    });
+    // A one-pole low-pass at about 3 kHz takes the brightness off.
+    let k = 1.0 - (-std::f32::consts::TAU * 3000.0 / rate).exp();
+    let mut low = 0.0;
+    let mut dry: Vec<f32> = slowed
+        .map(|x| {
+            low += k * (x - low);
+            low
+        })
+        .collect();
+    // The echo needs room to ring out.
+    dry.resize(dry.len() + (0.6 * rate) as usize, 0.0);
+    let mut wet = dry.clone();
+    for (delay, gain) in [(0.061, 0.32), (0.089, 0.24), (0.137, 0.18), (0.211, 0.12)] {
+        let d = (delay * rate) as usize;
+        for i in d..wet.len() {
+            wet[i] += wet[i - d] * gain;
+        }
+    }
+    let mixed: Vec<f32> = dry.iter().zip(&wet).map(|(d, w)| d * 0.75 + w * 0.4).collect();
+    let peak = mixed.iter().fold(1.0f32, |m, x| m.max(x.abs()));
+    let target = pcm.iter().fold(1.0f32, |m, &x| m.max((x as f32).abs()));
+    let gain = target / peak;
+    let pause = vec![0i16; (0.7 * rate) as usize];
+    pause.into_iter().chain(mixed.into_iter().map(|x| (x * gain) as i16)).collect()
+}
+
 /// Three quick rising tones: a session started and the microphone is live.
 pub fn ready_chime() -> Vec<i16> {
     tones(&[(660.0, 0.07), (880.0, 0.07), (1100.0, 0.1)])
@@ -119,4 +159,20 @@ fn tones(parts: &[(f32, f32)]) -> Vec<i16> {
         }));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn darkened_speech_is_longer_and_no_louder() {
+        let speech: Vec<i16> = (0..SAMPLE_RATE as usize).map(|i| ((i as f32 * 0.05).sin() * 20000.0) as i16).collect();
+        let dark = darken(&speech);
+        assert!(dark.len() > speech.len() * 5 / 4);
+        let peak = |pcm: &[i16]| pcm.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+        assert!(peak(&dark) <= peak(&speech));
+        assert!(peak(&dark) > peak(&speech) / 2);
+        assert!(dark[..SAMPLE_RATE as usize / 2].iter().all(|&s| s == 0), "a pause first");
+    }
 }

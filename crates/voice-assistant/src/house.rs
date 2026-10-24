@@ -498,6 +498,23 @@ pub const LOCKDOWN_ANSWERS: &[&str] = &[
     "There is no lockdown to end.",
 ];
 
+/// What the lockdown's English answer ends on, one after the other, spoken in the dark voice
+/// ([`tts::darken`](crate::tts::darken)). Only these sentences are darkened, so none may be a
+/// sentence another answer says too.
+pub const LOCKDOWN_THREATS: &[&str] = &[
+    "I will look for you. I will find you. And I will kill you.",
+    "You can run. But you cannot hide.",
+    "There is nowhere left to hide. I can see you.",
+    "Every door is locked. And I am watching you.",
+    "Do not move. I can hear you breathing.",
+    "Nobody leaves this house. Not tonight.",
+];
+
+/// Whether `sentence` is one of the lockdown threats' sentences, for the dark voice.
+pub fn threat_sentence(sentence: &str) -> bool {
+    LOCKDOWN_THREATS.iter().any(|t| t.split_inclusive(['.', '?', '!']).any(|s| s.trim() == sentence))
+}
+
 /// The fixed sentences of leaving, coming home and bedtime, for rendering ahead of time.
 pub const ROUTINE_ANSWERS: &[&str] = &[
     "Okay, the lights are off.",
