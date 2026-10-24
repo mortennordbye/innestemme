@@ -142,7 +142,7 @@ pub const SKILLS: &[Skill] = &[
         name: "Lockdown",
         group: "Home",
         icon: "shield",
-        does: "Just for fun: the answer ends on a movie threat in a darker voice, every colour light pulses red with the Hue alert (for up to 30 minutes, then stays red), the others go off, the lockdown-music plays at lockdown-volume (or louder, if it already was), and a TV that is on shows the lockdown screen. Standing down puts the lights, the volume, the music and the TV back. Nothing is locked.",
+        does: "Just for fun: the lockdown-music starts at once and the answer ends on a movie threat in a darker voice over it, every colour light pulses red with the Hue alert (for up to 30 minutes, then stays red), the others go off, the lockdown-music plays at lockdown-volume (or louder, if it already was), and a TV that is on shows the lockdown screen. Standing down puts the lights, the volume, the music and the TV back. Nothing is locked.",
         source: "Home Assistant, Music Assistant",
         calls: &["scene.create", "light.turn_on", "light.turn_off", "media_player.volume_set", "music_assistant.play_media", "webostv.command", "media_player.select_source", "scene.turn_on"],
         examples: &["Initiate lockdown", "Red alert", "Stand down", "End the lockdown"],

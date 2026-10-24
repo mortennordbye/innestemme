@@ -499,6 +499,7 @@ impl AssistantProcessor {
             lockdown_volume: None,
             lockdown_tv: None,
             threat_turn: 0,
+            music_under_answer: false,
             after_answer: None,
             after_answer_at: None,
             alarm: None,
@@ -854,6 +855,8 @@ struct Worker {
     lockdown_tv: Option<(String, Option<String>)>,
     /// Which threat the next lockdown ends on.
     threat_turn: usize,
+    /// `after_answer` starts as the answer starts playing, not when it has played.
+    music_under_answer: bool,
     /// Music to start or stop, and the volume to set, once the answer has played: the lockdown's
     /// music and its stand-down.
     after_answer: Option<(MusicCommand, Option<f64>)>,
@@ -1561,7 +1564,9 @@ impl Worker {
         // The reply is queued faster than it plays; the window opens when it has been heard.
         self.follow_up_until = Some(Instant::now() + Duration::from_secs_f32(seconds) + FOLLOW_UP);
         if self.after_answer.is_some() {
-            self.after_answer_at = Some(Instant::now() + Duration::from_secs_f32(seconds) + ANSWER_START);
+            // The lockdown's music sets the scene under its threat; other music waits for the answer.
+            let wait = if self.music_under_answer { Duration::ZERO } else { Duration::from_secs_f32(seconds) };
+            self.after_answer_at = Some(Instant::now() + wait + ANSWER_START);
         }
         self.busy.store(false, Relaxed);
     }
@@ -2177,6 +2182,7 @@ impl Worker {
         self.hushed = None;
         let music = MusicCommand::Song(self.config.lockdown_music.clone());
         self.after_answer = Some((music, Some(level)));
+        self.music_under_answer = true;
         // When it began, so a TV that opens the screen later still counts from the start.
         let since = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         if !self.screen.showing("lockdown") {
@@ -2220,6 +2226,7 @@ impl Worker {
     /// the wrong level.
     fn run_after_answer(&mut self) {
         self.after_answer_at = None;
+        self.music_under_answer = false;
         let Some((music, volume)) = self.after_answer.take() else { return };
         let Some(ha) = &self.home_assistant else { return };
         let set_volume = |player: &mut Player| {
@@ -2267,6 +2274,7 @@ impl Worker {
         // The music was paused for the request: it stays paused under the answer, then stops.
         self.hushed = None;
         self.after_answer = Some((MusicCommand::Stop, volume));
+        self.music_under_answer = false;
         info!(restored, ?volume, "lockdown over");
         // Back to what the TV showed, unless someone has since switched it to something else.
         if let Some((entity, Some(source))) = self.lockdown_tv.take().filter(|_| self.screen.watched()) {
