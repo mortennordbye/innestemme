@@ -498,6 +498,7 @@ impl AssistantProcessor {
             warmed_prompt: String::new(),
             lockdown_volume: None,
             lockdown_tv: None,
+            threat_turn: 0,
             after_answer: None,
             after_answer_at: None,
             alarm: None,
@@ -851,6 +852,8 @@ struct Worker {
     lockdown_volume: Option<f64>,
     /// The TV a lockdown put its screen on, and what the TV showed before, for standing down.
     lockdown_tv: Option<(String, Option<String>)>,
+    /// Which threat the next lockdown ends on.
+    threat_turn: usize,
     /// Music to start or stop, and the volume to set, once the answer has played: the lockdown's
     /// music and its stand-down.
     after_answer: Option<(MusicCommand, Option<f64>)>,
@@ -1487,7 +1490,9 @@ impl Worker {
                 info!("answer interrupted");
                 break;
             }
-            let mut started = false;
+            let dark = house::threat_sentence(sentence);
+            // The dark voice trims its own onset and keeps the pause it opens with.
+            let mut started = dark;
             let mut sink = |pcm: &[i16]| {
                 // The rest of the sentence being synthesized when the answer was interrupted.
                 if interrupted.load(Relaxed) {
@@ -1507,7 +1512,14 @@ impl Worker {
                 push(reply, pcm);
                 let _ = events.send(AssistantEvent::Speech(pcm.into()));
             };
-            let result = if live.contains(sentence) {
+            let result = if dark {
+                // Whole, so the effect can stretch it: from the cache, it takes no time.
+                let mut pcm = Vec::new();
+                let result = tts.speak(sentence, lang, &mut |p| pcm.extend_from_slice(p));
+                let start = pcm.iter().position(|s| s.unsigned_abs() > SPEECH_ONSET).unwrap_or(pcm.len());
+                sink(&voice_assistant::tts::darken(&pcm[start.saturating_sub(ONSET_LEAD)..]));
+                result
+            } else if live.contains(sentence) {
                 tts.speak_live(sentence, lang, &mut sink)
             } else {
                 tts.speak(sentence, lang, &mut sink)
@@ -1615,6 +1627,7 @@ impl Worker {
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
             .chain(&["Okay, party mode is on.", "Okay, fast party mode is on.", "Okay, the party's over."])
             .chain(house::LOCKDOWN_ANSWERS)
+            .chain(house::LOCKDOWN_THREATS)
             .chain(house::ROUTINE_ANSWERS)
             .chain(Jokes::english())
             .chain(&["Sorry, I didn't catch that."])
@@ -2169,7 +2182,12 @@ impl Worker {
         if !self.screen.showing("lockdown") {
             self.show("lockdown", serde_json::json!({ "since": since }), None);
         }
-        if no { "Nedstengning startet. Huset er forseglet." } else { "Lockdown initiated. The house is sealed." }.into()
+        if no {
+            return "Nedstengning startet. Huset er forseglet.".into();
+        }
+        let threat = house::LOCKDOWN_THREATS[self.threat_turn % house::LOCKDOWN_THREATS.len()];
+        self.threat_turn += 1;
+        format!("Lockdown initiated. The house is sealed. {threat}")
     }
 
     /// Puts the lockdown's screen on a TV that is on and not showing it yet. On a thread of its own:
