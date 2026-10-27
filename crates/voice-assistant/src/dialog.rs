@@ -10,7 +10,13 @@ pub fn normalize(word: &str) -> String {
 /// also match common words. For Freya, "fredag" (Friday) and "fela" (fiddle) are close
 /// mishearings but everyday Norwegian, so they are left out; for Homie, so is "home".
 const SPELLINGS: &[(&str, &[&str])] = &[
-    ("jarvis", &["jarvis", "jarvis's", "jarvis'", "jarris", "jervis", "jarvus", "jarviss", "jarves", "javis"]),
+    (
+        "jarvis",
+        &[
+            "jarvis", "jarvis's", "jarvis'", "jarris", "jervis", "jarvus", "jarviss", "jarves", "javis", "jaris",
+            "jarvas", "jarviz", "jarvice", "jarbis", "charvis", "jervis's",
+        ],
+    ),
     ("homie", &["homie", "homies", "homie's", "homey", "homy", "homi", "hommie", "homee", "homeie"]),
     (
         "freya",
@@ -112,7 +118,15 @@ mod tests {
     #[test]
     fn hears_jarvis_as_parakeet_writes_it() {
         let wake = WakeWord::new("Jarvis");
-        for heard in ["Hey Jarvis.", "Hey Jarris.", "Hey Jervis.", "Kate Jarvis.", "Hey, Jarvis, play.", "heyjarvis"] {
+        for heard in [
+            "Hey Jarvis.",
+            "Hey Jarris.",
+            "Hey Jervis.",
+            "Kate Jarvis.",
+            "Hey, Jarvis, play.",
+            "heyjarvis",
+            "Hey Jaris.",
+        ] {
             assert!(heard.split_whitespace().any(|w| wake.matches(&normalize(w))), "{heard}");
         }
         assert!(!"That's my parents.".split_whitespace().any(|w| wake.matches(&normalize(w))));

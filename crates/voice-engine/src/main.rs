@@ -343,6 +343,11 @@ struct Args {
     /// often; misses above 0.2 are logged with their score.
     #[arg(long, env = "VOICE_WAKE_THRESHOLD", default_value_t = 0.5)]
     wake_threshold: f32,
+    /// Scores from here up to `--wake-threshold` wake when the listener hears the name in them: a
+    /// voice the model scores low still wakes it, and the TV, without the name, does not. Off when
+    /// unset.
+    #[arg(long, env = "VOICE_WAKE_CHECK_FROM")]
+    wake_check_from: Option<f32>,
     /// Announcement volume on `--answer-player`, 0 to 1. Default: the player's own volume.
     #[arg(long, env = "VOICE_ANSWER_VOLUME")]
     answer_volume: Option<f32>,
@@ -574,8 +579,20 @@ fn main() -> Result<()> {
                 anyhow::bail!("`--wake-threshold` is 0 to 1");
             }
             let models = voice_assistant::wakeword::WakeModels::load(model)?;
-            info!(model = models.name, threshold = args.wake_threshold, "wake word model");
-            Some(ServerWake { models: Arc::new(models), threshold: args.wake_threshold })
+            info!(
+                model = models.name,
+                threshold = args.wake_threshold,
+                check_from = args.wake_check_from,
+                "wake word model"
+            );
+            if args.wake_check_from.is_some_and(|from| !(0.0..args.wake_threshold).contains(&from)) {
+                anyhow::bail!("`--wake-check-from` is from 0 up to `--wake-threshold`");
+            }
+            Some(ServerWake {
+                models: Arc::new(models),
+                threshold: args.wake_threshold,
+                check_from: args.wake_check_from,
+            })
         }
         None => None,
     };
@@ -618,6 +635,7 @@ fn main() -> Result<()> {
                 "listener": format!("{:?}", args.listener).to_lowercase(),
                 "wake_model": args.wake_model,
                 "wake_threshold": args.wake_threshold,
+                "wake_check_from": args.wake_check_from,
                 "norwegian_groceries": args.norwegian_groceries,
                 "answer_player": args.answer_player,
                 "threads": threads,

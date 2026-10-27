@@ -11,7 +11,7 @@ As deployed: a Home Assistant Voice PE in the living room, answers on a Sonos.
 | Step | Where | Time |
 |---|---|---|
 | 1. The Voice PE streams its microphone all the time (16 kHz) | `firmware/`, `voice-esphome` | |
-| 2. openWakeWord scores the stream; "Hey Jarvis" above `wake-threshold` starts a request | `voice-assistant/src/wakeword.rs` | about 1 ms per 80 ms of audio |
+| 2. openWakeWord scores the stream; "Hey Jarvis" above `wake-threshold` starts a request, a lower score from `wake-check-from` only when Parakeet hears the name | `voice-assistant/src/wakeword.rs` | about 1 ms per 80 ms of audio |
 | 3. Music that plays in the room is paused (queued, see below) | `assistant.rs` `hush` | |
 | 4. An energy detector cuts the request: a draft after 0.24 s of quiet, the end after 0.64 s | `voice-assistant/src/vad.rs` | 0.24 or 0.64 s |
 | 5. Parakeet TDT 0.6B (int8, sherpa-onnx) transcribes the draft while the pause goes on | `parakeet.rs` | about 70 ms on an M4 Pro |

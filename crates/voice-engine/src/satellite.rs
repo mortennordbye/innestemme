@@ -54,8 +54,11 @@ const LISTEN_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_LEAD: Duration = Duration::from_millis(400);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
 const HELLO_WINDOW: Duration = Duration::from_secs(10);
-/// Wake word scores from here up to the threshold are logged as misses, to tune the threshold.
+/// Wake word scores from here (or `ServerWake::check_from`, if lower) up to the threshold are logged
+/// as misses, to tune the threshold.
 const NEAR_MISS: f32 = 0.2;
+/// A name check that has not answered by then (the assistant is busy) lets the wake word go.
+const CHECK_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Audio kept from before the wake word: the assistant checks it for the name when what follows is
 /// not understood, and a run's recording holds the wake word itself.
 const WAKE_PREROLL: usize = 2 * DEVICE_RATE as usize;
@@ -103,6 +106,8 @@ pub struct ServerWake {
     pub models: Arc<WakeModels>,
     /// Score from 0 to 1 that counts as the wake word.
     pub threshold: f32,
+    /// Scores from here up to `threshold` wake only when the transcriber hears the name in them.
+    pub check_from: Option<f32>,
 }
 
 /// A Home Assistant media player that announces the answers, e.g. a Sonos.
@@ -145,6 +150,17 @@ pub async fn run(cfg: SatelliteConfig, assistant: AssistantHandle, speech: Arc<S
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(RECONNECT_MAX);
     }
+}
+
+/// A near miss of the wake word sent to the assistant to hear whether the name is in it.
+struct NameCheck {
+    answer: tokio::sync::oneshot::Receiver<Option<bool>>,
+    score: f32,
+    /// The 16 kHz audio that was checked.
+    wake: Vec<i16>,
+    /// 16 kHz audio since the check started.
+    since: Vec<i16>,
+    started: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -193,8 +209,15 @@ struct Bridge<'a> {
     recording: Vec<i16>,
     /// Server-side wake word: the detector and its threshold.
     wake: Option<(WakeDetector, f32)>,
+    /// `ServerWake::check_from`.
+    check_from: Option<f32>,
     /// The highest score of the current run of scores at or above `NEAR_MISS`.
     near_miss: f32,
+    /// This run of near misses has gone to the name check.
+    near_miss_checked: bool,
+    /// A near miss being checked for the name: the answer, the wake word's audio, and the audio
+    /// heard since (the start of the request).
+    checking: Option<NameCheck>,
     /// The last `WAKE_PREROLL` of audio while waiting for the wake word.
     preroll: VecDeque<i16>,
     /// The answer on the player: when it was announced, and its length so far (24 kHz samples).
@@ -268,7 +291,10 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
         dump: cfg.dump.clone(),
         recording: Vec::new(),
         wake: cfg.server_wake.as_ref().map(|w| (WakeDetector::new(w.models.clone()), w.threshold)),
+        check_from: cfg.server_wake.as_ref().and_then(|w| w.check_from),
         near_miss: 0.0,
+        near_miss_checked: false,
+        checking: None,
         preroll: VecDeque::new(),
         announced: None,
         follow_up_at: None,
@@ -351,6 +377,7 @@ impl Bridge<'_> {
                         // Fresh buffers: the end of the last wake word or answer cannot wake it again.
                         detector.reset();
                         self.preroll.clear();
+                        self.checking = None;
                     }
                 } else {
                     info!(wake_word = request.wake_word_phrase, "device woke");
@@ -615,30 +642,85 @@ impl Bridge<'_> {
             return Ok(());
         }
         let threshold = *threshold;
-        let Some(score) = detector.push(pcm)? else { return Ok(()) };
+        let scored = detector.push(pcm)?;
+        if let Some(check) = &mut self.checking {
+            check.since.extend_from_slice(pcm);
+            match check.answer.try_recv() {
+                Ok(Some(true)) => {
+                    let check = self.checking.take().expect("checked above");
+                    info!(score = format!("{:.2}", check.score), "wake word confirmed by its name");
+                    return self.wake(assistant, check.wake, Some(check.since)).await;
+                }
+                Ok(_) => {
+                    info!(
+                        score = format!("{:.2}", self.checking.take().map_or(0.0, |c| c.score)),
+                        "no name in the wake word"
+                    );
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) if check.started.elapsed() < CHECK_TIMEOUT => {}
+                Err(_) => {
+                    warn!("the wake word name check did not answer");
+                    self.checking = None;
+                }
+            }
+        }
+        let Some(score) = scored else { return Ok(()) };
         if score < threshold {
-            if score >= NEAR_MISS {
+            // Past its peak, the name, if it was said, is in the preroll.
+            let check = self.check_from.is_some_and(|from| self.near_miss >= from && score < self.near_miss);
+            if check && !self.near_miss_checked && self.checking.is_none() && !self.answer_playing() {
+                self.near_miss_checked = true;
+                let wake: Vec<i16> = self.preroll.iter().copied().collect();
+                let answer = assistant.check_name(resample::to_24k(&wake, DEVICE_RATE));
+                let score = self.near_miss;
+                self.checking = Some(NameCheck { answer, score, wake, since: Vec::new(), started: Instant::now() });
+            }
+            if score >= NEAR_MISS.min(self.check_from.unwrap_or(NEAR_MISS)) {
                 self.near_miss = self.near_miss.max(score);
             } else if self.near_miss > 0.0 {
                 info!(score = format!("{:.2}", self.near_miss), threshold, "wake word missed");
-                self.near_miss = 0.0;
+                (self.near_miss, self.near_miss_checked) = (0.0, false);
             }
             return Ok(());
         }
         info!(score = format!("{score:.2}"), threshold, "wake word");
-        self.near_miss = 0.0;
+        self.checking = None;
+        let wake: Vec<i16> = self.preroll.drain(..).collect();
+        self.wake(assistant, wake, None).await
+    }
+
+    /// An answer is on the player, or has just played and a follow-up may come.
+    fn answer_playing(&self) -> bool {
+        self.player_answer || self.follow_up_at.is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Starts listening for the request after the wake word in `wake`. `since`: audio after the
+    /// wake word that was held back while its name was checked (and so the name was heard).
+    async fn wake(&mut self, assistant: &AssistantHandle, wake: Vec<i16>, since: Option<Vec<i16>>) -> Result<()> {
+        (self.near_miss, self.near_miss_checked) = (0.0, false);
         let playing = self.follow_up_at.take().is_some_and(|until| Instant::now() < until);
         if self.player_answer || playing {
             self.interrupt(assistant);
         }
         self.device.event(Event::WakeWordEnd, &[]).await?;
         self.device.event(Event::SttStart, &[]).await?;
-        let wake: Vec<i16> = self.preroll.drain(..).collect();
+        self.preroll.clear();
         if self.dump.is_some() {
             self.recording.clone_from(&wake);
         }
         self.run = Run::Listening(Instant::now());
-        assistant.woke_on(resample::to_24k(&wake, DEVICE_RATE));
+        match since {
+            Some(since) => {
+                assistant.woke_named();
+                if self.dump.is_some() {
+                    self.recording.extend_from_slice(&since);
+                }
+                let mut up = Vec::with_capacity(since.len() * 3 / 2 + 2);
+                self.up.push(&since, &mut up);
+                self.mic.extend(up);
+            }
+            None => assistant.woke_on(resample::to_24k(&wake, DEVICE_RATE)),
+        }
         Ok(())
     }
 
