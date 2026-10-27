@@ -31,7 +31,7 @@ The manifests are in the homelab repo, `k8s/talos/apps/innestemme/`, deployed by
 
 Settings worth knowing in the ConfigMap: `listener: parakeet`, `english-tts: kokoro` with `kokoro-voice:
 am_onyx`, `speech-cache: /models/speech-cache`, `honorific: sir`, `wake-model: hey_jarvis` with
-`wake-threshold: 0.65`, `answer-player` and `answer-volume`, `hue-bridge` for party mode, `power-cycle`,
+`wake-threshold: 0.65` and `wake-check-from: 0.15`, `answer-player` and `answer-volume`, `hue-bridge` for party mode, `power-cycle`,
 `unhandled-log`. No `llm-url`: rules only.
 
 ## Working on it against the real device

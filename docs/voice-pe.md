@@ -20,7 +20,10 @@ answers with its own listener, skills and voice.
 4. Wake word in the engine: `wake-model: hey_jarvis` (an openWakeWord model, downloaded on first start to
    `$HF_HOME/openwakeword`; the pretrained models are CC BY-NC-SA 4.0) or the path to a `.onnx` model of your
    own, and `wake-threshold` (0.65 in the cluster). Scores from 0.2 up to the threshold are logged as
-   `wake word missed`.
+   `wake word missed`. With `wake-check-from` (0.15 in the cluster), a miss that peaks at or above it goes to
+   Parakeet, and the device wakes when the name is in it (`wake word confirmed by its name`, else `no name in
+   the wake word`). The model scores some voices well under the threshold, and the TV hardly ever says the
+   name. The check adds about 0.3 s to those wakes; the audio said meanwhile is kept for the request.
 5. Answers: the device fetches them from the engine's HTTP port (`/speech/<id>.wav`); set `public-url` when the
    address it reaches the engine on is not the engine's own (a Kubernetes LoadBalancer). `answer-player:
    media_player.living_room` announces them on a Home Assistant media player (a Sonos) instead, at

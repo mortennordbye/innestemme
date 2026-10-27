@@ -275,14 +275,27 @@ impl AssistantHandle {
     /// is the request. The device has finished playing, so there is no echo to wait out.
     pub fn woke(&self) {
         self.hear_now.store(true, Relaxed);
-        let _ = self.jobs.send(Job::Woken(Instant::now(), None));
+        let _ = self.jobs.send(Job::Woken(Instant::now(), WakeName::Unknown));
     }
 
     /// A wake word heard in the satellite's stream, with its audio (24 kHz), to check for the name
     /// if what follows is not understood.
     pub fn woke_on(&self, wake: Vec<i16>) {
         self.hear_now.store(true, Relaxed);
-        let _ = self.jobs.send(Job::Woken(Instant::now(), Some(wake)));
+        let _ = self.jobs.send(Job::Woken(Instant::now(), WakeName::Check(wake)));
+    }
+
+    /// A near miss of the wake word whose name check found the name: a wake word.
+    pub fn woke_named(&self) {
+        self.hear_now.store(true, Relaxed);
+        let _ = self.jobs.send(Job::Woken(Instant::now(), WakeName::Heard));
+    }
+
+    /// Whether the assistant's name is in `audio` (24 kHz); `None` when it could not be transcribed.
+    pub fn check_name(&self, audio: Vec<i16>) -> tokio::sync::oneshot::Receiver<Option<bool>> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let _ = self.jobs.send(Job::CheckName(audio, reply));
+        answer
     }
 
     /// Nothing was asked after the satellite's wake word, likely the TV: the music plays on now
@@ -345,12 +358,23 @@ pub enum Preview {
     NotRun(&'static str),
 }
 
+/// What a wake word tells of the assistant's name being said.
+enum WakeName {
+    /// The device's own wake word: no audio.
+    Unknown,
+    /// The engine's, with its audio (24 kHz) to check.
+    Check(Vec<i16>),
+    /// A near miss already checked: the name was in it.
+    Heard,
+}
+
 enum Job {
     /// A session started: tell the speaker they can talk.
     Ready,
-    /// A satellite heard its wake word itself, at this time, with the wake word's audio when the
-    /// engine detected it.
-    Woken(Instant, Option<Vec<i16>>),
+    /// A satellite heard its wake word itself, at this time, with what is known of the name in it.
+    Woken(Instant, WakeName),
+    /// Whether the name is in this audio (24 kHz): a near miss of the wake word.
+    CheckName(Vec<i16>, tokio::sync::oneshot::Sender<Option<bool>>),
     /// A satellite heard nothing after its wake word.
     NothingAsked,
     /// Audio still to transcribe, and when it ended.
@@ -941,7 +965,14 @@ impl Worker {
                     self.hush();
                     // Checked while the request is still being said: done when a reply needs it,
                     // it held up "didn't catch that" by a quarter of a second on the cluster.
-                    self.wake_named = wake.and_then(|audio| self.name_in(&audio));
+                    self.wake_named = match wake {
+                        WakeName::Unknown => None,
+                        WakeName::Check(audio) => self.name_in(&audio),
+                        WakeName::Heard => Some(true),
+                    };
+                }
+                Job::CheckName(audio, reply) => {
+                    let _ = reply.send(self.name_in(&audio));
                 }
                 Job::Satellite(names) => self.satellite(&names),
                 Job::Preview(text, reply) => {
