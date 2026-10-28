@@ -1,5 +1,6 @@
 //! The TV through its Home Assistant media player: on and off, volume, mute, pause, opening an app
-//! ("put Netflix on the TV"), and the assistant's own screen on it ("show the weather on the TV").
+//! ("put Netflix on the TV"), a title from NRK ("put on Exit on NRK"), and the assistant's own
+//! screen on it ("show the weather on the TV").
 //! The TV is the `tv` setting, else the media player that is a TV by its device class or name and
 //! not a Music Assistant player; one with the TV device class (LG webOS) before one that only casts.
 
@@ -45,6 +46,8 @@ pub enum TvCommand {
     Resume,
     /// An app or input by name, as said.
     App(String),
+    /// A series or programme from NRK, as said: "put on Exit on NRK".
+    Nrk(String),
     /// The assistant's screen on the TV, with this on it.
     Show(Screen),
     /// Back to the assistant's face: "close that".
@@ -151,7 +154,33 @@ const APP_FILLER: &[&str] = &[
 ];
 const POLITE: &[&str] = &["can", "could", "would", "you", "please", "just", "okay", "ok", "kan", "du"];
 
+/// Words before a title: "can you put on", "I want to watch", "sett på".
+const TITLE_START: &[&str] =
+    &["i", "want", "to", "i'd", "like", "let's", "lets", "jeg", "vil", "se", "på", "on", "some"];
+
+/// "Put on Exit on NRK", "play Skam on NRK TV", "I want to watch Exit from NRK", "sett på Exit på NRK".
+fn nrk_title(words: &[String]) -> Option<String> {
+    let at = words.iter().position(|w| w == "nrk")?;
+    if at < 2 || !["on", "from", "in", "på", "fra"].contains(&words[at - 1].as_str()) {
+        return None;
+    }
+    let before = &words[..at - 1];
+    let start = before.iter().position(|w| !POLITE.contains(&w.as_str()))?;
+    if !OPEN_WORDS.contains(&before[start].as_str()) && !TITLE_START.contains(&before[start].as_str()) {
+        return None;
+    }
+    let title: Vec<&str> = before[start..]
+        .iter()
+        .map(String::as_str)
+        .skip_while(|w| OPEN_WORDS.contains(w) || TITLE_START.contains(w) || POLITE.contains(w))
+        .collect();
+    (!title.is_empty() && !title.iter().all(|w| APP_FILLER.contains(w))).then(|| title.join(" "))
+}
+
 pub fn parse(words: &[String]) -> Option<TvCommand> {
+    if let Some(title) = nrk_title(words) {
+        return Some(TvCommand::Nrk(title));
+    }
     let has = |w: &str| words.iter().any(|x| x == w);
     let any = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
     let tv = any(TV_WORDS);
@@ -253,11 +282,19 @@ const VOLUME_STEP: f64 = 0.05;
 pub struct Tv {
     /// The `tv` setting: an entity id.
     entity: Option<String>,
+    agent: ureq::Agent,
 }
+
+/// A TV's Google Cast media player, which NRK plays through. A TV with Cast built in has one besides
+/// its own; a speaker group or speaker may cast too, so one named TV first.
+const CAST_TEMPLATE: &str = r#"{{ integration_entities('cast') | select('match', 'media_player\.') | list | tojson }}"#;
+
+/// NRK TV's public catalogue API.
+const NRK_API: &str = "https://psapi.nrk.no";
 
 impl Tv {
     pub fn new(entity: Option<String>) -> Self {
-        Self { entity }
+        Self { entity, agent: crate::geo::agent("innestemme") }
     }
 
     fn find(&self, ha: &HomeAssistant) -> Result<Option<String>> {
@@ -337,6 +374,35 @@ impl Tv {
                     format!("Okay, opening {found}.")
                 }
             }
+            TvCommand::Nrk(title) => {
+                let Some((name, program)) = self.nrk_search(title)? else {
+                    return Ok(if no {
+                        format!("Jeg finner ikke {title} på NRK.")
+                    } else {
+                        format!("I can't find {title} on NRK.")
+                    });
+                };
+                let cast = self.cast_entity(ha)?.context("no Google Cast media player for the TV")?;
+                if !on {
+                    call("turn_on", json!({}))?;
+                    self.wait_until_on(ha, &entity)?;
+                }
+                info!(cast, title = name, program, "nrk on the tv");
+                ha.service(
+                    "media_player",
+                    "play_media",
+                    json!({
+                        "entity_id": cast,
+                        "media_content_type": "cast",
+                        "media_content_id": json!({ "app_name": "nrktv", "media_id": program }).to_string(),
+                    }),
+                )?;
+                if no {
+                    format!("Ok, setter på {name}.")
+                } else {
+                    format!("Okay, putting on {name}.")
+                }
+            }
             // The engine shows its own screen; this is only reached without one.
             TvCommand::Show(_) | TvCommand::Hide => if no { "Ok." } else { "Okay." }.into(),
             _ if !on => off_answer.into(),
@@ -378,6 +444,45 @@ impl Tv {
                 if no { "Ok." } else { "Okay." }.into()
             }
         })
+    }
+
+    /// The best NRK hit for `title` that can be played: its name and the programme id to play, the
+    /// episode NRK itself would start for a series.
+    fn nrk_search(&self, title: &str) -> Result<Option<(String, String)>> {
+        let url = format!("{NRK_API}/search?q={}", crate::lookup::encode(title));
+        let found: serde_json::Value =
+            self.agent.get(&url).call().with_context(|| format!("fetching {url}"))?.body_mut().read_json()?;
+        let hit = found["hits"].as_array().into_iter().flatten().find(|h| {
+            ["serie", "program"].contains(&h["type"].as_str().unwrap_or_default())
+                && h["hit"]["hasRights"] != false
+                && h["hit"]["sourceMedium"].as_str().is_none_or(|m| m == "tv")
+        });
+        let Some(hit) = hit else { return Ok(None) };
+        let name = hit["hit"]["title"].as_str().unwrap_or(title).to_owned();
+        let path = hit["hit"]["url"].as_str().unwrap_or_default();
+        let program = match path.split_once('/') {
+            Some(("program", id)) => id.to_owned(),
+            Some(("serie", series)) => {
+                let url = format!("{NRK_API}/tv/catalog/series/{series}");
+                let series: serde_json::Value =
+                    self.agent.get(&url).call().with_context(|| format!("fetching {url}"))?.body_mut().read_json()?;
+                let links = &series["_links"];
+                let episode = links["defaultHighlightedEpisode"]["name"]
+                    .as_str()
+                    .or(links["highlightedEpisode"]["name"].as_str());
+                episode.context("an NRK series without an episode to play")?.to_owned()
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some((name, program)))
+    }
+
+    /// The TV's Google Cast media player.
+    fn cast_entity(&self, ha: &HomeAssistant) -> Result<Option<String>> {
+        let found: Vec<String> =
+            serde_json::from_str(&ha.template(CAST_TEMPLATE)?).context("parsing the cast players")?;
+        let named_tv = found.iter().find(|id| id.contains("tv")).cloned();
+        Ok(named_tv.or_else(|| found.into_iter().next()))
     }
 
     /// Opens `url` in the TV's web browser, starting the TV first if it is off. Only TVs with
@@ -462,6 +567,16 @@ mod tests {
         assert_eq!(tv("start NRK TV"), Some(App("nrk tv".into())));
         assert_eq!(tv("switch the TV to HDMI 1"), Some(App("hdmi 1".into())));
         assert_eq!(tv("turn the TV back on"), Some(Power(true)));
+        assert_eq!(tv("Put on Exit on NRK."), Some(Nrk("exit".into())));
+        assert_eq!(tv("Can you play Skam on NRK TV?"), Some(Nrk("skam".into())));
+        assert_eq!(tv("I want to watch Exit from NRK"), Some(Nrk("exit".into())));
+        assert_eq!(tv("put Kompani Lauritzen on NRK on the TV"), Some(Nrk("kompani lauritzen".into())));
+        assert_eq!(tv("watch the Weekend News on NRK"), Some(Nrk("the weekend news".into())));
+        assert_eq!(tv("sett på Exit på NRK"), Some(Nrk("exit".into())));
+        assert_eq!(tv("put NRK on the TV"), Some(App("nrk".into())));
+        assert_eq!(tv("put on NRK"), Some(App("nrk".into())));
+        assert_eq!(tv("switch the TV to NRK"), Some(App("nrk".into())));
+        assert_eq!(tv("what's on NRK tonight"), None);
         // Not the TV.
         assert_eq!(tv("is the TV on"), None);
         assert_eq!(tv("what's on TV tonight"), None);
