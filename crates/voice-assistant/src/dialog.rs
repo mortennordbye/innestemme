@@ -14,7 +14,7 @@ const SPELLINGS: &[(&str, &[&str])] = &[
         "jarvis",
         &[
             "jarvis", "jarvis's", "jarvis'", "jarris", "jervis", "jarvus", "jarviss", "jarves", "javis", "jaris",
-            "jarvas", "jarviz", "jarvice", "jarbis", "charvis", "jervis's",
+            "jarvas", "jarviz", "jarvice", "jarbis", "charvis", "jervis's", "darvis",
         ],
     ),
     ("homie", &["homie", "homies", "homie's", "homey", "homy", "homi", "hommie", "homee", "homeie"]),
@@ -27,11 +27,17 @@ const SPELLINGS: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// Everyday words a transcriber writes for the name in a wake word ("Hey German."). They count only
+/// right after a greeting and only in the wake word's own audio, which the wake word model already
+/// scored as a near miss.
+const AFTER_GREETING: &[(&str, &[&str])] = &[("jarvis", &["german", "germans", "drivers"])];
+
 /// The assistant's name as the transcript shows it: the name itself plus known spellings.
 #[derive(Clone, Debug)]
 pub struct WakeWord {
     name: String,
     spellings: Vec<String>,
+    after_greeting: &'static [&'static str],
 }
 
 impl Default for WakeWord {
@@ -47,7 +53,8 @@ impl WakeWord {
         if let Some((_, known)) = SPELLINGS.iter().find(|(k, _)| *k == key) {
             spellings.extend(known.iter().map(|s| s.to_string()));
         }
-        Self { name: name.to_owned(), spellings }
+        let after_greeting = AFTER_GREETING.iter().find(|(k, _)| *k == key).map_or(&[][..], |(_, words)| *words);
+        Self { name: name.to_owned(), spellings, after_greeting }
     }
 
     /// Adds ways a transcriber writes the name, beyond the built-in ones.
@@ -69,6 +76,14 @@ impl WakeWord {
         let is_name = |w: &str| self.spellings.iter().any(|s| s == w);
         is_name(word)
             || ["hey", "hei", "hi", "hai", "hallo", "hello"].iter().any(|g| word.strip_prefix(g).is_some_and(is_name))
+    }
+
+    /// Whether the transcript of a wake word's audio holds the name: as anywhere else, or as one of
+    /// the everyday words it is heard as right after a greeting.
+    pub fn in_wake_word(&self, text: &str) -> bool {
+        let words: Vec<String> = text.split_whitespace().map(normalize).collect();
+        words.iter().any(|w| self.matches(w))
+            || words.windows(2).any(|pair| is_greeting(&pair[0]) && self.after_greeting.contains(&pair[1].as_str()))
     }
 
     /// For a whole transcribed utterance: `Some(request)` when it starts with the name, possibly
@@ -130,6 +145,21 @@ mod tests {
             assert!(heard.split_whitespace().any(|w| wake.matches(&normalize(w))), "{heard}");
         }
         assert!(!"That's my parents.".split_whitespace().any(|w| wake.matches(&normalize(w))));
+    }
+
+    /// Wake words Parakeet heard as everyday words (Loki, 27-28 Oct).
+    #[test]
+    fn hears_jarvis_in_a_wake_word() {
+        let wake = WakeWord::new("Jarvis");
+        for heard in ["Hey German.", "Hey Germans.", "Hey drivers!", "Hey Darvis.", "Hey, Jarvis."] {
+            assert!(wake.in_wake_word(heard), "{heard}");
+        }
+        for heard in ["German.", "The drivers are late.", "Yeah.", "", "Hey there."] {
+            assert!(!wake.in_wake_word(heard), "{heard}");
+        }
+        // Elsewhere they are the words they are.
+        assert_eq!(wake.strip("Hey German, how are you?"), None);
+        assert!(!WakeWord::new("Homie").in_wake_word("Hey German."));
     }
 
     /// Whether a phrase holds the name, word by word as the engine checks a transcript.

@@ -1361,7 +1361,7 @@ impl Worker {
             }
         };
         let wake = &self.config.wake;
-        let named = heard.split_whitespace().any(|w| wake.matches(&voice_assistant::dialog::normalize(w)));
+        let named = wake.in_wake_word(&heard);
         info!(heard, named, took = ?start.elapsed(), "wake word check");
         Some(named)
     }

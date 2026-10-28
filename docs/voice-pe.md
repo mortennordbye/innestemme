@@ -22,7 +22,8 @@ answers with its own listener, skills and voice.
    own, and `wake-threshold` (0.65 in the cluster). Scores from 0.2 up to the threshold are logged as
    `wake word missed`. With `wake-check-from` (0.15 in the cluster), a miss that peaks at or above it goes to
    Parakeet, and the device wakes when the name is in it (`wake word confirmed by its name`, else `no name in
-   the wake word`). The model scores some voices well under the threshold, and the TV hardly ever says the
+   the wake word`). There, a few everyday words Parakeet writes for the name also count right after "hey"
+   ("Hey German", `AFTER_GREETING` in `dialog.rs`). The model scores some voices well under the threshold, and the TV hardly ever says the
    name. The check adds about 0.3 s to those wakes; the audio said meanwhile is kept for the request.
 5. Answers: the device fetches them from the engine's HTTP port (`/speech/<id>.wav`); set `public-url` when the
    address it reaches the engine on is not the engine's own (a Kubernetes LoadBalancer). `answer-player:
