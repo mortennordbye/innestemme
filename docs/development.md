@@ -56,7 +56,7 @@ recordings in `target/utterances`. Say so before anything plays on the real spea
 | `cargo run -p voice-assistant --example music -- "play my liked songs"` | a music request through Music Assistant |
 | `cargo run -p voice-assistant --example speak -- 127.0.0.1:10200 <voice> out.wav "Hei"` | a Piper sample |
 | `cargo run -p voice-esphome --example fake_satellite -- ...` | a pretend Voice PE, see [voice-pe.md](voice-pe.md) |
-| `cargo run --release -p voice-engine --example party -- normal 60` | party mode from the Mac's microphone (Hue keys in `.env`) |
+| `cargo run --release -p voice-engine --example party -- normal 60` | party mode from the Mac's microphone (Hue keys in `.env`; `normal`, `fast` or `relaxed`) |
 | `scripts/latency-bench/` | end of speech to answer, a build against `main`, with a fake Home Assistant ([benchmarks.md](benchmarks.md)) |
 | `voice-bench` | per-frame step times of the audio path ([benchmarks.md](benchmarks.md)) |
 
