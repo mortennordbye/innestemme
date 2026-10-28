@@ -4,8 +4,9 @@
 //! bridge, 50 frames a second, which the bridge passes on to the lights about 25 times a second.
 //! Commands through Home Assistant cannot keep up: Hue takes about one room command a second.
 //!
-//! Two modes: normal moves a new colour round the room on each beat and fades between them; fast
-//! flashes on every hit, as fast as the lights follow.
+//! Three modes: relaxed keeps the warm light of Hue's Relax scene and lets it drift between warm
+//! shades and swell gently on the stronger beats; normal moves a new colour round the room on each
+//! beat and fades between them; fast flashes on every hit, as fast as the lights follow.
 
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering::Relaxed;
@@ -28,15 +29,18 @@ const STREAM_PORT: u16 = 2100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
+    Relaxed,
     Normal,
     Fast,
 }
 
 impl Mode {
-    /// Shortest gap between beats: a normal beat at most 4 times a second, a fast hit as often
-    /// as the lights can show a flash and its dark after (about 25 updates a second).
+    /// Shortest gap between beats: a relaxed change at most every 1.2 s, a normal beat at most 4
+    /// times a second, a fast hit as often as the lights can show a flash and its dark after (about
+    /// 25 updates a second).
     fn min_gap(self) -> Duration {
         match self {
+            Mode::Relaxed => Duration::from_millis(1200),
             Mode::Normal => Duration::from_millis(250),
             Mode::Fast => Duration::from_millis(80),
         }
@@ -45,6 +49,7 @@ impl Mode {
     /// How far above the usual change in loudness a change must be to count as a beat.
     fn sensitivity(self) -> f32 {
         match self {
+            Mode::Relaxed => 2.0,
             Mode::Normal => 1.6,
             Mode::Fast => 0.9,
         }
@@ -87,6 +92,7 @@ impl Party {
         match self.inner.mode.load(Relaxed) {
             1 => Some(Mode::Normal),
             2 => Some(Mode::Fast),
+            3 => Some(Mode::Relaxed),
             _ => None,
         }
     }
@@ -94,7 +100,12 @@ impl Party {
     /// Starts the stream, or changes the mode of the one running.
     pub fn start(&self, mode: Mode) -> Result<()> {
         let Some(hue) = self.inner.hue.clone() else { bail!("no Hue bridge configured") };
-        let was = self.inner.mode.swap(if mode == Mode::Normal { 1 } else { 2 }, Relaxed);
+        let code = match mode {
+            Mode::Normal => 1,
+            Mode::Fast => 2,
+            Mode::Relaxed => 3,
+        };
+        let was = self.inner.mode.swap(code, Relaxed);
         if was != 0 {
             info!(?mode, "party mode changed");
             return Ok(());
@@ -235,6 +246,10 @@ impl Beats {
     }
 }
 
+/// Relaxed mode's shades, as hue and saturation: the Relax scene's warm white (about 2200 K)
+/// first, then amber, peach and a soft rose.
+const WARM: &[(f32, f32)] = &[(0.075, 0.6), (0.06, 0.85), (0.04, 0.65), (0.97, 0.45), (0.09, 0.75)];
+
 /// What the lights show, frame by frame.
 struct Show {
     lights: usize,
@@ -243,11 +258,23 @@ struct Show {
     flash: f32,
     beat: u32,
     last: Duration,
+    /// Relaxed mode: loudness smoothed over about a second, and each light's colour gliding to its
+    /// shade.
+    calm_level: f32,
+    glide: Vec<[f32; 3]>,
 }
 
 impl Show {
     fn new(lights: usize) -> Self {
-        Self { lights, hue: 0.0, flash: 0.0, beat: 0, last: Duration::ZERO }
+        Self {
+            lights,
+            hue: 0.0,
+            flash: 0.0,
+            beat: 0,
+            last: Duration::ZERO,
+            calm_level: 0.0,
+            glide: vec![hsv(WARM[0].0, WARM[0].1, 0.4); lights],
+        }
     }
 
     /// RGB per light, 0 to 1.
@@ -255,7 +282,11 @@ impl Show {
         let dt = (now - self.last).as_secs_f32();
         self.last = now;
         // Dark again within two of the bridge's updates in fast mode, so the next hit is a new flash.
-        let fade = if mode == Mode::Fast { 0.03 } else { 0.35 };
+        let fade = match mode {
+            Mode::Fast => 0.03,
+            Mode::Normal => 0.35,
+            Mode::Relaxed => 1.5,
+        };
         self.flash *= (-dt / fade).exp();
         if beats > 0 {
             self.beat = self.beat.wrapping_add(beats);
@@ -264,6 +295,21 @@ impl Show {
             self.hue = (self.hue + 0.382) % 1.0;
         }
         match mode {
+            Mode::Relaxed => {
+                self.calm_level += (1.0 - (-dt / 1.0).exp()) * (level - self.calm_level);
+                let brightness = (0.35 + 0.2 * self.calm_level + 0.2 * self.flash).min(0.75);
+                // Neighbours a shade apart, so a beat walks the shades round the room.
+                let step = self.beat as usize;
+                let glide = 1.0 - (-dt / 1.2).exp();
+                for (i, light) in self.glide.iter_mut().enumerate() {
+                    let (h, s) = WARM[(step + i) % WARM.len()];
+                    let target = hsv(h, s, brightness);
+                    for (c, t) in light.iter_mut().zip(target) {
+                        *c += glide * (t - *c);
+                    }
+                }
+                self.glide.clone()
+            }
             Mode::Normal => {
                 let brightness = (0.25 + 0.25 * level).max(self.flash);
                 (0..self.lights)
@@ -472,6 +518,34 @@ mod tests {
         assert!(lit.iter().any(|c| c.iter().any(|v| *v > 0.9)));
         let dark = show.frame(Mode::Fast, 0, 0.5, Duration::from_millis(100));
         assert!(dark.iter().all(|c| c.iter().all(|v| *v < 0.1)), "{dark:?}");
+    }
+
+    #[test]
+    fn relaxed_mode_waits_for_strong_beats() {
+        // Kicks every 500 ms: relaxed mode moves on at most every 1.2 s.
+        let mut beats = Beats::default();
+        for chunk in kicks(Duration::from_millis(500), 8.0).chunks(320) {
+            beats.push(chunk, Mode::Relaxed);
+        }
+        assert!((3..=7).contains(&beats.new_beats), "{}", beats.new_beats);
+    }
+
+    #[test]
+    fn relaxed_lights_glide_and_stay_warm() {
+        let mut show = Show::new(3);
+        let mut now = Duration::ZERO;
+        let mut last = show.frame(Mode::Relaxed, 0, 0.5, now);
+        for i in 0..200 {
+            now += FRAME;
+            let colours = show.frame(Mode::Relaxed, u32::from(i % 60 == 0), 1.0, now);
+            for (light, before) in colours.iter().zip(&last) {
+                // No jumps from one frame to the next, never brighter than 75 %, and red over blue.
+                assert!(light.iter().zip(before).all(|(a, b)| (a - b).abs() < 0.05), "{before:?} -> {light:?}");
+                assert!(light.iter().all(|&c| c <= 0.76), "{light:?}");
+                assert!(light[0] >= light[2], "{light:?}");
+            }
+            last = colours;
+        }
     }
 
     #[test]

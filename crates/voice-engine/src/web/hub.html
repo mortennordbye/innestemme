@@ -1188,7 +1188,7 @@ const AUTOMATIONS = [
     does: "A movie threat in a darker voice. A snapshot of the lights first, then every colour light goes red and pulses, the rest go off, the lockdown music plays loud, and a TV that is on shows the lockdown screen." },
   { id: "stand-down", group: "Routines", name: "Stand down", q: "stand down", say: "Stand down · all clear",
     does: "The lights go back to the lockdown's snapshot, the music stops and its volume goes back, and the TV goes back to what it showed." },
-  { id: "party", group: "Routines", name: "Party mode", q: "party mode", say: "Party mode · fast party mode",
+  { id: "party", group: "Routines", name: "Party mode", q: "party mode", say: "Party mode · fast party mode · relaxed party mode",
     does: "A snapshot of the lights, then the Hue colour lights follow the music through the bridge." },
   { id: "party-off", group: "Routines", name: "Stop the party", q: "stop the party", say: "Stop the party",
     does: "The lights go back to the snapshot from before the party." },
@@ -1669,10 +1669,12 @@ function renderControl() {
   };
   button("All on", `${lamps.length} lights`, lit.length === lamps.length ? "on" : "", () => call("light", "turn_on", ids(lamps)));
   button("All off", lit.length ? `${lit.length} on now` : "all off", "", () => lit.length && call("light", "turn_off", ids(lit)));
-  if (party) button("Stop party", party === "fast" ? "fast mode on" : "party on", "party on", () => act("party_off"));
+  const partyOn = { fast: "fast mode on", relaxed: "relaxed mode on" }[party] || "party on";
+  if (party) button("Stop party", partyOn, "party on", () => act("party_off"));
   else {
     button("Party", "lights follow the music", "party", () => act("party"));
     button("Fast party", "a flash on every beat", "party", () => act("party_fast"));
+    button("Relaxed party", "warm light, drifts with the beat", "party", () => act("party_relaxed"));
   }
   if (lockdown) button("Stand down", "lockdown on", "alert on", () => act("stand_down"));
   else button("Lockdown", "red alert", "alert", () => act("lockdown"));

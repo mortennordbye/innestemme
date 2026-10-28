@@ -28,7 +28,7 @@ use voice_assistant::llm::{self, Decision, Llm, Turn};
 use voice_assistant::lookup::Lookup;
 use voice_assistant::music::Player;
 use voice_assistant::news::News;
-use voice_assistant::party::PartyCommand;
+use voice_assistant::party::{Pace, PartyCommand};
 use voice_assistant::persona::Persona;
 use voice_assistant::plan;
 use voice_assistant::power::{self, Power};
@@ -1661,7 +1661,12 @@ impl Worker {
             .chain(&questions)
             .chain(&["Okay, I'll leave it.", "Anything else?", "Okay, that's everything."])
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
-            .chain(&["Okay, party mode is on.", "Okay, fast party mode is on.", "Okay, the party's over."])
+            .chain(&[
+                "Okay, party mode is on.",
+                "Okay, fast party mode is on.",
+                "Okay, relaxed party mode is on.",
+                "Okay, the party's over.",
+            ])
             .chain(house::LOCKDOWN_ANSWERS)
             .chain(house::LOCKDOWN_THREATS)
             .chain(house::ROUTINE_ANSWERS)
@@ -2116,7 +2121,7 @@ impl Worker {
     /// "Party mode": the Hue lights follow the music, after a snapshot to put them back from.
     fn party(&mut self, command: PartyCommand, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
-        let PartyCommand::On { fast } = command else {
+        let PartyCommand::On(pace) = command else {
             return match self.party_off() {
                 true if no => "Ok, festen er over.",
                 true => "Okay, the party's over.",
@@ -2138,7 +2143,11 @@ impl Worker {
                 warn!(error = format!("{error:#}"), "party mode: no snapshot of the lights");
             }
         }
-        let mode = if fast { party::Mode::Fast } else { party::Mode::Normal };
+        let mode = match pace {
+            Pace::Relaxed => party::Mode::Relaxed,
+            Pace::Normal => party::Mode::Normal,
+            Pace::Fast => party::Mode::Fast,
+        };
         if let Err(error) = self.config.party.start(mode) {
             warn!(error = format!("{error:#}"), "party mode did not start");
             return if no {
@@ -2148,11 +2157,13 @@ impl Worker {
             }
             .into();
         }
-        match (fast, no) {
-            (false, false) => "Okay, party mode is on.",
-            (true, false) => "Okay, fast party mode is on.",
-            (false, true) => "Ok, festmodus er på.",
-            (true, true) => "Ok, rask festmodus er på.",
+        match (pace, no) {
+            (Pace::Relaxed, false) => "Okay, relaxed party mode is on.",
+            (Pace::Normal, false) => "Okay, party mode is on.",
+            (Pace::Fast, false) => "Okay, fast party mode is on.",
+            (Pace::Relaxed, true) => "Ok, rolig festmodus er på.",
+            (Pace::Normal, true) => "Ok, festmodus er på.",
+            (Pace::Fast, true) => "Ok, rask festmodus er på.",
         }
         .into()
     }

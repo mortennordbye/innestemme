@@ -31,6 +31,7 @@ const RECENT_SHOWN: usize = 30;
 const ACTIONS: &[(&str, &str)] = &[
     ("party", "party mode"),
     ("party_fast", "fast party mode"),
+    ("party_relaxed", "relaxed party mode"),
     ("party_off", "stop the party"),
     ("lockdown", "initiate lockdown"),
     ("stand_down", "stand down"),
@@ -209,7 +210,9 @@ impl Web {
         }
         let what = query.split('&').find_map(|pair| pair.strip_prefix("do=")).unwrap_or_default();
         let Some((_, request)) = ACTIONS.iter().find(|(name, _)| *name == what) else {
-            return Some(bad_request("`do` is one of party, party_fast, party_off, lockdown, stand_down"));
+            return Some(bad_request(
+                "`do` is one of party, party_fast, party_relaxed, party_off, lockdown, stand_down",
+            ));
         };
         let answer = tokio::time::timeout(HEAR_TIMEOUT, assistant.act((*request).to_owned())).await;
         Some(match answer {
@@ -289,6 +292,7 @@ impl Web {
         value["party"] = match self.assistant.as_ref().and_then(|a| a.party.mode()) {
             Some(crate::party::Mode::Normal) => json!("normal"),
             Some(crate::party::Mode::Fast) => json!("fast"),
+            Some(crate::party::Mode::Relaxed) => json!("relaxed"),
             None => json!(null),
         };
         value["about"] = self.about.clone();

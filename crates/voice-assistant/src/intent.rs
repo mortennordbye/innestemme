@@ -1196,6 +1196,10 @@ mod tests {
         assert_eq!(parse("relaxing lights in the bedroom"), Intent::Scene("relax in bedroom".into()));
         assert_eq!(parse("jeg vil slappe av"), Intent::Scene("relax".into()));
         assert!(matches!(parse("play relaxing music"), Intent::Music(_)));
+        // A relaxed party is the lights following the music, not the Relax scene.
+        let relaxed = Intent::Party(crate::party::PartyCommand::On(crate::party::Pace::Relaxed));
+        assert_eq!(parse("Relaxed party mode."), relaxed);
+        assert_eq!(parse("Turn on relaxing party mode"), relaxed);
         assert!(matches!(parse("turn on the reading lamp"), Intent::Lights { on: true, .. }));
         assert!(matches!(parse("run movie time"), Intent::Script(_)));
         assert!(matches!(parse("kjør skriptet movie time"), Intent::Script(_)));

@@ -15,8 +15,9 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let mode = match args.next().as_deref() {
         Some("fast") => Mode::Fast,
+        Some("relaxed") => Mode::Relaxed,
         Some("normal") | None => Mode::Normal,
-        Some(other) => bail!("mode is normal or fast, not {other}"),
+        Some(other) => bail!("mode is normal, fast or relaxed, not {other}"),
     };
     let seconds: u64 = args.next().map_or(Ok(60), |s| s.parse()).context("seconds")?;
     let env = |name: &str| std::env::var(name).with_context(|| format!("{name} is not set"));
