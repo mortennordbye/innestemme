@@ -315,6 +315,7 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             let command = match (text("action").as_deref().unwrap_or("on"), text("app")) {
                 _ if screen.is_some() => TvCommand::Show(screen.unwrap_or(Screen::Jarvis)),
                 _ if text("nrk").is_some() => TvCommand::Nrk(text("nrk").unwrap_or_default()),
+                _ if text("plex").is_some() => TvCommand::Plex(text("plex").unwrap_or_default()),
                 ("hide", _) => TvCommand::Hide,
                 (_, Some(app)) => TvCommand::App(app),
                 _ if volume.is_some() => TvCommand::Volume(volume.unwrap_or(0.0).clamp(0.0, 100.0).round() as u8),
@@ -469,13 +470,14 @@ pub fn tools() -> Value {
         ),
         tool(
             "tv",
-            "Control the TV: on, off, volume, mute, pause, open an app, play an NRK title, or show your screen on it.",
+            "Control the TV: on, off, volume, mute, pause, open an app, play an NRK or Plex title, or show your screen on it.",
             json!({ "type": "object", "properties": {
             "action": { "type": "string", "enum": ["on", "off", "louder", "quieter", "mute", "unmute", "pause", "resume", "hide"] },
             "show": { "type": "string", "enum": ["jarvis", "weather", "timers", "music", "departures"] },
             "volume": { "type": "number", "description": "0-100" },
             "app": { "type": "string", "description": "e.g. Netflix" },
-            "nrk": { "type": "string", "description": "Title on NRK" }
+            "nrk": { "type": "string", "description": "Title on NRK" },
+            "plex": { "type": "string", "description": "Film or show on Plex" }
         } })
         ),
         tool(
@@ -615,6 +617,10 @@ mod tests {
         assert_eq!(
             parse_reply(&call("tv", r#"{"nrk":"Exit"}"#)).unwrap(),
             Decision::Act(Intent::Tv(TvCommand::Nrk("Exit".into())))
+        );
+        assert_eq!(
+            parse_reply(&call("tv", r#"{"plex":"Forrest Gump"}"#)).unwrap(),
+            Decision::Act(Intent::Tv(TvCommand::Plex("Forrest Gump".into())))
         );
         assert_eq!(
             parse_reply(&call("phone", r#"{"action":"find","name":"my"}"#)).unwrap(),

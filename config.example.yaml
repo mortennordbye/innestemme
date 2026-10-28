@@ -71,6 +71,9 @@ whisper-size: base
 # through Home Assistant's LG webOS integration; scenes and jokes show there while it is open. A lockdown
 # opens it on a TV that is on, and standing down switches the TV back.
 # screen-url: https://voice.example.lan/tv
+# "Play <title> on Plex": the Plex server innestemme searches, and a token for it in VOICE_PLEX_TOKEN.
+# Home Assistant needs its Plex integration for the same server: the TV's Cast player plays plex://<key>.
+# plex-url: http://plex.example.lan:32400
 # Speak at once when a smoke, carbon monoxide, gas, water or breaking glass sensor goes off.
 # alerts: true
 # Bedtime ("good night"): the bedroom lights that are on dim to this percent, warm white.

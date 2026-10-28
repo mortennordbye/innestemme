@@ -176,6 +176,8 @@ pub struct AssistantConfig {
     pub learned: Option<Arc<Learned>>,
     /// The TV's media player entity; default: the media player that is a TV.
     pub tv: Option<String>,
+    /// The Plex server for "play <title> on Plex".
+    pub plex: Option<tv::Plex>,
     /// The `/tv` page as the TV reaches it, opened in its browser for "show ... on the TV".
     pub screen_url: Option<String>,
     /// Speak at once when a smoke, gas, water or breaking glass sensor goes off.
@@ -427,7 +429,7 @@ impl AssistantProcessor {
         let party = config.party.clone();
         let activity = config.activity.clone();
         let speaker = config.speaker.clone();
-        let tv = Tv::new(config.tv.clone());
+        let tv = Tv::new(config.tv.clone()).with_plex(config.plex.clone());
         let (events, _) = broadcast::channel(256);
         // MET Norway asks for an application name and a contact.
         let user_agent = match &config.contact {
@@ -1628,7 +1630,7 @@ impl Worker {
             Intent::LightsStatus { .. } => LEADS_LIGHTS,
             Intent::WhosHome(_) => LEADS_HOME,
             Intent::House(HouseCommand::Status) => LEADS_HOUSE,
-            Intent::Tv(TvCommand::Nrk(_)) => LEADS_TV,
+            Intent::Tv(TvCommand::Nrk(_) | TvCommand::Plex(_)) => LEADS_TV,
             Intent::Unknown if self.config.llm.is_some() => LEADS_THINK,
             _ => return None,
         };

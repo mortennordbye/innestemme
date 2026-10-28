@@ -173,6 +173,14 @@ struct Args {
     /// player that is a TV by its device class or name.
     #[arg(long, env = "VOICE_TV")]
     tv: Option<String>,
+    /// The Plex server, for "play <title> on Plex", e.g. http://plex.example.lan:32400. Home
+    /// Assistant needs its Plex integration for the same server, which lets the TV's Cast player
+    /// play from it.
+    #[arg(long, env = "VOICE_PLEX_URL")]
+    plex_url: Option<String>,
+    /// A Plex token for that server (`PlexOnlineToken` in the server's Preferences.xml).
+    #[arg(long, env = "VOICE_PLEX_TOKEN", hide_env_values = true)]
+    plex_token: Option<String>,
     /// The engine's `/tv` page as the TV reaches it, e.g. https://voice.example.lan/tv. "Show the
     /// weather on the TV" opens it in the TV's browser (LG webOS integration). Unset: only a page
     /// already open shows it.
@@ -527,6 +535,11 @@ fn main() -> Result<()> {
                     room: args.room.clone(),
                     honorific: args.honorific.clone(),
                     tv: args.tv.clone(),
+                    plex: args
+                        .plex_url
+                        .clone()
+                        .zip(args.plex_token.clone())
+                        .map(|(url, token)| voice_assistant::tv::Plex { url, token }),
                     screen_url: args.screen_url.clone(),
                     alerts: args.alerts,
                     bedtime_light: args.bedtime_light,
