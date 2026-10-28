@@ -719,6 +719,7 @@ const LEADS_THINK: &[&str] = &["Let me think", "Give me a moment", "Let me consi
 const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news", "Checking the papers"];
 const LEADS_LOOKUP: &[&str] = &["Let me look that up", "One moment", "Let me find out"];
 const LEADS_HOUSE: &[&str] = &["Let me check the house", "Checking the house", "Doing the rounds"];
+const LEADS_TV: &[&str] = &["Let me find it", "Looking it up", "Finding it for you"];
 const LEADS: &[&[&str]] = &[
     LEADS_WEATHER,
     LEADS_TRANSIT,
@@ -729,6 +730,7 @@ const LEADS: &[&[&str]] = &[
     LEADS_NEWS,
     LEADS_LOOKUP,
     LEADS_HOUSE,
+    LEADS_TV,
 ];
 
 /// "Checking the forecast, sir." or "Checking the forecast."
@@ -1626,6 +1628,7 @@ impl Worker {
             Intent::LightsStatus { .. } => LEADS_LIGHTS,
             Intent::WhosHome(_) => LEADS_HOME,
             Intent::House(HouseCommand::Status) => LEADS_HOUSE,
+            Intent::Tv(TvCommand::Nrk(_)) => LEADS_TV,
             Intent::Unknown if self.config.llm.is_some() => LEADS_THINK,
             _ => return None,
         };
