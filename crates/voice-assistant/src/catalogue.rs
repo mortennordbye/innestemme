@@ -98,10 +98,10 @@ pub const SKILLS: &[Skill] = &[
         name: "TV",
         group: "Home",
         icon: "tv",
-        does: "Switches the TV on or off, changes its volume, mutes or pauses it, opens apps like Netflix or YouTube, and plays a series or programme from NRK over Google Cast (a series from the episode NRK would start).",
-        source: "The TV's Home Assistant media player (the `tv` setting, or the one named TV) and its Google Cast player; NRK's public catalogue (psapi.nrk.no)",
+        does: "Switches the TV on or off, changes its volume, mutes or pauses it, opens apps like Netflix or YouTube, and plays a series or programme from NRK, or a film or show from Plex, over Google Cast (an NRK series from the episode NRK would start, a Plex show from the episode on deck, else the first not watched).",
+        source: "The TV's Home Assistant media player (the `tv` setting, or the one named TV) and its Google Cast player; NRK's public catalogue (psapi.nrk.no); the Plex server (`plex-url`, `plex-token`) and Home Assistant's Plex integration",
         calls: &["media_player.turn_on", "media_player.turn_off", "media_player.volume_set", "media_player.select_source", "media_player.play_media"],
-        examples: &["Turn off the TV", "Put Netflix on the TV", "Put on Exit on NRK", "Turn the TV down", "Mute the TV", "Pause the TV"],
+        examples: &["Turn off the TV", "Put Netflix on the TV", "Put on Exit on NRK", "Play Forrest Gump on Plex", "Next episode of The Office on Plex", "Turn the TV down", "Mute the TV", "Pause the TV"],
         norwegian: &["Skru av TV-en", "Sett på Exit på NRK"],
     },
     Skill {

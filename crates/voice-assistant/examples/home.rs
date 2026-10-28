@@ -102,7 +102,9 @@ fn main() -> anyhow::Result<()> {
         }
         Intent::Tv(command) => {
             println!("{command:?}: TVs on {:?}", voice_assistant::tv::on_tvs(&ha)?);
-            let mut tv = voice_assistant::tv::Tv::new(None);
+            let plex = std::env::var("VOICE_PLEX_URL").ok().zip(std::env::var("VOICE_PLEX_TOKEN").ok());
+            let plex = plex.map(|(url, token)| voice_assistant::tv::Plex { url, token });
+            let mut tv = voice_assistant::tv::Tv::new(None).with_plex(plex);
             match (&command, std::env::var("VOICE_SCREEN_URL")) {
                 // The engine puts the data on its screen; here only the page is opened.
                 (voice_assistant::tv::TvCommand::Show(_), Ok(url)) if run => tv.open_page(&ha, &url)?,

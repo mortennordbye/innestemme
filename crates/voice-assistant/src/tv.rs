@@ -1,6 +1,6 @@
 //! The TV through its Home Assistant media player: on and off, volume, mute, pause, opening an app
-//! ("put Netflix on the TV"), a title from NRK ("put on Exit on NRK"), and the assistant's own
-//! screen on it ("show the weather on the TV").
+//! ("put Netflix on the TV"), a title from NRK or Plex ("put on Exit on NRK", "play Forrest Gump
+//! on Plex"), and the assistant's own screen on it ("show the weather on the TV").
 //! The TV is the `tv` setting, else the media player that is a TV by its device class or name and
 //! not a Music Assistant player; one with the TV device class (LG webOS) before one that only casts.
 
@@ -48,6 +48,8 @@ pub enum TvCommand {
     App(String),
     /// A series or programme from NRK, as said: "put on Exit on NRK".
     Nrk(String),
+    /// A film or show from the Plex server, as said: "play Forrest Gump on Plex".
+    Plex(String),
     /// The assistant's screen on the TV, with this on it.
     Show(Screen),
     /// Back to the assistant's face: "close that".
@@ -158,15 +160,20 @@ const POLITE: &[&str] = &["can", "could", "would", "you", "please", "just", "oka
 const TITLE_START: &[&str] =
     &["i", "want", "to", "i'd", "like", "let's", "lets", "jeg", "vil", "se", "på", "on", "some"];
 
-/// "Put on Exit on NRK", "play Skam on NRK TV", "I want to watch Exit from NRK", "sett på Exit på NRK".
-fn nrk_title(words: &[String]) -> Option<String> {
-    let at = words.iter().position(|w| w == "nrk")?;
+/// Words before a show's name that only say which episode: Plex plays the next one anyway.
+const NEXT_EPISODE: &[&str] = &["the", "next", "new", "latest", "episode", "of", "neste", "episode", "av"];
+
+/// "Put on Exit on NRK", "play Skam on NRK TV", "I want to watch Exit from NRK", "sett på Exit på NRK";
+/// `service` is "nrk" or "plex".
+fn title_on(words: &[String], service: &str) -> Option<String> {
+    let at = words.iter().position(|w| w == service)?;
     if at < 2 || !["on", "from", "in", "på", "fra"].contains(&words[at - 1].as_str()) {
         return None;
     }
     let before = &words[..at - 1];
     let start = before.iter().position(|w| !POLITE.contains(&w.as_str()))?;
-    if !OPEN_WORDS.contains(&before[start].as_str()) && !TITLE_START.contains(&before[start].as_str()) {
+    let first = before[start].as_str();
+    if !OPEN_WORDS.contains(&first) && !TITLE_START.contains(&first) && !["next", "neste"].contains(&first) {
         return None;
     }
     let title: Vec<&str> = before[start..]
@@ -174,12 +181,22 @@ fn nrk_title(words: &[String]) -> Option<String> {
         .map(String::as_str)
         .skip_while(|w| OPEN_WORDS.contains(w) || TITLE_START.contains(w) || POLITE.contains(w))
         .collect();
+    // "The next episode of The Office": the show.
+    let title = match title.iter().position(|w| *w == "episode") {
+        Some(at) if title[..=at].iter().all(|w| NEXT_EPISODE.contains(w)) && title.len() > at + 2 => {
+            title[at + 2..].to_vec()
+        }
+        _ => title,
+    };
     (!title.is_empty() && !title.iter().all(|w| APP_FILLER.contains(w))).then(|| title.join(" "))
 }
 
 pub fn parse(words: &[String]) -> Option<TvCommand> {
-    if let Some(title) = nrk_title(words) {
+    if let Some(title) = title_on(words, "nrk") {
         return Some(TvCommand::Nrk(title));
+    }
+    if let Some(title) = title_on(words, "plex") {
+        return Some(TvCommand::Plex(title));
     }
     let has = |w: &str| words.iter().any(|x| x == w);
     let any = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
@@ -283,9 +300,18 @@ pub struct Tv {
     /// The `tv` setting: an entity id.
     entity: Option<String>,
     agent: ureq::Agent,
+    plex: Option<Plex>,
 }
 
-/// A TV's Google Cast media player, which NRK plays through. A TV with Cast built in has one besides
+/// The Plex server innestemme searches: its URL and a token. Home Assistant's Plex integration,
+/// for the same server, is what lets its Cast player play `plex://<key>`.
+#[derive(Clone, Debug)]
+pub struct Plex {
+    pub url: String,
+    pub token: String,
+}
+
+/// A TV's Google Cast media player, which NRK and Plex play through. A TV with Cast built in has one besides
 /// its own; a speaker group or speaker may cast too, so one named TV first.
 const CAST_TEMPLATE: &str = r#"{{ integration_entities('cast') | select('match', 'media_player\.') | list | tojson }}"#;
 
@@ -294,7 +320,12 @@ const NRK_API: &str = "https://psapi.nrk.no";
 
 impl Tv {
     pub fn new(entity: Option<String>) -> Self {
-        Self { entity, agent: crate::geo::agent("innestemme") }
+        Self { entity, agent: crate::geo::agent("innestemme"), plex: None }
+    }
+
+    pub fn with_plex(mut self, plex: Option<Plex>) -> Self {
+        self.plex = plex;
+        self
     }
 
     fn find(&self, ha: &HomeAssistant) -> Result<Option<String>> {
@@ -382,25 +413,37 @@ impl Tv {
                         format!("I can't find {title} on NRK.")
                     });
                 };
-                let cast = self.cast_entity(ha)?.context("no Google Cast media player for the TV")?;
-                if !on {
-                    call("turn_on", json!({}))?;
-                    self.wait_until_on(ha, &entity)?;
-                }
-                info!(cast, title = name, program, "nrk on the tv");
-                ha.service(
-                    "media_player",
-                    "play_media",
-                    json!({
-                        "entity_id": cast,
-                        "media_content_type": "cast",
-                        "media_content_id": json!({ "app_name": "nrktv", "media_id": program }).to_string(),
-                    }),
-                )?;
+                info!(title = name, program, "nrk on the tv");
+                let media = json!({ "app_name": "nrktv", "media_id": program }).to_string();
+                self.cast(ha, &entity, on, "cast", &media)?;
                 if no {
                     format!("Ok, setter på {name}.")
                 } else {
                     format!("Okay, putting on {name}.")
+                }
+            }
+            TvCommand::Plex(title) => {
+                let Some(plex) = &self.plex else {
+                    return Ok(if no {
+                        "Plex er ikke satt opp. Sett plex-url og plex-token i innstillingene."
+                    } else {
+                        "Plex isn't set up. Set plex-url and plex-token in the settings."
+                    }
+                    .into());
+                };
+                let Some(found) = plex_search(&self.agent, plex, title)? else {
+                    return Ok(if no {
+                        format!("Jeg finner ikke {title} på Plex.")
+                    } else {
+                        format!("I can't find {title} on Plex.")
+                    });
+                };
+                info!(title = found.name, key = found.key, kind = found.kind, "plex on the tv");
+                self.cast(ha, &entity, on, found.kind, &format!("plex://{}", found.key))?;
+                if no {
+                    format!("Ok, setter på {}.", found.name)
+                } else {
+                    format!("Okay, putting on {}.", found.name)
                 }
             }
             // The engine shows its own screen; this is only reached without one.
@@ -477,6 +520,20 @@ impl Tv {
         Ok(Some((name, program)))
     }
 
+    /// Plays `media` on the TV's Cast player, starting the TV first when it is off.
+    fn cast(&self, ha: &HomeAssistant, entity: &str, on: bool, kind: &str, media: &str) -> Result<()> {
+        let cast = self.cast_entity(ha)?.context("no Google Cast media player for the TV")?;
+        if !on {
+            ha.service("media_player", "turn_on", json!({ "entity_id": entity }))?;
+            self.wait_until_on(ha, entity)?;
+        }
+        ha.service(
+            "media_player",
+            "play_media",
+            json!({ "entity_id": cast, "media_content_type": kind, "media_content_id": media }),
+        )
+    }
+
     /// The TV's Google Cast media player.
     fn cast_entity(&self, ha: &HomeAssistant) -> Result<Option<String>> {
         let found: Vec<String> =
@@ -521,6 +578,55 @@ impl Tv {
         }
         anyhow::bail!("the TV did not start within {START_TIMEOUT:?}")
     }
+}
+
+/// What Plex will play: the name to say, the item's key, and the media type for Home Assistant.
+struct PlexItem {
+    name: String,
+    key: String,
+    kind: &'static str,
+}
+
+/// The best film or show for `title`. A show plays the episode Plex has on deck for it, else the
+/// first one not watched, else its first.
+fn plex_search(agent: &ureq::Agent, plex: &Plex, title: &str) -> Result<Option<PlexItem>> {
+    let get = |path: &str| -> Result<serde_json::Value> {
+        let url = format!("{}{path}", plex.url.trim_end_matches('/'));
+        let mut response = agent
+            .get(&url)
+            .header("X-Plex-Token", &plex.token)
+            .header("Accept", "application/json")
+            .call()
+            .with_context(|| format!("fetching {}", url.split('?').next().unwrap_or_default()))?;
+        Ok(response.body_mut().read_json()?)
+    };
+    let found = get(&format!("/hubs/search?limit=5&query={}", crate::lookup::encode(title)))?;
+    let hit = found["MediaContainer"]["Hub"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|hub| hub["Metadata"].as_array().into_iter().flatten())
+        .find(|item| ["movie", "show"].contains(&item["type"].as_str().unwrap_or_default()));
+    let Some(hit) = hit else { return Ok(None) };
+    // "The Office (US)" is said as "The Office".
+    let name = hit["title"].as_str().unwrap_or(title);
+    let name = name.split(" (").next().unwrap_or(name).to_owned();
+    let key = hit["ratingKey"].as_str().context("a Plex item without a key")?.to_owned();
+    if hit["type"] == "movie" {
+        return Ok(Some(PlexItem { name, key, kind: "movie" }));
+    }
+    let show = get(&format!("/library/metadata/{key}?includeOnDeck=1"))?;
+    let on_deck = show["MediaContainer"]["Metadata"][0]["OnDeck"]["Metadata"][0]["ratingKey"].as_str();
+    let episode = match on_deck {
+        Some(episode) => episode.to_owned(),
+        None => {
+            let leaves = get(&format!("/library/metadata/{key}/allLeaves"))?;
+            let leaves = leaves["MediaContainer"]["Metadata"].as_array().cloned().unwrap_or_default();
+            let next = leaves.iter().find(|e| e["viewCount"].as_u64().unwrap_or(0) == 0).or(leaves.first());
+            next.and_then(|e| e["ratingKey"].as_str()).context("a Plex show without episodes")?.to_owned()
+        }
+    };
+    Ok(Some(PlexItem { name, key: episode, kind: "episode" }))
 }
 
 /// Opens `url` in the browser of a TV that is on.
@@ -573,6 +679,12 @@ mod tests {
         assert_eq!(tv("put Kompani Lauritzen on NRK on the TV"), Some(Nrk("kompani lauritzen".into())));
         assert_eq!(tv("watch the Weekend News on NRK"), Some(Nrk("the weekend news".into())));
         assert_eq!(tv("sett på Exit på NRK"), Some(Nrk("exit".into())));
+        assert_eq!(tv("Play Forrest Gump on Plex."), Some(Plex("forrest gump".into())));
+        assert_eq!(tv("put on The Office on Plex"), Some(Plex("the office".into())));
+        assert_eq!(tv("put on the next episode of The Office on Plex"), Some(Plex("the office".into())));
+        assert_eq!(tv("sett på neste episode av Skam på Plex"), Some(Plex("skam".into())));
+        assert_eq!(tv("next episode of The Office on Plex"), Some(Plex("the office".into())));
+        assert_eq!(tv("open Plex"), Some(App("plex".into())));
         assert_eq!(tv("put NRK on the TV"), Some(App("nrk".into())));
         assert_eq!(tv("put on NRK"), Some(App("nrk".into())));
         assert_eq!(tv("switch the TV to NRK"), Some(App("nrk".into())));

@@ -32,7 +32,7 @@ focus; Norwegian works with Whisper and Piper.
 | Scenes and scripts | "set the living room to relax", "I want to relax", "run movie time" |
 | Music | "play my liked songs", "play Hello by Adele", "next song", "volume 40 percent" (Music Assistant) |
 | Timers and reminders | "set a pasta timer for 8 minutes", "remind me in 20 minutes to check the oven" |
-| TV and its screen | "turn off the TV", "put Netflix on the TV", "put on Exit on NRK", "show the weather on the TV" |
+| TV and its screen | "turn off the TV", "put Netflix on the TV", "put on Exit on NRK", "next episode of The Office on Plex", "show the weather on the TV" |
 | Routines | "I'm leaving", "I'm home", "good night" |
 | Just for fun | "initiate lockdown" (red lights, Hans Zimmer) and "stand down", "party mode" (every Hue light follows the music; "fast party mode" and "relaxed party mode" for a faster or a calmer, warm show) |
 | House | "is everything okay at home?", "who's home?", "how warm is it in the bedroom?", "is the alarm armed?" |
