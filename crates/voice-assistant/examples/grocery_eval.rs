@@ -24,7 +24,8 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let whisper = std::env::var("LISTENER").is_ok_and(|l| l == "whisper");
     let alone = std::env::var("ALONE").is_ok_and(|a| a == "1");
-    let mut parakeet = Parakeet::load(&ParakeetFiles::fetch(DEFAULT_REPO)?, 4)?;
+    let mut parakeet =
+        Parakeet::load(&ParakeetFiles::fetch(&std::env::var("PARAKEET").unwrap_or_else(|_| DEFAULT_REPO.into()))?, 4)?;
     let norwegian = match whisper {
         true => {
             let size = std::env::var("WHISPER").unwrap_or_else(|_| "small".into());

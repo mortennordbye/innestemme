@@ -41,10 +41,15 @@ english-tts: kokoro
 kokoro-voice: am_onyx
 # Every fixed sentence, rendered once and kept: answers that need no synthesis when asked.
 # speech-cache: target/speech-cache
-# How requests are turned into text: whisper (English and Norwegian), or parakeet (NVIDIA Parakeet TDT
-# 0.6B, 640 MB, English only): about 8x faster than whisper-base on a CPU and more accurate on the
-# Voice PE's recordings (docs/benchmarks.md).
+# How requests are turned into text: whisper (English and Norwegian), or parakeet (NVIDIA Parakeet TDT,
+# English only): much faster than whisper-base on a CPU and more accurate on the Voice PE's recordings
+# (docs/benchmarks.md).
 listener: parakeet
+# parakeet-110m (140 MB, the default) or csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8 (640 MB):
+# the 110M takes about a quarter of the time and understands slightly fewer requests.
+# parakeet-repo: parakeet-110m
+# The name check on a wake word; empty uses parakeet-repo. The 0.6B v2 (the default) hears the name more often.
+# parakeet-wake-repo: csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
 # whisper-size: base (290 MB) or small (970 MB, more accurate).
 whisper-size: base
 # Whisper encodes the request and 3 s of silence (8 s at the least). true: its full 30 s window,

@@ -257,8 +257,10 @@ per second of audio matches the wake word check's timings, so the older figure i
   (108 MB) and `sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8` (104 MB); the Hugging Face repos with
   those names are empty, while the engine fetches from Hugging Face today. v3:
   `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` (670 MB).
-- Not switched. Before it is: the name check on the wake word (`examples/wake_text.rs`) with the 110M, a
-  setting for the model with v2 as the default, and a way to fetch the release tarball.
+- The name in the wake word (`examples/wake_text.rs`, 66 recordings with a wake score of at least 0.5, the
+  engine's own check): the 0.6B v2 heard it in 59, the 110M in 50 ("Hey Jonas", "Hey Jefferson", "Okay
+  Jerusalem"). Since 2026-10-31 the engine transcribes requests with the 110M and keeps the 0.6B v2 for that
+  check (`parakeet-wake-repo`), which runs while the request is still being spoken.
 
 ## End to end in the cluster with Parakeet, 2026-10-17
 

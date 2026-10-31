@@ -78,8 +78,8 @@ enum NorwegianTts {
 enum ListenerKind {
     /// NB-Whisper per utterance: English and Norwegian.
     Whisper,
-    /// NVIDIA Parakeet TDT 0.6B per utterance (int8, sherpa-onnx): English only. About 8x faster
-    /// than whisper-base on a CPU and more accurate on the Voice PE's recordings.
+    /// NVIDIA Parakeet TDT per utterance (int8, sherpa-onnx): English only. Much faster than
+    /// whisper-base on a CPU and more accurate on the Voice PE's recordings.
     Parakeet,
 }
 
@@ -165,9 +165,16 @@ struct Args {
     /// or NbAiLab/nb-whisper-* with Norwegian on).
     #[arg(long, env = "VOICE_WHISPER_REPO")]
     whisper_repo: Option<String>,
-    /// Hugging Face repo of the Parakeet model (sherpa-onnx export: encoder, decoder, joiner, tokens).
+    /// Parakeet model: `parakeet-110m` (fast, from the sherpa-onnx release), a local directory, or a
+    /// Hugging Face repo with the sherpa-onnx export, such as the slower and more accurate
+    /// csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.
     #[arg(long, env = "VOICE_PARAKEET_REPO", default_value = voice_assistant::parakeet::DEFAULT_REPO)]
     parakeet_repo: String,
+    /// Parakeet model for the name check on a wake word, in the same forms; empty uses the listener's
+    /// model. The 110M misses the name in about one wake word in seven that the 0.6B v2 hears, and the
+    /// check runs while the request is still being spoken, so the slower model costs nothing there.
+    #[arg(long, env = "VOICE_PARAKEET_WAKE_REPO", default_value = voice_assistant::parakeet::LARGE_REPO)]
+    parakeet_wake_repo: String,
     /// Run Whisper on the Apple GPU. Needs a build with `--features metal`.
     #[arg(long, env = "VOICE_STT_GPU")]
     stt_gpu: bool,
@@ -452,6 +459,16 @@ fn main() -> Result<()> {
                     Box::new(Parakeet::load(&files, threads)?)
                 }
             };
+            let wake_listener = match args.listener {
+                ListenerKind::Parakeet
+                    if !args.parakeet_wake_repo.is_empty() && args.parakeet_wake_repo != args.parakeet_repo =>
+                {
+                    let files = ParakeetFiles::fetch(&args.parakeet_wake_repo)?;
+                    info!(model = %files.encoder.display(), "loading parakeet for the wake word check");
+                    Some(Box::new(Parakeet::load(&files, threads)?) as Box<dyn Transcribe>)
+                }
+                _ => None,
+            };
             let say =
                 || voice_assistant::tts::Say { english: args.say_voice.clone(), norwegian: args.say_voice_no.clone() };
             let piper = || -> Result<WyomingTts> {
@@ -526,6 +543,7 @@ fn main() -> Result<()> {
                 listener,
                 tts,
                 AssistantConfig {
+                    wake_listener,
                     home: args.home.clone(),
                     address: args.address.clone(),
                     transit_stops: args.transit_stops.clone(),

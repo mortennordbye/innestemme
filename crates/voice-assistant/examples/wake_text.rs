@@ -1,6 +1,7 @@
 //! What Parakeet hears in the wake word of each satellite recording (16 kHz mono, `dump-utterances`
 //! runs), to check that a false wake can be told from a real one by the name in it:
 //! `cargo run --release -p voice-assistant --example wake_text -- hey_jarvis target/utterances/run-*.wav`.
+//! PARAKEET=<model> picks another Parakeet model (default the engine's).
 
 use std::sync::Arc;
 
@@ -14,7 +15,8 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let Some(model) = args.next() else { bail!("usage: wake_text <model> <wav>...") };
     let models = Arc::new(WakeModels::load(&model)?);
-    let mut parakeet = Parakeet::load(&ParakeetFiles::fetch(DEFAULT_REPO)?, 4)?;
+    let mut parakeet =
+        Parakeet::load(&ParakeetFiles::fetch(&std::env::var("PARAKEET").unwrap_or_else(|_| DEFAULT_REPO.into()))?, 4)?;
     let before = std::env::var("BEFORE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500usize) * 16;
     let after = std::env::var("AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(200usize) * 16;
     for path in args {
