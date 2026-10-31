@@ -1700,7 +1700,8 @@ impl Worker {
     /// said most, then the long tail.
     fn fixed_sentences(&self) -> (Vec<String>, Vec<String>) {
         let honorifics: Vec<Option<&str>> = match &self.persona {
-            Some(persona) => persona.honorifics().iter().map(|h| Some(h.as_str())).collect(),
+            // Plain as well: a voice the persona is unsure of hears the lead-in without one.
+            Some(persona) => persona.honorifics().iter().map(|h| Some(h.as_str())).chain([None]).collect(),
             None => vec![None],
         };
         let mut texts: Vec<String> = LEADS
@@ -1799,10 +1800,15 @@ impl Worker {
     fn home_sentences(&mut self) -> Vec<String> {
         let Some(ha) = &mut self.home_assistant else { return Vec::new() };
         let states = ["on", "off", "back on", "back off"];
-        let mut answers: Vec<String> =
-            ["I couldn't find that light.", "Sorry, I couldn't reach Home Assistant.", "Okay, I'm ringing your phone."]
-                .map(String::from)
-                .into();
+        let mut answers: Vec<String> = [
+            "I couldn't find that light.",
+            "I couldn't find that scene.",
+            "Sorry, I couldn't reach Home Assistant.",
+            "Sorry, I couldn't find that place.",
+            "Okay, I'm ringing your phone.",
+        ]
+        .map(String::from)
+        .into();
         if let Ok(lights) = ha.lights() {
             let mut areas: Vec<String> =
                 lights.iter().map(|l| l.area.to_lowercase()).filter(|a| !a.is_empty()).collect();

@@ -967,10 +967,16 @@ pub fn climate_answer(
                 .collect();
             join(&items, lang)
         };
-        if reading != Reading::Humidity {
-            let degrees = if no { "grader" } else { "degrees" };
+        if reading != Reading::Humidity && !no {
+            // A sentence per room: each one is rendered ahead, a list of rooms never is.
+            parts.extend(picked.iter().filter_map(|r| {
+                let t = r.temperature?.round();
+                Some(format!("It's {t} degrees in the {}.", r.area.to_lowercase()))
+            }));
+        } else if reading != Reading::Humidity {
+            let degrees = "grader";
             let text = list(|r| r.temperature, degrees);
-            parts.push(if no { format!("Det er {text}.") } else { format!("It's {text}.") });
+            parts.push(format!("Det er {text}."));
         }
         if reading != Reading::Temperature {
             let percent = if no { "prosent" } else { "percent" };
@@ -1422,7 +1428,7 @@ mod tests {
         );
         assert_eq!(
             answer(Indoors::Everywhere, Reading::Temperature, None),
-            "It's 24 degrees in the living room, 19 in the bedroom and 22 in the bathroom."
+            "It's 24 degrees in the living room. It's 19 degrees in the bedroom. It's 22 degrees in the bathroom."
         );
         assert_eq!(
             answer(Indoors::Here, Reading::Humidity, None),

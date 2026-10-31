@@ -41,6 +41,7 @@ pub const ENGLISH_ANSWERS: &[&str] = &[
     "Okay, repeat is on.",
     "Okay, repeat is off.",
     "Nothing is playing.",
+    "Shuffling your liked songs.",
 ];
 
 pub struct Player {
