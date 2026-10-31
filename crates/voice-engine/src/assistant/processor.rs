@@ -126,6 +126,7 @@ impl AssistantProcessor {
             Some(_) => ShoppingList::default().with_norwegian_names(),
             None => ShoppingList::default(),
         };
+        let timers = config.timers_file.clone().map_or_else(Timers::default, Timers::kept_in);
         let mut worker = Worker {
             events: events.clone(),
             reply: reply_tx,
@@ -166,7 +167,7 @@ impl AssistantProcessor {
             turn: None,
             pending_scene: None,
             pending_confirm: None,
-            timers: Timers::default(),
+            timers,
             persona: None,
             render: None,
             lead_turn: 0,

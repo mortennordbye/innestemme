@@ -1,11 +1,29 @@
-//! Timers and reminders: durations from speech (English and Norwegian, digits or words), the
-//! running timers, and what the assistant says about them.
+//! Timers, reminders and wake-up alarms: durations and times of day from speech (English and
+//! Norwegian, digits or words), the running timers, and what the assistant says about them.
 //!
-//! A reminder is a timer with a message: when it ends, the message is spoken instead of a ring.
+//! A reminder is a timer with a message: when it ends, the message is spoken instead of a ring. A
+//! wake-up alarm is a timer set for a time of day that rings like one; "snooze" sets it again. Kept
+//! in a file, they all survive a restart.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use jiff::{SignedDuration, Timestamp, Zoned};
+use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
+
 use crate::lang::Lang;
+
+/// How long "snooze" puts the alarm off, in seconds.
+pub const SNOOZE: u32 = 9 * 60;
+/// An alarm counts as ringing this long after it went off: the Voice PE rings for 15 minutes at most.
+const RINGS_FOR: Duration = Duration::from_secs(15 * 60);
+/// Ended while the engine was down: a timer this late is still told, an alarm this late still rings.
+/// Later ones are dropped; a reminder is always told.
+const LATE_TIMER: Duration = Duration::from_secs(10 * 60);
+const LATE_ALARM: Duration = Duration::from_secs(30 * 60);
+/// After a restart, late ones wait this long for a satellite to connect and hear them.
+const LATE_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TimerCommand {
@@ -14,11 +32,20 @@ pub enum TimerCommand {
         seconds: Option<u32>,
         name: Option<String>,
     },
-    /// "Remind me in 10 minutes to check the oven"; the message can be missing.
+    /// "Remind me in 10 minutes to check the oven", "remind me at 5 to call mum"; either part can
+    /// be missing.
     Remind {
-        seconds: Option<u32>,
+        when: Option<When>,
         message: Option<String>,
     },
+    /// A wake-up alarm: "wake me up at 7", "set an alarm for 6:30". `None`: ask for the time.
+    Alarm {
+        when: Option<When>,
+    },
+    /// The alarm that just went off, again in `SNOOZE`.
+    Snooze,
+    /// "Turn off the alarm": the one ringing, else the alarm that is set.
+    StopAlarm,
     Cancel(Which),
     Pause(Which),
     Resume(Which),
@@ -26,8 +53,55 @@ pub enum TimerCommand {
         seconds: u32,
         which: Which,
     },
-    /// How much time is left; also "what timers do I have".
+    /// How much time is left; also "what timers do I have", and "when is my alarm".
     Remaining(Which),
+}
+
+/// When a reminder or an alarm goes off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum When {
+    /// In this many seconds.
+    In(u32),
+    At(Clock),
+}
+
+/// A time of day as said: "at 5", "at 5 pm", "at 17:30", "tomorrow at 8", "klokka 7".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Clock {
+    /// 0 to 23 as said: 1 to 12 without `pm` can be either half of the day.
+    pub hour: u8,
+    pub minute: u8,
+    /// `Some(true)` for "pm" or "in the evening", `Some(false)` for "am"; `None` when not said.
+    pub pm: Option<bool>,
+    pub tomorrow: bool,
+}
+
+impl Clock {
+    /// When it next comes after `now`. An hour without am or pm is whichever comes first, within 12
+    /// hours; for an alarm it is the morning, and "tomorrow at 3" is the afternoon.
+    pub fn next(&self, now: &Zoned, alarm: bool) -> Option<Zoned> {
+        let h = self.hour;
+        let hours = match self.pm {
+            _ if h == 0 || h > 12 => vec![h],
+            Some(true) => vec![h % 12 + 12],
+            Some(false) => vec![h % 12],
+            None if alarm => vec![h],
+            None if self.tomorrow => vec![if h <= 6 { h + 12 } else { h }],
+            None => vec![h % 12, h % 12 + 12],
+        };
+        let today = now.date();
+        let tomorrow = today.tomorrow().ok()?;
+        let days = if self.tomorrow { vec![tomorrow] } else { vec![today, tomorrow] };
+        hours
+            .iter()
+            .filter_map(|&hour| {
+                days.iter().find_map(|day| {
+                    let at = day.at(hour as i8, self.minute as i8, 0, 0).to_zoned(now.time_zone().clone()).ok()?;
+                    (at.timestamp() > now.timestamp()).then_some(at)
+                })
+            })
+            .min_by_key(|at| at.timestamp())
+    }
 }
 
 /// Which timers a request is about. Nothing set means "the timer", whichever there is.
@@ -41,17 +115,42 @@ pub struct Which {
     pub all: bool,
     /// "The reminder", "påminnelsen".
     pub reminder: bool,
+    /// "My alarm": wake-up alarms, which timer requests leave alone.
+    pub alarm: bool,
 }
 
 const TIMER_WORDS: &[&str] = &["timer", "timers", "timeren", "timerne", "countdown", "nedtelling", "nedtellingen"];
 const REMINDER_WORDS: &[&str] = &["reminder", "reminders", "påminnelse", "påminnelsen", "påminnelser", "påminnelsene"];
+/// A wake-up alarm. Norwegian "alarmen" is the house's alarm system (`house.rs`).
+const ALARM_WORDS: &[&str] =
+    &["alarm", "alarms", "vekkerklokke", "vekkerklokka", "vekkerklokken", "vekking", "vekkingen", "vekkerklokkene"];
+const SNOOZE_WORDS: &[&str] = &["snooze", "slumre", "slumring"];
+/// The house's alarm system, which `house.rs` arms and reports on.
+const HOUSE_ALARM: &[&str] = &[
+    "arm",
+    "armed",
+    "arming",
+    "disarm",
+    "disarmed",
+    "security",
+    "burglar",
+    "alarmen",
+    "innbruddsalarm",
+    "innbruddsalarmen",
+    "boligalarmen",
+];
+/// Words before a time of day: "at 5", "klokka 7"; an alarm also "for 6:30", "to 7", "på 7".
+const AT_WORDS: &[&str] = &["at", "klokka", "klokken", "kl"];
+const ALARM_AT_WORDS: &[&str] = &["at", "klokka", "klokken", "kl", "for", "to", "til", "på"];
 const CANCEL_WORDS: &[&str] =
     &["cancel", "stop", "delete", "remove", "clear", "off", "avbryt", "stopp", "slett", "fjern"];
 const PAUSE_WORDS: &[&str] = &["pause", "hold", "freeze"];
 const RESUME_WORDS: &[&str] = &["resume", "unpause", "continue", "fortsett", "gjenoppta"];
 const ADD_WORDS: &[&str] = &["add", "extend", "extra", "more", "legg", "forleng", "forlenge"];
-const START_WORDS: &[&str] = &["set", "start", "make", "create", "new", "put", "sett", "lag", "starte", "ny"];
+const START_WORDS: &[&str] = &["set", "start", "make", "create", "new", "put", "sett", "lag", "starte", "ny", "still"];
 const LEFT_WORDS: &[&str] = &["left", "remaining", "remain", "igjen", "gjenstår"];
+const QUESTION_WORDS: &[&str] =
+    &["is", "are", "when", "what", "what's", "whats", "do", "have", "har", "når", "er", "hva", "hvilken", "hvor"];
 /// Words right before "timer" that are not its name.
 const NOT_NAMES: &[&str] = &[
     "a", "an", "the", "my", "this", "that", "one", "another", "new", "any", "all", "every", "of", "for", "on", "set",
@@ -60,13 +159,13 @@ const NOT_NAMES: &[&str] = &[
     "fjern", "ingen", "noen", "hvilke", "which", "what",
 ];
 
-/// Lower-case words with digits kept ("1.5"), hyphens split ("10-minute").
+/// Lower-case words with digits kept ("1.5", "17:30"), hyphens split ("10-minute").
 fn tokens(text: &str) -> Vec<String> {
     text.split(|c: char| c.is_whitespace() || c == '-')
         .map(|w| {
             w.trim_matches(|c: char| !c.is_alphanumeric())
                 .chars()
-                .filter(|c| c.is_alphanumeric() || matches!(c, '.' | ',' | '\''))
+                .filter(|c| c.is_alphanumeric() || matches!(c, '.' | ',' | '\'' | ':'))
                 .flat_map(char::to_lowercase)
                 .collect::<String>()
         })
@@ -88,11 +187,15 @@ pub fn parse(text: &str) -> Option<TimerCommand> {
     let words = tokens(text);
     let has = |w: &str| words.iter().any(|x| x == w);
     let any = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
-    let (seconds, used) = duration_words(&words);
     let remind = words.windows(2).any(|p| matches!((p[0].as_str(), p[1].as_str()), ("remind", "me") | ("minn", "meg")));
     if remind {
-        return Some(TimerCommand::Remind { seconds, message: reminder_text(&words, &used) });
+        let (when, used) = when_words(&words, AT_WORDS);
+        return Some(TimerCommand::Remind { when, message: reminder_text(&words, &used) });
     }
+    if wake_me(&words) || any(ALARM_WORDS) || any(SNOOZE_WORDS) {
+        return alarm(&words);
+    }
+    let (seconds, used) = duration_words(&words);
     let timer = words.iter().any(|w| is_timer_word(w));
     let reminder = any(REMINDER_WORDS);
     if !timer && !reminder {
@@ -105,9 +208,9 @@ pub fn parse(text: &str) -> Option<TimerCommand> {
     let plural = ["timers", "timerne", "reminders", "påminnelsene"].iter().any(|w| has(w));
     let which = Which {
         name: timer_name(&words, &used),
-        seconds: None,
         all: has("all") || has("alle") || has("every") || has("everything"),
         reminder,
+        ..Which::default()
     };
     let with_length = Which { seconds, ..which.clone() };
     let which_all = Which { all: which.all || plural, ..with_length.clone() };
@@ -129,10 +232,242 @@ pub fn parse(text: &str) -> Option<TimerCommand> {
     Some(TimerCommand::Remaining(with_length))
 }
 
+/// "Wake me up", "vekk meg".
+fn wake_me(words: &[String]) -> bool {
+    words
+        .windows(2)
+        .any(|p| matches!((p[0].as_str(), p[1].as_str()), ("wake", "me" | "us") | ("vekk" | "vekke", "meg" | "oss")))
+}
+
+/// The house's alarm system rather than a wake-up alarm: arming it, "the house alarm", and "is the
+/// alarm on?" (but "is my alarm set?" is the wake-up alarm).
+fn house_alarm(words: &[String]) -> bool {
+    let has = |w: &str| words.iter().any(|x| x == w);
+    let text = format!(" {} ", words.join(" "));
+    let status = words.first().is_some_and(|w| w == "is" || w == "er")
+        && !["my", "min", "time", "tomorrow", "morgen", "wake"].iter().any(|w| has(w))
+        && clock_words(words, ALARM_AT_WORDS, false).is_none();
+    words.iter().any(|w| HOUSE_ALARM.contains(&w.as_str()))
+        || ["house alarm", "home alarm", "alarm system", "burglar alarm"]
+            .iter()
+            .any(|p| text.contains(&format!(" {p} ")))
+        || status
+}
+
+/// A wake-up alarm request; `None` when it is the house's alarm system.
+fn alarm(words: &[String]) -> Option<TimerCommand> {
+    let any = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
+    let has = |w: &str| words.iter().any(|x| x == w);
+    if any(SNOOZE_WORDS) {
+        return Some(TimerCommand::Snooze);
+    }
+    let wake = wake_me(words);
+    if !wake && house_alarm(words) {
+        return None;
+    }
+    let which = Which { alarm: true, all: has("all") || has("alle"), ..Which::default() };
+    let first = words.iter().map(String::as_str).find(|w| !["please", "hey", "okay", "ok", "so"].contains(w));
+    if !wake && first.is_some_and(|w| QUESTION_WORDS.contains(&w)) {
+        return Some(TimerCommand::Remaining(which));
+    }
+    if any(&["cancel", "delete", "remove", "clear", "avbryt", "slett", "fjern"]) {
+        return Some(TimerCommand::Cancel(which));
+    }
+    if any(&["stop", "off", "dismiss", "silence", "stopp", "av"]) {
+        return Some(TimerCommand::StopAlarm);
+    }
+    let (when, _) = when_words(words, ALARM_AT_WORDS);
+    if wake || when.is_some() || any(START_WORDS) {
+        return Some(TimerCommand::Alarm { when });
+    }
+    Some(TimerCommand::Remaining(which))
+}
+
 /// The duration a request names, in seconds; `None` when it names none. For answers to "For how
 /// long?".
 pub fn duration(text: &str) -> Option<u32> {
     duration_words(&tokens(text)).0
+}
+
+/// A time of day or a duration, for answers to "When should I remind you?": "at 5", "5 pm",
+/// "half past six", "in an hour".
+pub fn when(text: &str) -> Option<When> {
+    let words = tokens(text);
+    clock_words(&words, AT_WORDS, true)
+        .map(|(clock, _)| When::At(clock))
+        .or_else(|| duration_words(&words).0.map(When::In))
+}
+
+/// A time of day after one of `markers`, else a duration; and which words it used.
+fn when_words(words: &[String], markers: &[&str]) -> (Option<When>, Vec<bool>) {
+    if let Some((clock, used)) = clock_words(words, markers, false) {
+        return (Some(When::At(clock)), used);
+    }
+    let (seconds, used) = duration_words(words);
+    (seconds.map(When::In), used)
+}
+
+/// A time of day: after one of `markers`, or anywhere when `bare`. With "tomorrow" and "in the
+/// evening" wherever they are, and which words it used.
+fn clock_words(words: &[String], markers: &[&str], bare: bool) -> Option<(Clock, Vec<bool>)> {
+    let word = |k: usize| words.get(k).map_or("", String::as_str);
+    let starts = (0..words.len()).filter(|&i| bare || i > 0 && markers.contains(&word(i - 1)));
+    let (start, (hour, minute, end, mut pm)) = starts.into_iter().find_map(|i| time_at(words, i).map(|t| (i, t)))?;
+    let mut used = vec![false; words.len()];
+    used[start..end].fill(true);
+    if start > 0 && markers.contains(&word(start - 1)) {
+        used[start - 1] = true;
+    }
+    let mut tomorrow = false;
+    for i in 0..words.len() {
+        match word(i) {
+            "tomorrow" | "imorgen" => {
+                tomorrow = true;
+                used[i] = true;
+            }
+            "i" if word(i + 1) == "morgen" => {
+                tomorrow = true;
+                used[i..i + 2].fill(true);
+            }
+            _ => {}
+        }
+        let part = match word(i) {
+            "morning" | "morgenen" | "formiddagen" => Some(false),
+            "afternoon" | "evening" | "tonight" | "ettermiddagen" | "ettermiddag" | "kveld" | "kvelden" => Some(true),
+            _ => None,
+        };
+        if let Some(part) = part {
+            pm = pm.or(Some(part));
+            used[i] = true;
+            // "in the evening", "this morning", "om kvelden", "i kveld"
+            let mut k = i;
+            while k > 0 && ["in", "the", "this", "om", "i"].contains(&word(k - 1)) {
+                k -= 1;
+                used[k] = true;
+            }
+        }
+    }
+    let pm = pm.filter(|_| (1..=12).contains(&hour));
+    Some((Clock { hour, minute, pm, tomorrow }, used))
+}
+
+/// A time of day starting at `i`: the hour, minute, the index after it, and am or pm if said.
+fn time_at(words: &[String], i: usize) -> Option<(u8, u8, usize, Option<bool>)> {
+    let word = |k: usize| words.get(k).map_or("", String::as_str);
+    // Norwegian "halv åtte" is half past seven.
+    if word(i) == "halv" {
+        if let Some((h, 0, end, pm)) = hour_at(words, i + 1) {
+            return Some(((h + 23) % 24, 30, end, pm));
+        }
+    }
+    // "half past six", "quarter to eight", "ten past six", "kvart over sju", "ti på åtte"
+    if let Some((minutes, k)) = minutes_said(words, i) {
+        let before = match word(k) {
+            "past" | "after" | "over" => Some(false),
+            "to" | "before" | "på" => Some(true),
+            _ => None,
+        };
+        if let (Some(before), Some((h, 0, end, pm))) = (before, hour_at(words, k + 1)) {
+            return Some(if before { ((h + 23) % 24, 60 - minutes, end, pm) } else { (h, minutes, end, pm) });
+        }
+    }
+    hour_at(words, i)
+}
+
+/// The minutes of "half past", "a quarter to", "ten past": their value and the index after them.
+fn minutes_said(words: &[String], i: usize) -> Option<(u8, usize)> {
+    let word = |k: usize| words.get(k).map_or("", String::as_str);
+    match word(i) {
+        "half" => Some((30, i + 1)),
+        "quarter" | "kvart" => Some((15, i + 1)),
+        "a" if word(i + 1) == "quarter" => Some((15, i + 2)),
+        _ => {
+            let (n, k) = number(words, i).filter(|(n, _)| n.fract() == 0.0 && (1.0..30.0).contains(n))?;
+            let k = k + usize::from(matches!(word(k), "minutes" | "minute" | "minutter" | "min"));
+            Some((n as u8, k))
+        }
+    }
+}
+
+/// An hour, with its minutes if said: "5", "17:30", "6.30", "5pm", "seven thirty", "five o'clock".
+fn hour_at(words: &[String], i: usize) -> Option<(u8, u8, usize, Option<bool>)> {
+    let word = |k: usize| words.get(k).map_or("", String::as_str);
+    let w = words.get(i)?.as_str();
+    let (body, pm) = match meridiem_suffix(w) {
+        Some((body, pm)) => (body, Some(pm)),
+        None => (w, None),
+    };
+    if body.starts_with(|c: char| c.is_ascii_digit()) {
+        let (hour, minute) = match body.split_once([':', '.']) {
+            Some((h, m)) if m.len() == 2 => (h.parse().ok()?, m.parse().ok()?),
+            Some(_) => return None,
+            None => (body.parse().ok()?, 0),
+        };
+        return finish_time(words, hour, minute, i + 1, pm);
+    }
+    // "A minute" is a duration, not one o'clock.
+    if matches!(w, "a" | "an") {
+        return None;
+    }
+    let (n, mut k) = number(words, i).filter(|(n, _)| n.fract() == 0.0)?;
+    let mut minute = 0;
+    // "seven oh five", "seven thirty", "six forty five"
+    if matches!(word(k), "oh" | "o") {
+        if let Some((m, end)) = number(words, k + 1).filter(|(m, _)| m.fract() == 0.0 && (1.0..10.0).contains(m)) {
+            (minute, k) = (m as u8, end);
+        }
+    } else if let Some((m, end)) = (k < words.len())
+        .then(|| number(words, k))
+        .flatten()
+        .filter(|(m, end)| m.fract() == 0.0 && (10.0..60.0).contains(m) && unit(word(*end), "x", 2.0).is_none())
+    {
+        (minute, k) = (m as u8, end);
+    }
+    finish_time(words, n as u8, minute, k, None)
+}
+
+fn finish_time(
+    words: &[String],
+    hour: u8,
+    minute: u8,
+    mut k: usize,
+    mut pm: Option<bool>,
+) -> Option<(u8, u8, usize, Option<bool>)> {
+    let word = |k: usize| words.get(k).map_or("", String::as_str);
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    if matches!(word(k), "o'clock" | "oclock") {
+        k += 1;
+    }
+    if pm.is_none() {
+        if let Some(said) = meridiem(word(k)) {
+            pm = Some(said);
+            k += 1;
+        }
+    }
+    // "For 10 minutes" is a duration.
+    if unit(word(k), "x", 2.0).is_some() {
+        return None;
+    }
+    Some((hour, minute, k, pm))
+}
+
+/// "pm", "p.m": whether it is the afternoon.
+fn meridiem(w: &str) -> Option<bool> {
+    match w {
+        "am" | "a.m" => Some(false),
+        "pm" | "p.m" => Some(true),
+        _ => None,
+    }
+}
+
+/// "5pm", "7:30am": the time and whether it is the afternoon.
+fn meridiem_suffix(w: &str) -> Option<(&str, bool)> {
+    ["a.m", "p.m", "am", "pm"].iter().find_map(|suffix| {
+        let body = w.strip_suffix(suffix)?;
+        body.starts_with(|c: char| c.is_ascii_digit()).then(|| (body, suffix.starts_with('p')))
+    })
 }
 
 /// The duration in the words, and which words it used.
@@ -162,9 +497,26 @@ fn duration_words(words: &[String]) -> (Option<u32>, Vec<bool>) {
         let mut end = j + 1;
         let mut amount = value * unit;
         // "an hour and a half", "en time og en halv"
-        if half_follows(words, end) {
+        let halved = half_follows(words, end);
+        if halved {
             amount += unit / 2.0;
             end += 3;
+        }
+        // "1 hour 30", "an hour and fifteen": minutes without their unit. Digits or a word from
+        // ten up, since Norwegian "to" is two.
+        if unit == 3600.0 && !halved {
+            let at = end + usize::from(words.get(end).is_some_and(|w| w == "and" || w == "og"));
+            let minutes = (at < words.len()).then(|| number(words, at)).flatten().filter(|&(m, k)| {
+                let digits = words[at].starts_with(|c: char| c.is_ascii_digit());
+                m.fract() == 0.0
+                    && (1.0..60.0).contains(&m)
+                    && (digits || m >= 10.0)
+                    && words.get(k).is_none_or(|w| self::unit(w, &words[at], m).is_none())
+            });
+            if let Some((m, k)) = minutes {
+                amount += m * 60.0;
+                end = k;
+            }
         }
         // "a quarter of an hour", "three quarters of an hour"
         if unit == 900.0 {
@@ -201,7 +553,10 @@ fn number(words: &[String], i: usize) -> Option<(f64, usize)> {
         let mut n = n;
         let mut j = i + 1;
         if (20..100).contains(&n) && n % 10 == 0 {
-            if let Some(ones) = words.get(j).and_then(|w| word_number(w)).filter(|o| (1..10).contains(o)) {
+            // English "twenty to eight" is not Norwegian "tjue to".
+            let english = TENS[..8].iter().any(|(tens, _)| *tens == w);
+            let ones = words.get(j).filter(|o| !(english && o.as_str() == "to")).and_then(|o| word_number(o));
+            if let Some(ones) = ones.filter(|o| (1..10).contains(o)) {
                 n += ones;
                 j += 1;
             }
@@ -313,22 +668,32 @@ fn bare_unit(w: &str) -> Option<f64> {
 
 fn timer_name(words: &[String], used: &[bool]) -> Option<String> {
     let is_free = |i: usize| !used[i] && number(words, i).is_none() && !is_timer_word(&words[i]);
+    let stop = |w: &str| matches!(w, "for" | "please" | "på" | "takk" | "now" | "nå" | "and" | "og" | "me" | "meg");
+    let name_from = |i: usize| -> Option<String> {
+        let name: Vec<&str> =
+            (i..words.len()).take_while(|&k| is_free(k) && !stop(&words[k])).map(|k| words[k].as_str()).collect();
+        (!name.is_empty()).then(|| name.join(" "))
+    };
     // "a timer called pasta", "en timer som heter pasta"
     if let Some(i) = words.iter().position(|w| matches!(w.as_str(), "called" | "named" | "heter" | "kalt")) {
-        let name: Vec<&str> = (i + 1..words.len())
-            .take_while(|&k| is_free(k) && !matches!(words[k].as_str(), "for" | "please" | "på" | "takk"))
-            .map(|k| words[k].as_str())
-            .collect();
-        if !name.is_empty() {
-            return Some(name.join(" "));
+        if let Some(name) = name_from(i + 1) {
+            return Some(name);
         }
     }
     let first = words.iter().position(|w| is_timer_word(w))?;
     if let Some(stem) = compound_name(&words[first]) {
         return Some(stem.to_owned());
     }
-    let before = first.checked_sub(1)?;
-    (is_free(before) && !NOT_NAMES.contains(&words[before].as_str())).then(|| words[before].clone())
+    if let Some(before) = first.checked_sub(1) {
+        if is_free(before) && !NOT_NAMES.contains(&words[before].as_str()) {
+            return Some(words[before].clone());
+        }
+    }
+    // "set a timer for 10 minutes for the pasta", "a 2 minute timer for the eggs"
+    (first + 1..words.len()).filter(|&i| matches!(words[i].as_str(), "for" | "til")).find_map(|i| {
+        let start = i + 1 + usize::from(words.get(i + 1).is_some_and(|w| matches!(w.as_str(), "the" | "my" | "our")));
+        (start < words.len()).then(|| name_from(start)).flatten()
+    })
 }
 
 /// The message of "remind me in 10 minutes to check the oven", with the person turned around:
@@ -354,6 +719,10 @@ fn reminder_text(words: &[String], used: &[bool]) -> Option<String> {
     }
     while rest.last().is_some_and(|w| matches!(*w, "please" | "takk" | "from" | "now" | "nå")) {
         rest.pop();
+    }
+    // "Remind me about it at 5": nothing to say but that it is a reminder.
+    if matches!(rest.as_slice(), ["it" | "this" | "that" | "det" | "dette"]) {
+        return None;
     }
     let swapped: Vec<&str> = rest
         .iter()
@@ -393,6 +762,12 @@ pub struct Timer {
     pub state: State,
     /// A reminder without a message still says it is one.
     pub is_reminder: bool,
+    /// A wake-up alarm: it rings, and "snooze" sets it again.
+    pub is_alarm: bool,
+    /// An alarm's time of day, "07:00", for its name.
+    pub at: Option<String>,
+    /// It ended while the engine was down, at this time of day ("14:30"): it is told late.
+    pub late: Option<String>,
 }
 
 impl Timer {
@@ -407,10 +782,18 @@ impl Timer {
         matches!(self.state, State::Running { .. })
     }
 
-    /// "the pasta timer", "the 10 minute timer", "the reminder to call mom"; Norwegian
-    /// "pasta-timeren", "timeren på 10 minutter", "påminnelsen".
+    /// "the pasta timer", "the 10 minute timer", "the reminder to call mom", "the 07:00 alarm";
+    /// Norwegian "pasta-timeren", "timeren på 10 minutter", "påminnelsen", "vekkerklokka på 07:00".
     pub fn label(&self, lang: Lang) -> String {
         let total = self.total.as_secs() as u32;
+        if self.is_alarm {
+            return match (lang, &self.at) {
+                (Lang::English, Some(at)) => format!("the {at} alarm"),
+                (Lang::English, None) => "the alarm".into(),
+                (Lang::Norwegian, Some(at)) => format!("vekkerklokka på {at}"),
+                (Lang::Norwegian, None) => "vekkerklokka".into(),
+            };
+        }
         match (lang, &self.name, &self.reminder, self.is_reminder) {
             (Lang::English, _, Some(message), _) => format!("the reminder to {message}"),
             (Lang::English, _, None, true) => "the reminder".into(),
@@ -426,7 +809,7 @@ impl Timer {
     }
 
     fn matches(&self, which: &Which) -> bool {
-        if which.reminder && !self.is_reminder {
+        if which.alarm != self.is_alarm || which.reminder && !self.is_reminder {
             return false;
         }
         if let Some(seconds) = which.seconds {
@@ -479,22 +862,173 @@ impl Notice {
     }
 }
 
-/// A start that is waiting for its duration ("Set a timer." "For how long?").
-#[derive(Debug, Clone)]
-struct PendingStart {
+/// What a new timer is: also a start that is waiting for its duration or time ("Set a timer."
+/// "For how long?").
+#[derive(Debug, Clone, Default)]
+struct Plan {
     name: Option<String>,
     reminder: Option<String>,
     is_reminder: bool,
+    is_alarm: bool,
+}
+
+/// A timer as kept on disk: wall-clock times, since an `Instant` means nothing after a restart.
+#[derive(Debug, Serialize, Deserialize)]
+struct Kept {
+    id: u32,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    reminder: Option<String>,
+    #[serde(default)]
+    norwegian: bool,
+    total_seconds: u64,
+    /// When a running one ends.
+    #[serde(default)]
+    ends: Option<Timestamp>,
+    /// What a paused one has left.
+    #[serde(default)]
+    left_seconds: Option<u64>,
+    #[serde(default)]
+    is_reminder: bool,
+    #[serde(default)]
+    is_alarm: bool,
+    #[serde(default)]
+    at: Option<String>,
+    #[serde(default)]
+    late: Option<String>,
 }
 
 #[derive(Default)]
 pub struct Timers {
     list: Vec<Timer>,
     next_id: u32,
-    pending: Option<PendingStart>,
+    pending: Option<Plan>,
+    /// The alarm that went off last and when, for "snooze" and "stop the alarm".
+    rang: Option<(Timer, Instant)>,
+    /// The file they are kept in across restarts.
+    store: Option<PathBuf>,
+    /// A fixed clock, for tests: this instant was this local time.
+    clock: Option<(Instant, Zoned)>,
+    /// Ended while the engine was down and dropped: a device may still show them.
+    dropped: Vec<Notice>,
 }
 
 impl Timers {
+    /// Kept in `path`, and read back from it: timers still running go on, those that ended while
+    /// the engine was down are told late (see `due`) or dropped.
+    pub fn kept_in(path: PathBuf) -> Self {
+        Self::restore(path, Instant::now(), None)
+    }
+
+    fn restore(path: PathBuf, now: Instant, clock: Option<(Instant, Zoned)>) -> Self {
+        let mut timers = Self { store: Some(path.clone()), clock, ..Self::default() };
+        let kept: Vec<Kept> = match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|error| {
+                warn!(%error, path = %path.display(), "could not read the kept timers");
+                Vec::new()
+            }),
+            Err(_) => Vec::new(),
+        };
+        let local = timers.local(now);
+        for k in kept {
+            timers.next_id = timers.next_id.max(k.id);
+            let mut timer = Timer {
+                id: k.id,
+                name: k.name,
+                reminder: k.reminder,
+                lang: if k.norwegian { Lang::Norwegian } else { Lang::English },
+                total: Duration::from_secs(k.total_seconds),
+                state: State::Paused { left: Duration::from_secs(k.left_seconds.unwrap_or(0)) },
+                is_reminder: k.is_reminder,
+                is_alarm: k.is_alarm,
+                at: k.at,
+                late: k.late,
+            };
+            if let Some(ends) = k.ends {
+                let left = ends.duration_since(local.timestamp());
+                if left.is_positive() && timer.late.is_none() {
+                    timer.state = State::Running { ends: now + left.unsigned_abs() };
+                } else {
+                    let late = left.unsigned_abs();
+                    let limit = if timer.is_alarm { LATE_ALARM } else { LATE_TIMER };
+                    if !timer.is_reminder && timer.late.is_none() && late > limit {
+                        info!(label = timer.label(Lang::English), late = ?late, "ended while down; dropped");
+                        timers.dropped.push(Notice::of(&timer, NoticeKind::Cancelled, now));
+                        continue;
+                    }
+                    let due = ends.to_zoned(local.time_zone().clone()).strftime("%H:%M").to_string();
+                    timer.late = timer.late.or(Some(due));
+                    timer.state = State::Running { ends: now + LATE_WAIT };
+                }
+            }
+            timers.list.push(timer);
+        }
+        if !timers.list.is_empty() {
+            info!(count = timers.list.len(), path = %path.display(), "timers restored");
+        }
+        timers
+    }
+
+    /// The same timers on a fixed clock: `at` is the local time `local`.
+    pub fn with_clock(mut self, at: Instant, local: Zoned) -> Self {
+        self.clock = Some((at, local));
+        self
+    }
+
+    /// Local time at `at`.
+    fn local(&self, at: Instant) -> Zoned {
+        let (base, wall) = match &self.clock {
+            Some((base, wall)) => (*base, wall.clone()),
+            None => (Instant::now(), Zoned::now()),
+        };
+        let offset = match at.checked_duration_since(base) {
+            Some(ahead) => SignedDuration::try_from(ahead).unwrap_or_default(),
+            None => -SignedDuration::try_from(base - at).unwrap_or_default(),
+        };
+        wall.checked_add(offset).unwrap_or(wall)
+    }
+
+    fn save(&self, now: Instant) {
+        let Some(path) = &self.store else { return };
+        let wall = self.local(now).timestamp();
+        let kept: Vec<Kept> = self
+            .list
+            .iter()
+            .map(|t| Kept {
+                id: t.id,
+                name: t.name.clone(),
+                reminder: t.reminder.clone(),
+                norwegian: t.lang == Lang::Norwegian,
+                total_seconds: t.total.as_secs(),
+                ends: match t.state {
+                    State::Running { ends } => {
+                        let left = SignedDuration::try_from(ends.saturating_duration_since(now)).unwrap_or_default();
+                        Some(wall.checked_add(left).unwrap_or(wall))
+                    }
+                    State::Paused { .. } => None,
+                },
+                left_seconds: match t.state {
+                    State::Running { .. } => None,
+                    State::Paused { left } => Some(left.as_secs()),
+                },
+                is_reminder: t.is_reminder,
+                is_alarm: t.is_alarm,
+                at: t.at.clone(),
+                late: t.late.clone(),
+            })
+            .collect();
+        // Written aside and renamed, so a crash never leaves half a file.
+        let partial = path.with_extension("part");
+        let result = serde_json::to_vec_pretty(&kept)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(&partial, bytes))
+            .and_then(|()| std::fs::rename(&partial, path));
+        if let Err(error) = result {
+            warn!(%error, path = %path.display(), "could not keep the timers");
+        }
+    }
+
     pub fn list(&self) -> &[Timer] {
         &self.list
     }
@@ -510,21 +1044,58 @@ impl Timers {
             .min()
     }
 
-    /// Removes and returns the timers that have ended, with their notices.
-    pub fn due(&mut self, now: Instant) -> Vec<(Timer, Notice)> {
+    /// Removes and returns the timers that have ended, with their notices. One that ended while the
+    /// engine was down is told, not rung: its notice is a cancel, which clears it from a display.
+    /// An alarm rings even then.
+    pub fn due(&mut self, now: Instant) -> Vec<(Timer, Vec<Notice>)> {
         let (done, running): (Vec<Timer>, Vec<Timer>) = std::mem::take(&mut self.list)
             .into_iter()
             .partition(|t| matches!(t.state, State::Running { ends } if ends <= now));
         self.list = running;
-        done.into_iter()
+        if done.is_empty() {
+            return Vec::new();
+        }
+        let done: Vec<(Timer, Vec<Notice>)> = done
+            .into_iter()
             .map(|t| {
-                let notice = Notice::of(&t, NoticeKind::Finished, now);
-                (t, notice)
+                let notices = match (t.late.is_some(), t.is_alarm) {
+                    (true, false) => vec![Notice::of(&t, NoticeKind::Cancelled, now)],
+                    // The device did not hear of it before the restart.
+                    (true, true) => {
+                        vec![Notice::of(&t, NoticeKind::Started, now), Notice::of(&t, NoticeKind::Finished, now)]
+                    }
+                    (false, _) => vec![Notice::of(&t, NoticeKind::Finished, now)],
+                };
+                if t.is_alarm {
+                    self.rang = Some((t.clone(), now));
+                }
+                (t, notices)
             })
-            .collect()
+            .collect();
+        self.save(now);
+        done
     }
 
-    /// True when the last answer asked "For how long?".
+    /// A satellite connected: the timers it should show, and those it may still show from before a
+    /// restart that are gone. Timers that ended while the engine was down are told now.
+    pub fn connected(&mut self, now: Instant) -> Vec<Notice> {
+        let mut notices = std::mem::take(&mut self.dropped);
+        for timer in &mut self.list {
+            if timer.late.is_some() {
+                timer.state = State::Running { ends: now };
+            } else {
+                notices.push(Notice::of(timer, NoticeKind::Started, now));
+            }
+        }
+        notices
+    }
+
+    /// An alarm went off within the time a device rings for.
+    pub fn alarm_ringing(&self, now: Instant) -> bool {
+        self.rang.as_ref().is_some_and(|(_, at)| now.saturating_duration_since(*at) < RINGS_FOR)
+    }
+
+    /// True when the last answer asked "For how long?" or "When?".
     pub fn awaiting_duration(&self) -> bool {
         self.pending.is_some()
     }
@@ -534,81 +1105,173 @@ impl Timers {
         self.pending = None;
     }
 
-    /// The answer to "For how long?": starts the pending timer when `text` names a duration.
+    /// The answer to "For how long?" or "When should I remind you?": starts the pending timer when
+    /// `text` names a duration, or for a reminder or an alarm a time of day.
     pub fn answer_pending(&mut self, text: &str, lang: Lang, now: Instant) -> Option<(String, Vec<Notice>)> {
-        let seconds = duration(text)?;
-        let pending = self.pending.take()?;
-        Some(self.start(seconds, pending.name, pending.reminder, pending.is_reminder, lang, now))
+        let pending = self.pending.as_ref()?;
+        let when = if pending.is_reminder || pending.is_alarm { when(text)? } else { When::In(duration(text)?) };
+        let plan = self.pending.take()?;
+        let started = self.start(plan, when, lang, now);
+        self.save(now);
+        Some(started)
     }
 
     pub fn run(&mut self, command: TimerCommand, lang: Lang, now: Instant) -> (String, Vec<Notice>) {
         self.pending = None;
         let no = lang == Lang::Norwegian;
-        match command {
+        let answer = match command {
             TimerCommand::Start { seconds: None, name } => {
-                self.pending = Some(PendingStart { name, reminder: None, is_reminder: false });
+                self.pending = Some(Plan { name, ..Plan::default() });
                 (if no { "Hvor lenge?" } else { "For how long?" }.into(), vec![])
             }
-            TimerCommand::Start { seconds: Some(seconds), name } => self.start(seconds, name, None, false, lang, now),
-            TimerCommand::Remind { seconds: None, message } => {
-                self.pending = Some(PendingStart { name: None, reminder: message, is_reminder: true });
+            TimerCommand::Start { seconds: Some(seconds), name } => {
+                self.start(Plan { name, ..Plan::default() }, When::In(seconds), lang, now)
+            }
+            TimerCommand::Remind { when: None, message } => {
+                self.pending = Some(Plan { reminder: message, is_reminder: true, ..Plan::default() });
                 (if no { "Når skal jeg minne deg på det?" } else { "When should I remind you?" }.into(), vec![])
             }
-            TimerCommand::Remind { seconds: Some(seconds), message } => {
-                self.start(seconds, None, message, true, lang, now)
+            TimerCommand::Remind { when: Some(when), message } => {
+                self.start(Plan { reminder: message, is_reminder: true, ..Plan::default() }, when, lang, now)
             }
+            TimerCommand::Alarm { when: None } => {
+                self.pending = Some(Plan { is_alarm: true, ..Plan::default() });
+                (if no { "Når skal jeg vekke deg?" } else { "For what time?" }.into(), vec![])
+            }
+            TimerCommand::Alarm { when: Some(when) } => {
+                self.start(Plan { is_alarm: true, ..Plan::default() }, when, lang, now)
+            }
+            TimerCommand::Snooze => self.snooze(lang, now),
+            TimerCommand::StopAlarm => self.stop_alarm(lang, now),
+            TimerCommand::Remaining(which) if which.alarm => (self.alarms(lang, now), vec![]),
             TimerCommand::Remaining(which) => (self.remaining(&which, lang, now), vec![]),
             TimerCommand::Cancel(which) => self.change(&which, lang, now, Change::Cancel),
             TimerCommand::Pause(which) => self.change(&which, lang, now, Change::Pause),
             TimerCommand::Resume(which) => self.change(&which, lang, now, Change::Resume),
             TimerCommand::Add { seconds, which } => self.change(&which, lang, now, Change::Add(seconds)),
-        }
+        };
+        self.save(now);
+        answer
     }
 
-    fn start(
-        &mut self,
-        seconds: u32,
-        name: Option<String>,
-        reminder: Option<String>,
-        is_reminder: bool,
-        lang: Lang,
-        now: Instant,
-    ) -> (String, Vec<Notice>) {
+    fn start(&mut self, plan: Plan, when: When, lang: Lang, now: Instant) -> (String, Vec<Notice>) {
+        let no = lang == Lang::Norwegian;
+        let local = self.local(now);
+        let (seconds, target) = match when {
+            When::In(seconds) => (seconds, None),
+            When::At(clock) => match clock.next(&local, plan.is_alarm) {
+                Some(at) => ((at.timestamp().as_second() - local.timestamp().as_second()).max(1) as u32, Some(at)),
+                None => {
+                    let text =
+                        if no { "Beklager, jeg forstod ikke klokkeslettet." } else { "Sorry, I didn't get that time." };
+                    return (text.into(), vec![]);
+                }
+            },
+        };
         self.next_id += 1;
         let total = Duration::from_secs(seconds as u64);
+        let ends = target.clone().unwrap_or_else(|| self.local(now + total));
         let timer = Timer {
             id: self.next_id,
-            name,
-            reminder,
+            name: plan.name,
+            reminder: plan.reminder,
             lang,
             total,
             state: State::Running { ends: now + total },
-            is_reminder,
+            is_reminder: plan.is_reminder,
+            is_alarm: plan.is_alarm,
+            at: plan.is_alarm.then(|| ends.strftime("%H:%M").to_string()),
+            late: None,
         };
         let length = say_duration(seconds, lang);
-        let text = match (lang, &timer.name, timer.is_reminder) {
-            (Lang::English, _, true) => format!("Okay, I'll remind you in {length}."),
-            (Lang::English, Some(name), false) => {
-                format!("{} timer set for {length}.", capitalize(name))
+        // The fixed words in a sentence of their own, rendered ahead; the time in the next.
+        let text = match (lang, &timer.name, timer.is_reminder, timer.is_alarm, &target) {
+            (Lang::English, .., true, None) => format!("Okay, your alarm is set. It goes off in {length}."),
+            (Lang::English, .., true, Some(_)) => {
+                format!("Okay, your alarm is set. It goes off {}.", say_at(&ends, &local, lang))
             }
-            (Lang::English, None, false) => format!("Timer set for {length}."),
-            (Lang::Norwegian, _, true) => format!("Ok, jeg minner deg på det om {length}."),
-            (Lang::Norwegian, Some(name), false) => {
-                format!("{}-timer satt på {length}.", capitalize(name))
+            (Lang::Norwegian, .., true, None) => format!("Ok, vekkerklokka er stilt. Den ringer om {length}."),
+            (Lang::Norwegian, .., true, Some(_)) => {
+                format!("Ok, vekkerklokka er stilt. Den ringer {}.", say_at(&ends, &local, lang))
             }
-            (Lang::Norwegian, None, false) => format!("Timer satt på {length}."),
+            (Lang::English, _, true, _, None) => format!("Okay, I'll remind you in {length}."),
+            (Lang::English, _, true, _, Some(_)) => {
+                format!("Okay, I'll remind you. That's {}.", say_at(&ends, &local, lang))
+            }
+            (Lang::Norwegian, _, true, _, None) => format!("Ok, jeg minner deg på det om {length}."),
+            (Lang::Norwegian, _, true, _, Some(_)) => {
+                format!("Ok, jeg minner deg på det. Det blir {}.", say_at(&ends, &local, lang))
+            }
+            (Lang::English, Some(name), ..) => format!("{} timer set for {length}.", capitalize(name)),
+            (Lang::English, None, ..) => format!("Timer set for {length}."),
+            (Lang::Norwegian, Some(name), ..) => format!("{}-timer satt på {length}.", capitalize(name)),
+            (Lang::Norwegian, None, ..) => format!("Timer satt på {length}."),
         };
         let notice = Notice::of(&timer, NoticeKind::Started, now);
         self.list.push(timer);
         (text, vec![notice])
     }
 
+    fn snooze(&mut self, lang: Lang, now: Instant) -> (String, Vec<Notice>) {
+        let no = lang == Lang::Norwegian;
+        if !self.alarm_ringing(now) {
+            return (if no { "Ingen vekkerklokke har ringt." } else { "There's no alarm to snooze." }.into(), vec![]);
+        }
+        let Some((alarm, _)) = self.rang.take() else { return (String::new(), vec![]) };
+        let plan = Plan { name: alarm.name, is_alarm: true, ..Plan::default() };
+        let (_, notices) = self.start(plan, When::In(SNOOZE), lang, now);
+        let minutes = SNOOZE / 60;
+        let text = if no {
+            format!("Ok, jeg vekker deg igjen om {minutes} minutter.")
+        } else {
+            format!("Okay, snoozing for {minutes} minutes.")
+        };
+        (text, notices)
+    }
+
+    fn stop_alarm(&mut self, lang: Lang, now: Instant) -> (String, Vec<Notice>) {
+        let no = lang == Lang::Norwegian;
+        if self.alarm_ringing(now) {
+            self.rang = None;
+            return (
+                if no { "Ok, jeg har stoppet vekkerklokka." } else { "Okay, I've stopped the alarm." }.into(),
+                vec![],
+            );
+        }
+        if self.list.iter().any(|t| t.is_alarm) {
+            return self.change(&Which { alarm: true, ..Which::default() }, lang, now, Change::Cancel);
+        }
+        (if no { "Ingen vekkerklokke ringer." } else { "There's no alarm ringing." }.into(), vec![])
+    }
+
+    /// "Your alarm goes off at 07:00."
+    fn alarms(&self, lang: Lang, now: Instant) -> String {
+        let no = lang == Lang::Norwegian;
+        let local = self.local(now);
+        let mut alarms: Vec<&Timer> = self.list.iter().filter(|t| t.is_alarm).collect();
+        alarms.sort_by_key(|t| t.left(now));
+        let times: Vec<String> = alarms.iter().map(|t| say_at(&self.local(now + t.left(now)), &local, lang)).collect();
+        match (times.as_slice(), no) {
+            ([], _) => no_alarm(no),
+            ([one], false) => format!("Your alarm goes off {one}."),
+            ([one], true) => format!("Vekkerklokka ringer {one}."),
+            (_, false) => format!("Your alarms go off {}.", join(&times, no)),
+            (_, true) => format!("Vekkerklokkene ringer {}.", join(&times, no)),
+        }
+    }
+
+    /// The timers of the kind a request is about: alarms, or the others.
+    fn of_kind(&self, which: &Which) -> Vec<usize> {
+        (0..self.list.len()).filter(|&i| self.list[i].is_alarm == which.alarm).collect()
+    }
+
     /// The timers a request means. A name that matches nothing still means the only timer there
     /// is: names get misheard, and the language model invents them ("the pizza").
     fn select(&self, which: &Which) -> Vec<usize> {
         let found: Vec<usize> = (0..self.list.len()).filter(|&i| self.list[i].matches(which)).collect();
-        if found.is_empty() && self.list.len() == 1 && which.seconds.is_none() && !which.reminder {
-            return vec![0];
+        let kind = self.of_kind(which);
+        if found.is_empty() && kind.len() == 1 && which.seconds.is_none() && !which.reminder {
+            return kind;
         }
         found
     }
@@ -617,12 +1280,13 @@ impl Timers {
         let no = lang == Lang::Norwegian;
         let mut found: Vec<&Timer> = self.select(which).into_iter().map(|i| &self.list[i]).collect();
         found.sort_by_key(|t| t.left(now));
+        let only = self.of_kind(which).len() == 1;
         let describe = |t: &Timer, single: bool| {
             let left = say_left(t.left(now), lang);
             let label = t.label(lang);
             match (no, t.is_running(), single) {
                 // The only timer needs no name, and the time left alone is a sentence rendered ahead.
-                (false, true, true) if self.list.len() == 1 => format!("{} left", capitalize(&left)),
+                (false, true, true) if only => format!("{} left", capitalize(&left)),
                 (false, true, true) => format!("{} left on {label}", capitalize(&left)),
                 (false, true, false) => format!("{label} has {left} left"),
                 (false, false, _) => format!("{label} is paused, with {left} left"),
@@ -632,7 +1296,7 @@ impl Timers {
             }
         };
         match found.as_slice() {
-            [] if self.list.is_empty() => none_running(no),
+            [] if self.of_kind(which).is_empty() => none_running(which, no),
             [] => not_found(which, no),
             [one] => capitalize(&format!("{}.", describe(one, true))),
             several => {
@@ -645,17 +1309,18 @@ impl Timers {
     fn change(&mut self, which: &Which, lang: Lang, now: Instant, change: Change) -> (String, Vec<Notice>) {
         let no = lang == Lang::Norwegian;
         let found = self.select(which);
+        let (noun, noun_no) = if which.alarm { ("alarms", "vekkerklokker") } else { ("timers", "timere") };
         let targets = match found.as_slice() {
-            [] if self.list.is_empty() => return (none_running(no), vec![]),
+            [] if self.of_kind(which).is_empty() => return (none_running(which, no), vec![]),
             [] => return (not_found(which, no), vec![]),
             [_] => found,
             several if which.all => several.to_vec(),
             several => {
                 let labels: Vec<String> = several.iter().map(|&i| self.list[i].label(lang)).collect();
                 let text = if no {
-                    format!("Du har {} timere: {}. Hvilken?", several.len(), join(&labels, no))
+                    format!("Du har {} {noun_no}: {}. Hvilken?", several.len(), join(&labels, no))
                 } else {
-                    format!("You have {} timers: {}. Which one?", several.len(), join(&labels, no))
+                    format!("You have {} {noun}: {}. Which one?", several.len(), join(&labels, no))
                 };
                 return (text, vec![]);
             }
@@ -691,15 +1356,14 @@ impl Timers {
             }
         }
         let label = capitalize(&label);
+        let all_no = if which.alarm { format!("Alle {count} vekkerklokkene") } else { format!("Alle {count} timerne") };
         let text = match (no, change) {
-            (false, Change::Cancel) if count > 1 => format!("All {count} timers are cancelled."),
-            (true, Change::Cancel) if count > 1 => format!("Alle {count} timerne er avbrutt."),
-            (false, Change::Pause) if count > 1 => format!("All {count} timers are paused."),
-            (true, Change::Pause) if count > 1 => format!("Alle {count} timerne er satt på pause."),
-            (false, Change::Resume) if count > 1 => {
-                format!("All {count} timers are running again.")
-            }
-            (true, Change::Resume) if count > 1 => format!("Alle {count} timerne går igjen."),
+            (false, Change::Cancel) if count > 1 => format!("All {count} {noun} are cancelled."),
+            (true, Change::Cancel) if count > 1 => format!("{all_no} er avbrutt."),
+            (false, Change::Pause) if count > 1 => format!("All {count} {noun} are paused."),
+            (true, Change::Pause) if count > 1 => format!("{all_no} er satt på pause."),
+            (false, Change::Resume) if count > 1 => format!("All {count} {noun} are running again."),
+            (true, Change::Resume) if count > 1 => format!("{all_no} går igjen."),
             (false, Change::Cancel) => format!("{label} is cancelled."),
             (true, Change::Cancel) => format!("{label} er avbrutt."),
             (false, Change::Pause) => format!("{label} is paused."),
@@ -729,8 +1393,15 @@ fn left_of(notices: &[Notice], lang: Lang) -> String {
     say_left(Duration::from_secs(notices.first().map_or(0, |n| n.seconds_left) as u64), lang)
 }
 
-fn none_running(no: bool) -> String {
+fn none_running(which: &Which, no: bool) -> String {
+    if which.alarm {
+        return no_alarm(no);
+    }
     if no { "Ingen timere er i gang." } else { "There are no timers running." }.into()
+}
+
+fn no_alarm(no: bool) -> String {
+    if no { "Du har ingen vekkerklokke stilt." } else { "You have no alarm set." }.into()
 }
 
 fn not_found(which: &Which, no: bool) -> String {
@@ -742,9 +1413,38 @@ fn not_found(which: &Which, no: bool) -> String {
     }
 }
 
+/// "at 17:30", "tomorrow at 08:00"; Norwegian "klokka 17:30", "i morgen klokka 08:00".
+fn say_at(at: &Zoned, now: &Zoned, lang: Lang) -> String {
+    let time = at.strftime("%H:%M");
+    let tomorrow = at.date() != now.date();
+    match (lang, tomorrow) {
+        (Lang::English, false) => format!("at {time}"),
+        (Lang::English, true) => format!("tomorrow at {time}"),
+        (Lang::Norwegian, false) => format!("klokka {time}"),
+        (Lang::Norwegian, true) => format!("i morgen klokka {time}"),
+    }
+}
+
+/// Fixed answers about alarms and reminders, to render ahead.
+pub const ENGLISH_ANSWERS: &[&str] = &[
+    "Okay, your alarm is set.",
+    "Okay, I'll remind you.",
+    "Okay, I've stopped the alarm.",
+    "There's no alarm ringing.",
+    "There's no alarm to snooze.",
+    "You have no alarm set.",
+    "For what time?",
+    "When should I remind you?",
+    "Time to wake up.",
+];
+
 /// What to say when a timer ends.
 pub fn finished_text(timer: &Timer) -> String {
-    match (timer.lang, &timer.reminder, timer.is_reminder) {
+    let no = timer.lang == Lang::Norwegian;
+    if timer.is_alarm {
+        return if no { "På tide å stå opp." } else { "Time to wake up." }.into();
+    }
+    let on_time = match (timer.lang, &timer.reminder, timer.is_reminder) {
         (Lang::English, Some(message), _) => format!("Reminder: {message}."),
         (Lang::English, None, true) => "This is your reminder.".into(),
         (Lang::English, None, false) => {
@@ -754,6 +1454,20 @@ pub fn finished_text(timer: &Timer) -> String {
         (Lang::Norwegian, None, true) => "Her er påminnelsen din.".into(),
         (Lang::Norwegian, None, false) => {
             format!("{} er ferdig.", capitalize(&timer.label(Lang::Norwegian)))
+        }
+    };
+    match (&timer.late, timer.is_reminder, no) {
+        (None, ..) => on_time,
+        (Some(due), true, false) => format!("{on_time} It was due at {due}."),
+        (Some(due), true, true) => format!("{on_time} Den skulle kommet klokka {due}."),
+        (Some(_), false, false) => {
+            format!(
+                "{} ended while I was restarting.",
+                capitalize(&timer.label(Lang::English).replacen("the ", "your ", 1))
+            )
+        }
+        (Some(_), false, true) => {
+            format!("{} ble ferdig mens jeg startet på nytt.", capitalize(&timer.label(Lang::Norwegian)))
         }
     }
 }
@@ -835,6 +1549,7 @@ fn capitalize(text: &str) -> String {
 mod tests {
     use super::*;
     use TimerCommand::*;
+    use When::{At, In};
 
     fn start(seconds: u32) -> Option<TimerCommand> {
         Some(Start { seconds: Some(seconds), name: None })
@@ -905,13 +1620,14 @@ mod tests {
 
     #[test]
     fn reminders() {
-        let reminder =
-            |seconds: Option<u32>, message: &str| Some(Remind { seconds, message: Some(message.to_owned()) });
+        let reminder = |seconds: Option<u32>, message: &str| {
+            Some(Remind { when: seconds.map(In), message: Some(message.to_owned()) })
+        };
         assert_eq!(parse("Remind me in 10 minutes to check the oven."), reminder(Some(600), "check the oven"));
         assert_eq!(parse("remind me to call my mother in an hour"), reminder(Some(3600), "call your mother"));
         assert_eq!(parse("Minn meg på å ringe mamma om en time."), reminder(Some(3600), "ringe mamma"));
         assert_eq!(parse("remind me to water the plants"), reminder(None, "water the plants"));
-        assert_eq!(parse("remind me in five minutes"), Some(Remind { seconds: Some(300), message: None }));
+        assert_eq!(parse("remind me in five minutes"), Some(Remind { when: Some(In(300)), message: None }));
     }
 
     #[test]
@@ -959,7 +1675,7 @@ mod tests {
         let done = timers.due(t0 + Duration::from_secs(600));
         assert_eq!(done.len(), 1);
         assert_eq!(finished_text(&done[0].0), "Your 10 minute timer is done.");
-        assert_eq!(done[0].1.kind, NoticeKind::Finished);
+        assert_eq!(done[0].1[0].kind, NoticeKind::Finished);
         assert!(timers.list().is_empty() && timers.next_deadline().is_none());
     }
 
@@ -1024,5 +1740,269 @@ mod tests {
         assert!(notices[0].reminder);
         let done = timers.due(t0 + Duration::from_secs(10));
         assert_eq!(finished_text(&done[0].0), "Reminder: check the oven.");
+    }
+
+    fn clock(hour: u8, minute: u8, pm: Option<bool>, tomorrow: bool) -> Option<When> {
+        Some(At(Clock { hour, minute, pm, tomorrow }))
+    }
+
+    /// 31 October 2026 at `hour`:`minute`, an hour ahead of UTC (no time zone database needed).
+    fn local(hour: i8, minute: i8) -> Zoned {
+        jiff::civil::date(2026, 10, 31)
+            .at(hour, minute, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::fixed(jiff::tz::offset(1)))
+            .unwrap()
+    }
+
+    fn timers_at(t0: Instant, hour: i8, minute: i8) -> Timers {
+        Timers::default().with_clock(t0, local(hour, minute))
+    }
+
+    #[test]
+    fn reminders_at_a_time_of_day() {
+        let remind = |when: Option<When>, message: &str| Some(Remind { when, message: Some(message.to_owned()) });
+        assert_eq!(parse("Remind me at 5 to call mum."), remind(clock(5, 0, None, false), "call mum"));
+        assert_eq!(parse("remind me at 5 pm to call mum"), remind(clock(5, 0, Some(true), false), "call mum"));
+        assert_eq!(parse("Remind me at 5 p.m. to call mum."), remind(clock(5, 0, Some(true), false), "call mum"));
+        assert_eq!(parse("remind me at 5pm to call mum"), remind(clock(5, 0, Some(true), false), "call mum"));
+        assert_eq!(
+            parse("remind me at 17:30 to take the bins out"),
+            remind(clock(17, 30, None, false), "take the bins out")
+        );
+        assert_eq!(parse("remind me to call mum at half past six"), remind(clock(6, 30, None, false), "call mum"));
+        assert_eq!(parse("remind me at a quarter to eight to leave"), remind(clock(7, 45, None, false), "leave"));
+        assert_eq!(
+            parse("remind me at seven thirty to feed the cat"),
+            remind(clock(7, 30, None, false), "feed the cat")
+        );
+        assert_eq!(parse("remind me at twenty to eight to leave"), remind(clock(7, 40, None, false), "leave"));
+        assert_eq!(
+            parse("Remind me tomorrow at 8 to call the dentist."),
+            remind(clock(8, 0, None, true), "call the dentist")
+        );
+        assert_eq!(
+            parse("remind me tomorrow morning at 8 to call the dentist"),
+            remind(clock(8, 0, Some(false), true), "call the dentist")
+        );
+        assert_eq!(
+            parse("remind me at 9 in the evening to lock up"),
+            remind(clock(9, 0, Some(true), false), "lock up")
+        );
+        assert_eq!(parse("Minn meg på å ringe mamma klokka 7."), remind(clock(7, 0, None, false), "ringe mamma"));
+        assert_eq!(
+            parse("minn meg på å ringe tannlegen i morgen klokka 8"),
+            remind(clock(8, 0, None, true), "ringe tannlegen")
+        );
+        assert_eq!(
+            parse("minn meg på det klokka halv åtte"),
+            Some(Remind { when: clock(7, 30, None, false), message: None })
+        );
+        // "At" before something else is part of the message.
+        assert_eq!(parse("remind me to look at the oven in 10 minutes"), remind(Some(In(600)), "look at the oven"));
+    }
+
+    #[test]
+    fn times_of_day_come_next() {
+        let at = |hour: i8, said: Option<When>, alarm: bool| {
+            let Some(At(clock)) = said else { panic!("{said:?}") };
+            let now = local(hour, 0);
+            let next = clock.next(&now, alarm).unwrap();
+            (next.date() != now.date(), next.strftime("%H:%M").to_string())
+        };
+        // No am or pm: whichever comes first.
+        assert_eq!(at(14, clock(5, 0, None, false), false), (false, "17:00".into()));
+        assert_eq!(at(18, clock(5, 0, None, false), false), (true, "05:00".into()));
+        assert_eq!(at(18, clock(5, 0, Some(true), false), false), (true, "17:00".into()));
+        assert_eq!(at(9, clock(17, 30, None, false), false), (false, "17:30".into()));
+        assert_eq!(at(23, clock(8, 0, None, true), false), (true, "08:00".into()));
+        assert_eq!(at(10, clock(3, 0, None, true), false), (true, "15:00".into()));
+        assert_eq!(at(10, clock(12, 0, None, false), false), (false, "12:00".into()));
+        // An alarm is in the morning.
+        assert_eq!(at(14, clock(7, 0, None, false), true), (true, "07:00".into()));
+        assert_eq!(at(5, clock(7, 0, None, false), true), (false, "07:00".into()));
+    }
+
+    #[test]
+    fn a_reminder_at_five_and_its_answer() {
+        let t0 = Instant::now();
+        let mut timers = timers_at(t0, 14, 0);
+        let (text, _) = timers.run(parse("remind me at 5 to call mum").unwrap(), Lang::English, t0);
+        assert_eq!(text, "Okay, I'll remind you. That's at 17:00.");
+        assert_eq!(timers.next_deadline(), Some(t0 + Duration::from_secs(3 * 3600)));
+        let done = timers.due(t0 + Duration::from_secs(3 * 3600));
+        assert_eq!(finished_text(&done[0].0), "Reminder: call mum.");
+        // Asked when, answered with a time of day.
+        let mut timers = timers_at(t0, 14, 0);
+        assert_eq!(
+            timers.run(parse("remind me to call mum").unwrap(), Lang::English, t0).0,
+            "When should I remind you?"
+        );
+        assert!(timers.answer_pending("banana", Lang::English, t0).is_none());
+        let (text, _) = timers.answer_pending("At 5.", Lang::English, t0).unwrap();
+        assert_eq!(text, "Okay, I'll remind you. That's at 17:00.");
+        for (answer, said) in [
+            ("5 pm", "at 17:00"),
+            ("half past six", "at 18:30"),
+            ("tomorrow at 8", "tomorrow at 08:00"),
+            ("at 17:30", "at 17:30"),
+        ] {
+            let mut timers = timers_at(t0, 14, 0);
+            timers.run(Remind { when: None, message: None }, Lang::English, t0);
+            let (text, _) = timers.answer_pending(answer, Lang::English, t0).unwrap();
+            assert_eq!(text, format!("Okay, I'll remind you. That's {said}."), "{answer}");
+        }
+        let mut timers = timers_at(t0, 14, 0);
+        timers.run(Remind { when: None, message: None }, Lang::English, t0);
+        assert_eq!(
+            timers.answer_pending("in an hour", Lang::English, t0).unwrap().0,
+            "Okay, I'll remind you in 1 hour."
+        );
+        let mut timers = timers_at(t0, 22, 0);
+        let (text, _) = timers.run(parse("minn meg på å ringe mamma klokka 7").unwrap(), Lang::Norwegian, t0);
+        assert_eq!(text, "Ok, jeg minner deg på det. Det blir i morgen klokka 07:00.");
+    }
+
+    #[test]
+    fn timer_names_after_the_length() {
+        let named = |seconds: u32, name: &str| Some(Start { seconds: Some(seconds), name: Some(name.to_owned()) });
+        assert_eq!(parse("set a timer for 10 minutes for the pasta"), named(600, "pasta"));
+        assert_eq!(parse("Set a 2 minute timer for the eggs."), named(120, "eggs"));
+        assert_eq!(parse("set a timer for the pizza for 12 minutes"), named(720, "pizza"));
+        assert_eq!(parse("set a timer for 1 hour 30"), start(5400));
+        assert_eq!(parse("set a timer for an hour and 15"), start(4500));
+        assert_eq!(parse("set a timer for 2 hours 45 minutes"), start(9900));
+        // Norwegian "to" is two, not minutes.
+        assert_eq!(
+            parse("remind me in 1 hour to call mum"),
+            Some(Remind { when: Some(In(3600)), message: Some("call mum".into()) })
+        );
+        assert_eq!(parse("set a timer for five minutes"), start(300));
+        assert_eq!(parse("stop the timer for now"), Some(Cancel(Which::default())));
+    }
+
+    #[test]
+    fn wake_up_alarms() {
+        let alarm = Which { alarm: true, ..Which::default() };
+        assert_eq!(parse("Wake me up at 7."), Some(Alarm { when: clock(7, 0, None, false) }));
+        assert_eq!(parse("set an alarm for 6:30"), Some(Alarm { when: clock(6, 30, None, false) }));
+        assert_eq!(parse("set an alarm for seven"), Some(Alarm { when: clock(7, 0, None, false) }));
+        assert_eq!(parse("wake me up tomorrow at 6 am"), Some(Alarm { when: clock(6, 0, Some(false), true) }));
+        assert_eq!(parse("wake me up in 20 minutes"), Some(Alarm { when: Some(In(1200)) }));
+        assert_eq!(parse("set an alarm for 10 minutes"), Some(Alarm { when: Some(In(600)) }));
+        assert_eq!(parse("set an alarm"), Some(Alarm { when: None }));
+        assert_eq!(parse("vekk meg klokka 7"), Some(Alarm { when: clock(7, 0, None, false) }));
+        assert_eq!(parse("sett vekkerklokka på halv sju"), Some(Alarm { when: clock(6, 30, None, false) }));
+        assert_eq!(parse("cancel my alarm"), Some(Cancel(alarm.clone())));
+        assert_eq!(parse("avbryt vekkerklokka"), Some(Cancel(alarm.clone())));
+        assert_eq!(parse("Snooze."), Some(Snooze));
+        assert_eq!(parse("snooze the alarm"), Some(Snooze));
+        assert_eq!(parse("turn off the alarm"), Some(StopAlarm));
+        assert_eq!(parse("Stop the alarm."), Some(StopAlarm));
+        assert_eq!(parse("is my alarm set"), Some(Remaining(alarm.clone())));
+        assert_eq!(parse("When is my alarm?"), Some(Remaining(alarm.clone())));
+        assert_eq!(parse("what time is my alarm"), Some(Remaining(alarm)));
+        // The house's alarm system.
+        for text in [
+            "arm the alarm",
+            "is the alarm armed",
+            "disarm the alarm",
+            "is the alarm on",
+            "Is the alarm set?",
+            "is the house alarm on",
+            "slå på alarmen",
+        ] {
+            assert_eq!(parse(text), None, "{text}");
+            assert!(matches!(crate::intent::parse(text), crate::intent::Intent::House(_)), "{text}");
+        }
+        for (text, command) in [
+            ("Stop the alarm.", StopAlarm),
+            ("Snooze.", Snooze),
+            ("Is my alarm set?", Remaining(Which { alarm: true, ..Which::default() })),
+        ] {
+            assert_eq!(crate::intent::parse(text), crate::intent::Intent::Timer(command), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_alarm_rings_snoozes_and_stops() {
+        let t0 = Instant::now();
+        let mut timers = timers_at(t0, 23, 0);
+        let (text, notices) = timers.run(parse("wake me up at 7").unwrap(), Lang::English, t0);
+        assert_eq!(text, "Okay, your alarm is set. It goes off tomorrow at 07:00.");
+        assert_eq!(notices[0].kind, NoticeKind::Started);
+        // Timers leave the alarm alone.
+        assert_eq!(timers.run(Remaining(Which::default()), Lang::English, t0).0, "There are no timers running.");
+        assert_eq!(timers.run(Cancel(Which::default()), Lang::English, t0).0, "There are no timers running.");
+        let (text, _) = timers.run(parse("when is my alarm").unwrap(), Lang::English, t0);
+        assert_eq!(text, "Your alarm goes off tomorrow at 07:00.");
+        assert!(!timers.alarm_ringing(t0));
+        let morning = t0 + Duration::from_secs(8 * 3600);
+        let done = timers.due(morning);
+        assert_eq!(finished_text(&done[0].0), "Time to wake up.");
+        assert_eq!(done[0].1[0].kind, NoticeKind::Finished);
+        assert!(timers.alarm_ringing(morning));
+        let (text, notices) = timers.run(Snooze, Lang::English, morning + Duration::from_secs(30));
+        assert_eq!(text, "Okay, snoozing for 9 minutes.");
+        assert_eq!(notices[0].total_seconds, SNOOZE);
+        let again = morning + Duration::from_secs(30 + SNOOZE as u64);
+        assert_eq!(timers.due(again).len(), 1);
+        assert_eq!(timers.run(StopAlarm, Lang::English, again).0, "Okay, I've stopped the alarm.");
+        assert_eq!(timers.run(Snooze, Lang::English, again).0, "There's no alarm to snooze.");
+        assert_eq!(timers.run(StopAlarm, Lang::English, again).0, "There's no alarm ringing.");
+        // "Turn off the alarm" when none rings cancels the one set.
+        timers.run(parse("set an alarm for 6:30").unwrap(), Lang::English, again);
+        assert_eq!(timers.run(StopAlarm, Lang::English, again).0, "The 06:30 alarm is cancelled.");
+        assert_eq!(timers.run(parse("is my alarm set").unwrap(), Lang::English, again).0, "You have no alarm set.");
+        let (text, _) = timers.run(parse("wake me up in 20 minutes").unwrap(), Lang::English, again);
+        assert_eq!(text, "Okay, your alarm is set. It goes off in 20 minutes.");
+        let (text, _) = timers.run(Alarm { when: None }, Lang::English, again);
+        assert_eq!(text, "For what time?");
+        let (text, _) = timers.answer_pending("half past seven", Lang::English, again).unwrap();
+        assert_eq!(text, "Okay, your alarm is set. It goes off at 07:30.");
+        assert!(ENGLISH_ANSWERS.iter().all(|a| crate::speech_cache::CachedTts::cacheable(a)));
+    }
+
+    #[test]
+    fn timers_survive_a_restart() {
+        let dir = std::env::temp_dir().join(format!("innestemme-timers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("timers.json");
+        let _ = std::fs::remove_file(&path);
+        let t0 = Instant::now();
+        let mut timers = Timers::restore(path.clone(), t0, Some((t0, local(14, 0))));
+        timers.run(parse("set a pasta timer for 8 minutes").unwrap(), Lang::English, t0);
+        timers.run(parse("set a timer for 1 hour").unwrap(), Lang::English, t0);
+        timers.run(parse("remind me in 20 minutes to call mum").unwrap(), Lang::English, t0);
+        timers.run(parse("set a timer for 2 minutes for the eggs").unwrap(), Lang::English, t0);
+        timers.run(parse("wake me up at 14:25").unwrap(), Lang::English, t0);
+        timers.run(Pause(Which { name: Some("eggs".into()), ..Which::default() }), Lang::English, t0);
+        assert_eq!(timers.list().len(), 5);
+        // Down from 14:00 to 14:30, in a new process.
+        let t1 = t0 + Duration::from_secs(5);
+        let mut back = Timers::restore(path.clone(), t1, Some((t1, local(14, 30))));
+        let labels: Vec<String> = back.list().iter().map(|t| t.label(Lang::English)).collect();
+        // The pasta ended 22 minutes ago: dropped.
+        assert_eq!(labels, ["the 1 hour timer", "the reminder to call mum", "the eggs timer", "the 14:25 alarm"]);
+        assert_eq!(back.list()[0].left(t1), Duration::from_secs(30 * 60));
+        assert_eq!(back.list()[2].left(t1), Duration::from_secs(120));
+        // A satellite connects: what it may still show goes, what runs is shown, and the late ones are told.
+        let notices = back.connected(t1);
+        assert_eq!(notices[0], Notice { kind: NoticeKind::Cancelled, ..notices[0].clone() });
+        assert_eq!(notices[0].id, "timer-1");
+        let done = back.due(t1);
+        let told: Vec<String> = done.iter().map(|(t, _)| finished_text(t)).collect();
+        assert_eq!(told, ["Reminder: call mum. It was due at 14:20.", "Time to wake up."]);
+        assert_eq!(done[1].1.iter().map(|n| n.kind).collect::<Vec<_>>(), [NoticeKind::Started, NoticeKind::Finished]);
+        // A timer that ended a minute before is still told; ids go on after the kept ones.
+        let t2 = t1 + Duration::from_secs(1);
+        back.run(parse("set a timer for 1 minute").unwrap(), Lang::English, t2);
+        assert_eq!(back.list().last().unwrap().id, 6);
+        let t3 = t2 + Duration::from_secs(5);
+        let mut again = Timers::restore(path.clone(), t3, Some((t3, local(14, 32))));
+        again.connected(t3);
+        let done = again.due(t3);
+        assert_eq!(finished_text(&done[0].0), "Your 1 minute timer ended while I was restarting.");
+        assert_eq!(done[0].1[0].kind, NoticeKind::Cancelled);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -385,7 +385,12 @@ fn alarm(words: &[String]) -> Option<Switch> {
     let system =
         has_any(words, &["security", "burglar", "alarmen", "innbruddsalarm", "innbruddsalarmen", "boligalarmen"])
             || ["alarm system", "house alarm", "home alarm"].iter().any(|p| contains_words(&words.join(" "), p));
-    if !(arm || system) {
+    // "Is the alarm on?", "is the alarm set?"; "is my alarm set?" is the wake-up alarm (timer.rs).
+    let status = has_any(words, &["alarm"])
+        && asks(words)
+        && has_any(words, &["on", "set", "active", "off"])
+        && !has_any(words, &["my", "wake", "time", "when", "tomorrow"]);
+    if !(arm || system || status) {
         return None;
     }
     if asks(words) {
@@ -1521,6 +1526,10 @@ mod tests {
         assert_eq!(house("disarm the alarm"), Some(Alarm(Off)));
         assert_eq!(house("turn off the alarm"), None);
         assert_eq!(house("set an alarm for seven"), None);
+        assert_eq!(house("is the alarm on"), Some(Alarm(Switch::Status)));
+        assert_eq!(house("Is the alarm set?"), Some(Alarm(Switch::Status)));
+        assert_eq!(house("is the house alarm on"), Some(Alarm(Switch::Status)));
+        assert_eq!(house("is my alarm set"), None);
     }
 
     #[test]

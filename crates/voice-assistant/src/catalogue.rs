@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::house::{HouseCommand, Routine};
 use crate::intent::Intent;
+use crate::timer::{TimerCommand, Which};
 use crate::tv::TvCommand;
 
 #[derive(Debug, Serialize)]
@@ -211,7 +212,7 @@ pub const SKILLS: &[Skill] = &[
         does: "Says whether the alarm is armed, and arms it. It won't disarm it: anyone at the door could ask.",
         source: "The alarm panel in Home Assistant",
         calls: &["alarm_control_panel.alarm_arm_away"],
-        examples: &["Is the alarm armed?", "Arm the alarm"],
+        examples: &["Is the alarm armed?", "Is the alarm on?", "Arm the alarm"],
         norwegian: &["Er alarmen på?"],
     },
     Skill {
@@ -309,16 +310,38 @@ pub const SKILLS: &[Skill] = &[
         name: "Timers and reminders",
         group: "Everyday",
         icon: "timer",
-        does: "Named timers and spoken reminders. A Voice PE counts down on its LED ring.",
+        does: "Named timers and spoken reminders, in a while or at a time of day. A Voice PE counts down on its LED ring. They are kept in timers-file and survive a restart: a reminder that came due meanwhile is still told.",
         source: "Kept by the assistant",
         calls: &[],
         examples: &[
             "Set a timer for 10 minutes",
+            "Set a timer for 10 minutes for the pasta",
             "Remind me in 20 minutes to check the oven",
+            "Remind me at 5 to call mum",
+            "Remind me tomorrow at 8 to call the dentist",
             "How much time is left?",
             "Cancel the timer",
         ],
-        norwegian: &["Sett en timer på ti minutter"],
+        norwegian: &["Sett en timer på ti minutter", "Minn meg på å ringe mamma klokka 7"],
+    },
+    Skill {
+        id: "wake_alarm",
+        name: "Wake-up alarm",
+        group: "Everyday",
+        icon: "clock",
+        does: "Rings at a time of day, or in a while, like a timer: a Voice PE rings until \"stop\". An hour without am or pm is the morning. \"Snooze\" rings again in 9 minutes. Kept across restarts.",
+        source: "Kept by the assistant",
+        calls: &[],
+        examples: &[
+            "Wake me up at 7",
+            "Set an alarm for 6:30",
+            "Wake me up in 20 minutes",
+            "When is my alarm?",
+            "Snooze",
+            "Turn off the alarm",
+            "Cancel my alarm",
+        ],
+        norwegian: &["Vekk meg klokka 7"],
     },
     Skill {
         id: "shopping",
@@ -489,6 +512,13 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
         Intent::Transit(_) => "transit",
         Intent::Power(_) => "power",
         Intent::Music(_) => "music",
+        Intent::Timer(
+            TimerCommand::Alarm { .. }
+            | TimerCommand::Snooze
+            | TimerCommand::StopAlarm
+            | TimerCommand::Cancel(Which { alarm: true, .. })
+            | TimerCommand::Remaining(Which { alarm: true, .. }),
+        ) => "wake_alarm",
         Intent::Timer(_) => "timer",
         Intent::ShoppingList(_) => "shopping",
         Intent::WhosHome(_) => "whos_home",

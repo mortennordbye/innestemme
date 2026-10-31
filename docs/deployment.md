@@ -26,7 +26,7 @@ The manifests are in the homelab repo, `k8s/talos/apps/innestemme/`, deployed by
 | Settings | ConfigMap `innestemme-config`, mounted as `/config/config.yaml` (`VOICE_CONFIG`). Reloader restarts the pod when it or the Secret changes. |
 | Secrets | `innestemme-secret` from Bitwarden Secrets Manager through an ExternalSecret: `HA_TOKEN`, `VOICE_SATELLITE_KEY`, `VOICE_ADDRESS`, `VOICE_HUE_APP_KEY`, `VOICE_HUE_CLIENT_KEY`, `VOICE_PLEX_TOKEN`. |
 | Voice | Kokoro-FastAPI (`ghcr.io/remsky/kokoro-fastapi-cpu`) as a native sidecar on `127.0.0.1:8880`, so the engine starts once it answers; `OMP_NUM_THREADS` matches its CPU limit. |
-| Volume | `models-pvc` on `/models`: the Parakeet model (630 MB) and openWakeWord under `hub/` and `openwakeword/`, the speaker model (30 MB) under `speaker/`, the speech cache (about 560 MB and growing a little), `unhandled.jsonl`. Everything on it downloads or renders again. |
+| Volume | `models-pvc` on `/models`: the Parakeet model (630 MB) and openWakeWord under `hub/` and `openwakeword/`, the speaker model (30 MB) under `speaker/`, the speech cache (about 560 MB and growing a little), `unhandled.jsonl`, and next to it `learned.json` and `timers.json` (running timers, reminders and alarms, so a deploy keeps them). Everything on it downloads or renders again. |
 | Network | A LoadBalancer on port 9090: spoken answers for the Sonos, `/metrics`, the web pages. |
 
 Settings worth knowing in the ConfigMap: `listener: parakeet`, `english-tts: kokoro` with `kokoro-voice:

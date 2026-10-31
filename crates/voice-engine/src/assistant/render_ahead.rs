@@ -61,6 +61,7 @@ impl Worker {
             .chain(&questions)
             .chain(&["Okay, I'll leave it.", "Anything else?", "Okay, that's everything."])
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
+            .chain(timer::ENGLISH_ANSWERS)
             .chain(&[
                 "Okay, party mode is on.",
                 "Party mode is on.",
