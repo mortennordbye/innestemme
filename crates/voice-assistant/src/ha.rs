@@ -41,7 +41,7 @@ const FILLER: &[&str] = &[
     "the", "light", "lights", "lamp", "lamps", "in", "on", "off", "all", "my", "please", "turn", "switch", "and", "of",
     "lys", "lyset", "lysene", "lampe", "lampen", "lampene", "i", "på", "av", "alle", "skru", "slå", "mitt", "min",
     "takk", "them", "it", "those", "these", "they", "that", "back", "again", "too", "now", "dem", "den", "det", "de",
-    "igjen", "tilbake", "nå", "here", "her",
+    "igjen", "tilbake", "nå", "here", "her", "oh", "hey", "so", "well", "ok", "okay",
 ];
 
 /// Every scene or script, same shape as the lights.

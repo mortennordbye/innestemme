@@ -241,6 +241,7 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             Decision::Act(Intent::Power(match text("question").as_deref() {
                 Some("cheapest") => PowerQuery::Cheapest(when),
                 Some("most_expensive") => PowerQuery::Dearest(when),
+                _ if when == When::Tomorrow => PowerQuery::Tomorrow,
                 _ => PowerQuery::Now,
             }))
         }

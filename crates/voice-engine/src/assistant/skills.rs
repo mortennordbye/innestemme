@@ -19,6 +19,15 @@ impl Worker {
     /// "Party mode": the Hue lights follow the music, after a snapshot to put them back from.
     pub(super) fn party(&mut self, command: PartyCommand, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
+        if command == PartyCommand::Status {
+            return match (self.config.party.mode().is_some(), no) {
+                (true, false) => "Party mode is on.",
+                (false, false) => "Party mode is off.",
+                (true, true) => "Festmodus er på.",
+                (false, true) => "Festmodus er av.",
+            }
+            .into();
+        }
         let PartyCommand::On(pace) = command else {
             return match self.party_off() {
                 true if no => "Ok, festen er over.",

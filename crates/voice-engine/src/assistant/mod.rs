@@ -517,7 +517,7 @@ impl Worker {
             None if follow_up && !room_talk(&first.text) => first.text.clone(),
             _ => return,
         };
-        let request = self.learned_meaning(request);
+        let request = self.learned_meaning(self.config.wake.drop_trailing(&request));
         if intent::split_commands(&request).is_some() || !complete_at_once(&intent::parse(&request)) {
             return;
         }
@@ -558,6 +558,7 @@ impl Worker {
             }
         };
         let (request, addressed) = request;
+        let request = self.config.wake.drop_trailing(&request);
         if !addressed && self.echo(&request) {
             info!(text = heard.text, "own answer heard");
             return;
@@ -867,6 +868,7 @@ impl Worker {
                 joke
             }
             Intent::Time => time_of_day(lang),
+            Intent::Date => date_today(&jiff::Zoned::now(), lang),
             Intent::Party(command) => self.party(command, lang),
             Intent::Music(command) => {
                 // New music replaces what was paused for the request, and "play" plays it itself.
@@ -1078,6 +1080,42 @@ fn time_of_day(lang: Lang) -> String {
     }
 }
 
+/// "Today is Saturday the 31st of October.", "I dag er det lørdag 31. oktober."
+fn date_today(now: &jiff::Zoned, lang: Lang) -> String {
+    const MONTHS: [&str; 12] = [
+        "januar",
+        "februar",
+        "mars",
+        "april",
+        "mai",
+        "juni",
+        "juli",
+        "august",
+        "september",
+        "oktober",
+        "november",
+        "desember",
+    ];
+    const DAYS: [&str; 7] = ["mandag", "tirsdag", "onsdag", "torsdag", "fredag", "lørdag", "søndag"];
+    let day = now.day();
+    match lang {
+        Lang::English => {
+            let suffix = match (day % 10, day % 100) {
+                (_, 11..=13) => "th",
+                (1, _) => "st",
+                (2, _) => "nd",
+                (3, _) => "rd",
+                _ => "th",
+            };
+            format!("Today is {} the {day}{suffix} of {}.", now.strftime("%A"), now.strftime("%B"))
+        }
+        Lang::Norwegian => {
+            let weekday = DAYS[now.weekday().to_monday_zero_offset() as usize];
+            format!("I dag er det {weekday} {day}. {}.", MONTHS[now.month() as usize - 1])
+        }
+    }
+}
+
 fn unreachable(error: &anyhow::Error, no: bool) -> String {
     warn!(%error, "home assistant call failed");
     unreachable_text(error, no).into()
@@ -1114,6 +1152,15 @@ pub(crate) fn save_wav(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_the_date() {
+        let at = |date: &str| date.parse::<jiff::civil::Date>().unwrap().to_zoned(jiff::tz::TimeZone::UTC).unwrap();
+        assert_eq!(date_today(&at("2026-10-31"), Lang::English), "Today is Saturday the 31st of October.");
+        assert_eq!(date_today(&at("2026-11-02"), Lang::English), "Today is Monday the 2nd of November.");
+        assert_eq!(date_today(&at("2026-11-12"), Lang::English), "Today is Thursday the 12th of November.");
+        assert_eq!(date_today(&at("2026-10-31"), Lang::Norwegian), "I dag er det lørdag 31. oktober.");
+    }
 
     #[test]
     fn a_refused_call_is_not_an_unreachable_home_assistant() {

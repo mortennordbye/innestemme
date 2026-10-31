@@ -63,6 +63,8 @@ impl Worker {
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
             .chain(&[
                 "Okay, party mode is on.",
+                "Party mode is on.",
+                "Party mode is off.",
                 "Okay, fast party mode is on.",
                 "Okay, relaxed party mode is on.",
                 "Okay, the party's over.",
