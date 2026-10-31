@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::house::{HouseCommand, Routine};
 use crate::intent::Intent;
+use crate::sensors::SensorQuery;
 use crate::timer::{TimerCommand, Which};
 use crate::tv::TvCommand;
 
@@ -223,8 +224,35 @@ pub const SKILLS: &[Skill] = &[
         does: "The temperature or humidity in a room, in here, or in every room with a sensor. Says so when the air is dry or damp.",
         source: "Home Assistant temperature and humidity sensors, by area",
         calls: &["POST /api/template"],
-        examples: &["How warm is it in the bedroom?", "What's the temperature inside?", "Is it dry in here?"],
-        norwegian: &["Hvor varmt er det i stua?"],
+        examples: &[
+            "How warm is it in the bedroom?",
+            "What's the temperature inside?",
+            "Is it dry in here?",
+            "What's the humidity?",
+        ],
+        norwegian: &["Hvor varmt er det i stua?", "Hva er luftfuktigheten?"],
+    },
+    Skill {
+        id: "batteries",
+        name: "Batteries",
+        group: "Home",
+        icon: "battery",
+        does: "Which batteries are low (under 20 percent), or one device's battery by name or kind (\"the leak sensor\"). Phones are left to Find my phone.",
+        source: "Home Assistant battery sensors, one per device",
+        calls: &["POST /api/template"],
+        examples: &["Which batteries are low?", "What's the battery on the leak sensor?"],
+        norwegian: &["Hvilke batterier er lave?"],
+    },
+    Skill {
+        id: "leaks",
+        name: "Leaks",
+        group: "Home",
+        icon: "droplet",
+        does: "Whether a water sensor has found a leak, and which sensors are not reporting. A leak is also announced unasked, by the safety alerts.",
+        source: "Home Assistant moisture sensors",
+        calls: &["POST /api/template"],
+        examples: &["Is there a leak?", "Any leaks?"],
+        norwegian: &["Er det noen lekkasje?"],
     },
     Skill {
         id: "sun",
@@ -367,11 +395,11 @@ pub const SKILLS: &[Skill] = &[
         name: "Who's home",
         group: "Home",
         icon: "home",
-        does: "Says who is home, or whether one person is.",
+        does: "Says who is home, or whether one person is, and where someone is: home, away or the Home Assistant zone they are in, by name even when it is misheard. Asked when someone will be home, it says where they are, since there is no arrival time to read.",
         source: "Home Assistant people",
         calls: &["GET /api/states (person.*)"],
-        examples: &["Who's home?"],
-        norwegian: &["Hvem er hjemme?"],
+        examples: &["Who's home?", "Where is Ingrid?", "Where's Ola?", "Is Ingrid at work?", "When will Ingrid be home?"],
+        norwegian: &["Hvem er hjemme?", "Hvor er Ingrid?", "Er Ola på jobb?", "Når kommer Ingrid hjem?"],
     },
     Skill {
         id: "briefing",
@@ -451,6 +479,23 @@ pub const SKILLS: &[Skill] = &[
         norwegian: &["Hva er 3 ganger 4?"],
     },
     Skill {
+        id: "convert",
+        name: "Unit conversion",
+        group: "Everyday",
+        icon: "scale",
+        does: "Converts lengths, weights, volumes and cooking measures (cups, tablespoons, ounces) and temperatures, worked out at once. No currencies: they need live rates.",
+        source: "Built in",
+        calls: &[],
+        examples: &[
+            "Convert 10 miles to kilometers",
+            "5 miles in kilometers",
+            "How many grams in a pound?",
+            "What's 20 degrees Fahrenheit in Celsius?",
+            "How many tablespoons in a cup?",
+        ],
+        norwegian: &["Hvor mange centimeter er en tomme?", "Hva er 2 kopper i desiliter?"],
+    },
+    Skill {
         id: "distance",
         name: "Distances",
         group: "Information",
@@ -507,6 +552,8 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
             HouseCommand::Camera(_) => "camera",
             HouseCommand::Alarm(_) => "alarm",
             HouseCommand::Climate(..) => "climate",
+            HouseCommand::Sensors(SensorQuery::Battery(_)) => "batteries",
+            HouseCommand::Sensors(SensorQuery::Leaks) => "leaks",
         },
         Intent::Weather { .. } => "weather",
         Intent::Transit(_) => "transit",
@@ -521,7 +568,8 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
         ) => "wake_alarm",
         Intent::Timer(_) => "timer",
         Intent::ShoppingList(_) => "shopping",
-        Intent::WhosHome(_) => "whos_home",
+        Intent::WhosHome(_) | Intent::WhereIs { .. } => "whos_home",
+        Intent::Convert(_) => "convert",
         Intent::Briefing => "briefing",
         Intent::News => "news",
         Intent::Lookup(_) => "lookup",

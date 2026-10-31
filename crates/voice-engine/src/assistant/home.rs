@@ -9,6 +9,7 @@ use voice_assistant::ha::{self, HomeAssistant, Light, Target};
 use voice_assistant::house::{self, HouseCommand, Routine, Switch};
 use voice_assistant::intent::MusicCommand;
 use voice_assistant::lang::Lang;
+use voice_assistant::sensors::{self, SensorQuery};
 
 use super::lights::LightChange;
 use super::screen::SCREEN_MOMENT;
@@ -159,6 +160,10 @@ fn house_answer(
         HouseCommand::Climate(place, reading) => {
             house::climate_answer(&house::climate_readings(ha)?, place, *reading, here, lang)
         }
+        HouseCommand::Sensors(SensorQuery::Battery(name)) => {
+            sensors::battery_answer(&sensors::batteries(ha)?, name.as_deref(), lang)
+        }
+        HouseCommand::Sensors(SensorQuery::Leaks) => sensors::leak_answer(&sensors::water_sensors(ha)?, lang),
     })
 }
 

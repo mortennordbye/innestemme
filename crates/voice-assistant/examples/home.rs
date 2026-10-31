@@ -49,6 +49,18 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Intent::WhosHome(name) => println!("{name:?}: {:?}", ha.people()?),
+        Intent::WhereIs { name, zone, arriving } => {
+            let people = ha.people()?;
+            println!("{}", voice_assistant::people::where_answer(&people, &name, zone.as_deref(), arriving, lang));
+        }
+        Intent::House(HouseCommand::Sensors(voice_assistant::sensors::SensorQuery::Battery(name))) => {
+            let batteries = voice_assistant::sensors::batteries(&ha)?;
+            println!("{batteries:?}");
+            println!("{}", voice_assistant::sensors::battery_answer(&batteries, name.as_deref(), lang));
+        }
+        Intent::House(HouseCommand::Sensors(voice_assistant::sensors::SensorQuery::Leaks)) => {
+            println!("{}", voice_assistant::sensors::leak_answer(&voice_assistant::sensors::water_sensors(&ha)?, lang));
+        }
         Intent::Power(query) => {
             let area = std::env::var("VOICE_PRICE_AREA").unwrap_or_else(|_| "NO1".into());
             let answer = voice_assistant::power::Power::new("innestemme-example", &area).answer(query, lang)?;

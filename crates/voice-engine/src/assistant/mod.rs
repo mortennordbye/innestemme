@@ -932,6 +932,8 @@ impl Worker {
                 },
             },
             Intent::WhosHome(name) => self.whos_home(name.as_deref(), lang),
+            Intent::WhereIs { name, zone, arriving } => self.where_is(&name, zone.as_deref(), arriving, lang),
+            Intent::Convert(conversion) => voice_assistant::units::answer(&conversion, lang),
             Intent::Briefing => self.briefing(lang),
             Intent::Lookup(topic) => match self.lookup.answer(&topic, lang) {
                 Ok(Some(answer)) => {

@@ -72,6 +72,15 @@ pub enum Intent {
     Power(PowerQuery),
     /// "Who's home?" (`None`), "is Ingrid home?" (`Some("ingrid")`).
     WhosHome(Option<String>),
+    /// "Where is Ingrid" (`zone: None`), "is Ingrid at work" (`zone: Some("work")`), "when will
+    /// Ingrid be home" (`arriving`); the name is matched against Home Assistant's people later.
+    WhereIs {
+        name: String,
+        zone: Option<String>,
+        arriving: bool,
+    },
+    /// "Convert 10 miles to kilometres", "how many grams in a pound".
+    Convert(crate::units::Conversion),
     /// "Good morning": the time, the weather at home and the shopping list in a few sentences.
     Briefing,
     /// "What's the news?": the latest headlines.
@@ -291,6 +300,112 @@ fn whos_home(words: &[String]) -> Option<Option<String>> {
         words if words.iter().any(|w| ["it", "the", "det", "den", "there", "anything", "noe"].contains(w)) => None,
         words => Some(Some(words.join(" "))),
     }
+}
+
+/// Words that make a "where is" request about something other than a person.
+const NOT_A_PERSON: &[&str] = &[
+    "the",
+    "a",
+    "an",
+    "my",
+    "your",
+    "our",
+    "it",
+    "this",
+    "that",
+    "there",
+    "here",
+    "you",
+    "i",
+    "me",
+    "we",
+    "he",
+    "she",
+    "they",
+    "everyone",
+    "everybody",
+    "anyone",
+    "anybody",
+    "someone",
+    "somebody",
+    "nearest",
+    "closest",
+    "den",
+    "det",
+    "de",
+    "min",
+    "mi",
+    "mitt",
+    "mine",
+    "din",
+    "du",
+    "jeg",
+    "meg",
+    "vi",
+    "han",
+    "hun",
+    "dere",
+    "alle",
+    "noen",
+    "nærmeste",
+];
+
+/// A name of one or two words that could be a person's.
+fn person_name(words: &[String]) -> Option<String> {
+    let ok = !words.is_empty()
+        && words.len() <= 2
+        && words.iter().all(|w| !NOT_A_PERSON.contains(&w.as_str()) && !w.chars().any(|c| c.is_ascii_digit()));
+    ok.then(|| words.iter().map(|w| w.trim_end_matches("'s")).collect::<Vec<_>>().join(" "))
+}
+
+/// "Where is Ingrid", "where's Ingrid", "is Ingrid at work", "when will Ingrid be home", "hvor er
+/// Ingrid", "er Ingrid på jobb", "når kommer Ingrid hjem".
+fn where_is(words: &[String]) -> Option<Intent> {
+    let w: Vec<&str> = words.iter().map(String::as_str).collect();
+    let found = |name: String, zone: Option<String>, arriving: bool| Intent::WhereIs { name, zone, arriving };
+    match w.as_slice() {
+        ["where's" | "wheres", rest @ ..] | ["where", "is" | "are", rest @ ..] | ["hvor", "er", rest @ ..] => {
+            let rest: Vec<String> =
+                rest.iter().filter(|w| !["now", "right", "nå"].contains(w)).map(|w| (*w).to_owned()).collect();
+            if let [one] = rest.as_slice() {
+                if ["everyone", "everybody", "alle"].contains(&one.as_str()) {
+                    return Some(Intent::WhosHome(None));
+                }
+            }
+            if w[1] == "are" {
+                return None;
+            }
+            return person_name(&rest).map(|name| found(name, None, false));
+        }
+        ["when" | "når", ..] => {
+            let homeward = ["home", "hjem", "hjemme", "back", "tilbake"];
+            if !w.iter().any(|x| homeward.contains(x)) || w.len() > 7 {
+                return None;
+            }
+            let verbs = ["will", "is", "does", "did", "should", "kommer", "er", "blir", "skal"];
+            let start = w.iter().position(|x| verbs.contains(x))? + 1;
+            let ends = ["be", "get", "gets", "come", "coming", "back", "home", "hjem", "hjemme", "komme", "tilbake"];
+            let end = start + w[start..].iter().position(|x| ends.contains(x))?;
+            let name: Vec<String> = w[start..end].iter().map(|w| (*w).to_owned()).collect();
+            return person_name(&name).map(|name| found(name, None, true));
+        }
+        _ => {}
+    }
+    // "Is Ingrid at work", "er Ingrid på jobb": a short question, a zone after the name.
+    if !["is", "er"].contains(w.first()?) || w.len() > 6 {
+        return None;
+    }
+    let at = w.iter().position(|x| ["at", "på"].contains(x))?;
+    let name: Vec<String> = w[1..at].iter().map(|w| (*w).to_owned()).collect();
+    let zone: Vec<&str> = w[at + 1..].iter().copied().filter(|x| !["the", "her", "his", "sin"].contains(x)).collect();
+    let home = ["home", "hjemme", "hjem"];
+    if zone.is_empty()
+        || zone.len() > 2
+        || zone.iter().any(|z| home.contains(z) || z.chars().any(|c| c.is_ascii_digit()))
+    {
+        return None;
+    }
+    person_name(&name).map(|name| found(name, Some(zone.join(" ")), false))
 }
 
 /// "Good morning" on its own, or asking for the briefing.
@@ -1030,6 +1145,10 @@ fn rules(text: &str) -> Intent {
     if let Some((said, _)) = crate::calc::parse(text) {
         return Intent::Calculate(said);
     }
+    // Before the weather: "20 degrees Fahrenheit in Celsius" names no place.
+    if let Some(conversion) = crate::units::parse(text) {
+        return Intent::Convert(conversion);
+    }
     if let Some(routine) = house::routine(&words) {
         return Intent::Routine(routine);
     }
@@ -1091,6 +1210,9 @@ fn rules(text: &str) -> Intent {
     }
     if let Some(name) = whos_home(&words) {
         return Intent::WhosHome(name);
+    }
+    if let Some(intent) = where_is(&words) {
+        return intent;
     }
     if let Some(level) = light_level(&words, text) {
         return Intent::LightLevel { level, target: level_target(text) };
@@ -1643,6 +1765,75 @@ mod tests {
         assert_eq!(parse("er Ingrid hjemme?"), Intent::WhosHome(Some("ingrid".into())));
         assert_eq!(parse("hvem er hjemme"), Intent::WhosHome(None));
         assert!(!matches!(parse("is it cold at home"), Intent::WhosHome(_)));
+    }
+
+    #[test]
+    fn where_someone_is() {
+        let at = |name: &str, zone: Option<&str>, arriving: bool| Intent::WhereIs {
+            name: name.into(),
+            zone: zone.map(str::to_owned),
+            arriving,
+        };
+        // As the transcriber wrote it on the Voice PE; the name is matched by sound later.
+        assert_eq!(parse("where is Jon?"), at("jon", None, false));
+        assert_eq!(parse("where's Kari"), at("kari", None, false));
+        assert_eq!(parse("where is Ingrid right now"), at("ingrid", None, false));
+        assert_eq!(parse("hvor er Ingrid"), at("ingrid", None, false));
+        assert_eq!(parse("is Ingrid at work"), at("ingrid", Some("work"), false));
+        assert_eq!(parse("er Ola på jobb"), at("ola", Some("jobb"), false));
+        assert_eq!(parse("when will Ingrid be home"), at("ingrid", None, true));
+        assert_eq!(parse("when is Ola coming home?"), at("ola", None, true));
+        assert_eq!(parse("når kommer Ingrid hjem"), at("ingrid", None, true));
+        assert_eq!(parse("where is everyone"), Intent::WhosHome(None));
+        assert_eq!(parse("is Ingrid at home"), Intent::WhosHome(Some("ingrid".into())));
+        assert_eq!(parse("where's my phone"), Intent::House(HouseCommand::FindPhone(None)));
+        for other in [
+            "where is the remote",
+            "where are my keys",
+            "is the dinner at 6",
+            "where do you live",
+            "when is the next bus home",
+        ] {
+            assert!(!matches!(parse(other), Intent::WhereIs { .. }), "{other}");
+        }
+    }
+
+    #[test]
+    fn unit_conversions() {
+        for said in [
+            "convert 10 miles to kilometers",
+            "5 miles in kilometers",
+            "how many grams in a pound",
+            "what's 20 degrees fahrenheit in celsius",
+            "hvor mange centimeter er en tomme",
+            "how many tablespoons in a cup",
+            "how many ounces in a litre",
+            "convert 6 feet to metres",
+            "what's 2 litres in cups",
+            "70 kg in pounds",
+            "12 inches in centimetres",
+        ] {
+            assert!(matches!(parse(said), Intent::Convert(_)), "{said} -> {:?}", parse(said));
+        }
+    }
+
+    #[test]
+    fn sensors_humidity_and_the_dark() {
+        use crate::house::{Indoors, Reading, SunEvent};
+        use crate::sensors::SensorQuery;
+        let sensors = |q| Intent::House(HouseCommand::Sensors(q));
+        assert_eq!(parse("which batteries are low"), sensors(SensorQuery::Battery(None)));
+        assert_eq!(parse("what's the battery on the leak sensor"), sensors(SensorQuery::Battery(Some("leak".into()))));
+        assert_eq!(parse("hvilke batterier er lave"), sensors(SensorQuery::Battery(None)));
+        assert_eq!(parse("is there a leak"), sensors(SensorQuery::Leaks));
+        assert_eq!(parse("any leaks?"), sensors(SensorQuery::Leaks));
+        assert_eq!(parse("er det noen lekkasje"), sensors(SensorQuery::Leaks));
+        assert_eq!(
+            parse("what's the humidity"),
+            Intent::House(HouseCommand::Climate(Indoors::Here, Reading::Humidity))
+        );
+        assert_eq!(parse("is it dark outside"), Intent::House(HouseCommand::Sun(SunEvent::IsDark(true))));
+        assert_eq!(parse("when does it get light"), Intent::House(HouseCommand::Sun(SunEvent::Sunrise)));
         assert!(matches!(parse("when is electricity cheapest tonight"), Intent::Power(_)));
         assert_eq!(parse("Good morning!"), Intent::Briefing);
         assert_eq!(parse("god morgen"), Intent::Briefing);

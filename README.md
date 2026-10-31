@@ -35,11 +35,12 @@ focus; Norwegian works with Whisper and Piper.
 | TV and its screen | "turn off the TV", "put Netflix on the TV", "put on Exit on NRK", "next episode of The Office on Plex", "show the weather on the TV" |
 | Routines | "I'm leaving", "I'm home", "good night" |
 | Just for fun | "initiate lockdown" (red lights, Hans Zimmer) and "stand down", "party mode" (every Hue light follows the music; "fast party mode" and "relaxed party mode" for a faster or a calmer, warm show) |
-| House | "is everything okay at home?", "who's home?", "how warm is it in the bedroom?", "is the alarm armed?" |
+| House | "is everything okay at home?", "who's home?", "where is Ingrid?", "how warm is it in the bedroom?", "what's the humidity?", "is the alarm armed?" |
+| Sensors | "which batteries are low?", "what's the battery on the leak sensor?", "is there a leak?" |
 | Phones | "where's my phone?" (rings it, even on silent), "how much battery does my phone have?" |
 | Guest Wi-Fi, camera, alarm | "turn on the guest Wi-Fi", "turn on privacy mode", "arm the alarm" (never disarmed by voice) |
 | Weather, departures, power | "will it rain in Bergen tomorrow?", "when's the next bus?", "when is electricity cheapest?" (Yr, Entur, hvakosterstrommen.no) |
-| Everyday | "good morning" (a briefing), "what's the latest news?", "who is Jonas Gahr Støre?", "15 percent of 80", "how far is Tokyo?", "tell me a joke", "what time is it?" |
+| Everyday | "good morning" (a briefing), "what's the latest news?", "who is Jonas Gahr Støre?", "15 percent of 80", "how many grams in a pound?", "how far is Tokyo?", "tell me a joke", "what time is it?" |
 | Shopping list | "add milk to the shopping list", then "brunost", "rømme og egg", "remove the milk", "that's all" (items one after the other, written in Norwegian with `norwegian-groceries`), "what's on the list?" |
 | Small talk | "do you love me?", "you're useless" (it has comebacks), "will you marry me?", "what's the meaning of life?", "open the pod bay doors"; "shut up" just stops it |
 | Safety alerts | spoken unasked when a smoke, carbon monoxide, gas, water or breaking glass sensor goes off |
