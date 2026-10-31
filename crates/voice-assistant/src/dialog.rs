@@ -98,7 +98,30 @@ impl WakeWord {
         if others > 2 {
             return None;
         }
-        Some(words[at + 1..].join(" ").trim_start_matches([',', '.', '!', '?', ' ']).to_owned())
+        let rest = words[at + 1..].join(" ").trim_start_matches([',', '.', '!', '?', ' ']).to_owned();
+        // "Good morning, Jarvis" and "good night Jarvis" are requests said before the name.
+        let before: Vec<String> = words[..at].iter().map(|w| normalize(w)).collect();
+        let greets = matches!(
+            before.iter().map(String::as_str).collect::<Vec<_>>().as_slice(),
+            ["good", "morning" | "evening" | "afternoon" | "night"] | ["god", "morgen" | "kveld" | "natt"]
+        );
+        if rest.is_empty() && greets {
+            return Some(words[..at].join(" ").trim_end_matches([',', '.', '!', '?']).to_owned());
+        }
+        Some(rest)
+    }
+
+    /// The request without the name said at its end: "what time is it, Jarvis" is "what time is it".
+    pub fn drop_trailing(&self, text: &str) -> String {
+        let words: Vec<&str> = text.split_whitespace().collect();
+        match words.split_last() {
+            Some((last, rest)) if !rest.is_empty() && self.matches(&normalize(last)) => {
+                let tail = last.trim_start_matches(|c: char| c.is_alphanumeric() || c == '\'');
+                let rest = rest.join(" ");
+                format!("{}{tail}", rest.trim_end_matches([',', ' ']))
+            }
+            _ => text.to_owned(),
+        }
     }
 }
 
@@ -205,6 +228,14 @@ mod tests {
         assert_eq!(strip_wake("Hei, Freya. Hvordan er været?").as_deref(), Some("Hvordan er været?"));
         assert_eq!(strip_wake("Hei hei Freja, hvordan er været?").as_deref(), Some("hvordan er været?"));
         assert_eq!(strip_wake("God morgen Freya, hvordan er været?").as_deref(), Some("hvordan er været?"));
+        assert_eq!(strip_wake("Good morning, Freya.").as_deref(), Some("Good morning"));
+        assert_eq!(strip_wake("Good night Freya").as_deref(), Some("Good night"));
+        assert_eq!(strip_wake("Hey Freya.").as_deref(), Some(""));
+        let freya = WakeWord::new("Freya");
+        assert_eq!(freya.drop_trailing("What time is it now, please, Freya?"), "What time is it now, please?");
+        assert_eq!(freya.drop_trailing("Turn off the lights Freya"), "Turn off the lights");
+        assert_eq!(freya.drop_trailing("Freya"), "Freya");
+        assert_eq!(freya.drop_trailing("Tell me a joke"), "Tell me a joke");
         assert_eq!(strip_wake("Heifreya, hvordan er været?").as_deref(), Some("hvordan er været?"));
         assert_eq!(strip_wake("Hi."), None);
     }

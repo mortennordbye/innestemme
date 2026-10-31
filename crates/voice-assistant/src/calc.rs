@@ -12,9 +12,28 @@ enum Op {
     PercentOf,
 }
 
+/// Commas between digits: a thousands separator before exactly three digits ("1,000"), else a
+/// Norwegian decimal comma ("1,5"). Other commas are punctuation.
+fn decimal_commas(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c != ',' {
+            out.push(c);
+            continue;
+        }
+        let before = i > 0 && chars[i - 1].is_ascii_digit();
+        let digits = chars[i + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if before && digits > 0 && digits != 3 {
+            out.push('.');
+        }
+    }
+    out
+}
+
 /// The sum as said ("5 plus 5") and its result, if `text` is a sum.
 pub fn parse(text: &str) -> Option<(String, f64)> {
-    let lower = text.to_lowercase().replace(['?', '!'], " ").replace(',', "");
+    let lower = decimal_commas(&text.to_lowercase().replace(['?', '!'], " "));
     let tokens: Vec<String> = lower
         .split_whitespace()
         .map(|t| t.trim_end_matches('.').to_owned())
@@ -51,6 +70,7 @@ pub fn parse(text: &str) -> Option<(String, f64)> {
 pub fn answer(said: &str, value: f64, lang: Lang) -> String {
     let is = if lang == Lang::Norwegian { "er" } else { "is" };
     let said = said.replace('*', "times").replace('/', "divided by").replace('+', "plus");
+    let said = if lang == Lang::Norwegian { said.replace('.', ",") } else { said };
     format!("{} {is} {}.", capitalize(&said), format_number(value, lang))
 }
 
@@ -121,6 +141,8 @@ mod tests {
         assert_eq!(calc("15 percent of 80"), Some(12.0));
         assert_eq!(calc("100 divided by 4"), Some(25.0));
         assert_eq!(calc("what's 7 minus 10"), Some(-3.0));
+        assert_eq!(calc("hva er 1,5 pluss 2"), Some(3.5));
+        assert_eq!(calc("what's 1,000 plus 1"), Some(1001.0));
         assert_eq!(calc("5+5"), Some(10.0));
         assert_eq!(calc("hva er 3 ganger 4"), Some(12.0));
         assert_eq!(calc("2 plus 3 times 4"), Some(20.0));

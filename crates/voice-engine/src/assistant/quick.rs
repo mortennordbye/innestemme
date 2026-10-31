@@ -123,6 +123,7 @@ fn complete_command(intent: &Intent) -> bool {
             | Intent::Routine(_)
             | Intent::Party(_)
             | Intent::Time
+            | Intent::Date
             | Intent::Thanks
             | Intent::Joke
             // A length is the end of the request: "set a timer for 5 minutes", "stop the timer".

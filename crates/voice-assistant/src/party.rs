@@ -15,6 +15,8 @@ pub enum Pace {
 pub enum PartyCommand {
     On(Pace),
     Off,
+    /// "Is party mode on?"
+    Status,
 }
 
 const PARTY_WORDS: &[&str] = &["party", "party's", "partymode", "festmodus", "fest", "disco"];
@@ -47,6 +49,10 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
         return None;
     }
     let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
+    // "Is party mode on?" asks; it must not start the party.
+    if ["is", "are", "did", "was", "er", "står"].contains(&words[0].as_str()) {
+        return Some(PartyCommand::Status);
+    }
     // "Turn on party mode" holds "on", not "off"; "the party is over" holds "over".
     if has(OFF_WORDS) {
         return Some(PartyCommand::Off);

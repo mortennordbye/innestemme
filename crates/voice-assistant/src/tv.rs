@@ -17,6 +17,7 @@ use crate::names::Names;
 /// Fixed English answers, rendered ahead of time.
 pub const ENGLISH_ANSWERS: &[&str] = &[
     "The TV is off.",
+    "The TV is on.",
     "The TV is already on.",
     "Okay, the TV is on.",
     "The TV is already off.",
@@ -37,6 +38,8 @@ pub const ENGLISH_ANSWERS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TvCommand {
     Power(bool),
+    /// "Is the TV on?", "did I leave the TV on?"
+    Status,
     Louder,
     Quieter,
     /// Volume in percent.
@@ -210,9 +213,12 @@ pub fn parse(words: &[String]) -> Option<TvCommand> {
         return None;
     }
     let first = words.iter().map(String::as_str).find(|w| !POLITE.contains(w)).unwrap_or_default();
-    // "Is the TV on?", "what's on TV tonight" are questions for someone else.
-    if ["is", "are", "what", "what's", "er", "hva"].contains(&first) {
-        return None;
+    // "Is the TV on?", "did I leave the TV on?" ask whether it is on; "what's on TV tonight" is
+    // for someone else.
+    if ["is", "are", "did", "have", "has", "do", "does", "what", "what's", "er", "står", "har", "hva"].contains(&first)
+    {
+        let power = has("on") || has("off") || has("på") || has("av") || has("left");
+        return (tv && power && !["what", "what's", "hva"].contains(&first)).then_some(TvCommand::Status);
     }
     if has("unmute") {
         return Some(TvCommand::Mute(false));
@@ -368,6 +374,8 @@ impl Tv {
         };
         let off_answer = if no { "TV-en er av." } else { "The TV is off." };
         Ok(match command {
+            TvCommand::Status if on => if no { "TV-en er på." } else { "The TV is on." }.into(),
+            TvCommand::Status => off_answer.into(),
             TvCommand::Power(true) if on => if no { "TV-en er allerede på." } else { "The TV is already on." }.into(),
             TvCommand::Power(true) => {
                 call("turn_on", json!({}))?;
@@ -690,7 +698,8 @@ mod tests {
         assert_eq!(tv("switch the TV to NRK"), Some(App("nrk".into())));
         assert_eq!(tv("what's on NRK tonight"), None);
         // Not the TV.
-        assert_eq!(tv("is the TV on"), None);
+        assert_eq!(tv("is the TV on"), Some(Status));
+        assert_eq!(tv("did I leave the TV on"), Some(Status));
         assert_eq!(tv("what's on TV tonight"), None);
         assert_eq!(tv("play Careless Whisper"), None);
         assert_eq!(tv("turn off the kitchen lights"), None);

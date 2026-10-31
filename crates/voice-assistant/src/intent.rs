@@ -26,6 +26,8 @@ pub enum Intent {
     Joke,
     /// "What time is it?", "hva er klokka?"
     Time,
+    /// "What's the date?", "what day is it?", "hvilken dag er det?"
+    Date,
     Music(MusicCommand),
     /// Timers and reminders.
     Timer(TimerCommand),
@@ -178,7 +180,9 @@ fn light_level(words: &[String], text: &str) -> Option<LightLevel> {
         let number: u8 = t.trim_end_matches('%').parse().ok()?;
         let unit = t.ends_with('%')
             || raw.get(i + 1).is_some_and(|n| ["percent", "prosent", "%"].contains(&n.to_lowercase().as_str()));
-        unit.then_some(number.min(100))
+        // "Set the living room lights to 50": a level after "to" counts when the request is about light.
+        let to = i > 0 && ["to", "at", "til", "på"].contains(&raw[i - 1].to_lowercase().as_str());
+        (unit || to).then_some((number.min(100), unit))
     });
     // "It's too bright in here", "det er for mørkt på kjøkkenet".
     let too = words
@@ -189,8 +193,8 @@ fn light_level(words: &[String], text: &str) -> Option<LightLevel> {
     }
     let dim = any(DIM_WORDS);
     let about_brightness = light || dim || has("brightness") || has("lysstyrke") || has("lysstyrken");
-    if let Some(percent) = percent {
-        if about_brightness || ["set", "sett"].contains(&first) {
+    if let Some((percent, unit)) = percent {
+        if about_brightness || (unit && ["set", "sett"].contains(&first)) {
             return Some(LightLevel::Percent(percent));
         }
     }
@@ -629,6 +633,36 @@ fn is_time_question(words: &[String]) -> bool {
     )
 }
 
+/// "What's the date (today)", "what day is it", "what's today's date", "hvilken dag er det", "hva
+/// er datoen i dag".
+fn is_date_question(words: &[String]) -> bool {
+    let filler =
+        ["now", "please", "today", "today's", "todays", "again", "hey", "so", "oh", "well", "idag", "nå", "da"];
+    let mut phrase: Vec<&str> = words.iter().map(String::as_str).filter(|w| !filler.contains(w)).collect();
+    if phrase.ends_with(&["i", "dag"]) {
+        phrase.truncate(phrase.len() - 2);
+    }
+    matches!(
+        phrase.as_slice(),
+        ["what's" | "whats", "the", "date"]
+            | ["what's" | "whats", "date"]
+            | ["what", "is", "the", "date"]
+            | ["what", "date", "is", "it"]
+            | ["what", "day", "is", "it"]
+            | ["which", "day", "is", "it"]
+            | ["what's" | "whats", "the", "day"]
+            | ["what", "day", "of", "the", "week", "is", "it"]
+            | ["what", "month", "is", "it"]
+            | ["the", "date"]
+            | ["date"]
+            | ["tell", "me", "the", "date"]
+            | ["hva", "er", "datoen"]
+            | ["hvilken", "dag" | "dato", "er", "det"]
+            | ["hva", "er", "det", "for", "dag"]
+            | ["hvilken", "måned", "er", "det"]
+    )
+}
+
 const WEATHER_WORDS: &[&str] = &[
     // English
     "weather",
@@ -687,7 +721,11 @@ const JOKE_STEMS: &[&str] = &["joke", "joik", "vits", "morsom", "funny"];
 /// "Which lights are on", "is anything left on", "står det noe lys på", "er lyset på i stua".
 fn is_lights_question(words: &[String]) -> bool {
     let has = |w: &str| words.iter().any(|x| x == w);
-    let question = ["which", "what", "are", "is", "any", "hvilke", "hvilket", "er", "står", "hva"];
+    // "Did I leave the lights on" is a question too, not "turn the lights on".
+    let question = [
+        "which", "what", "are", "is", "any", "did", "have", "has", "do", "does", "hvilke", "hvilket", "er", "står",
+        "hva", "har", "glemte", "lot",
+    ];
     let asks = words.first().is_some_and(|w| question.contains(&w.as_str()));
     let about = words.iter().any(|w| LIGHT_WORDS.contains(&w.as_str()))
         || ["anything", "everything", "something", "noe", "alt"].iter().any(|w| has(w));
@@ -843,6 +881,9 @@ fn rules(text: &str) -> Intent {
     if is_time_question(&words) {
         return Intent::Time;
     }
+    if is_date_question(&words) {
+        return Intent::Date;
+    }
     if words.iter().any(|w| JOKE_STEMS.iter().any(|s| w.starts_with(s))) {
         return Intent::Joke;
     }
@@ -982,6 +1023,58 @@ mod tests {
 
     fn weather(place: Option<&str>, day: Day) -> Intent {
         Intent::Weather { place: place.map(str::to_owned), day }
+    }
+
+    /// Questions must not act: "did I leave the lights on" once switched them on.
+    #[test]
+    fn questions_do_not_act() {
+        let status = |t: &str| Intent::LightsStatus { target: t.to_owned() };
+        assert_eq!(parse("Did I leave the lights on"), status("Did I leave the lights on"));
+        assert_eq!(parse("Did I leave any lights on?"), status("Did I leave any lights on?"));
+        assert_eq!(parse("Have I left a light on"), status("Have I left a light on"));
+        assert_eq!(parse("Did I leave the TV on?"), Intent::Tv(TvCommand::Status));
+        assert_eq!(parse("Is the TV on?"), Intent::Tv(TvCommand::Status));
+        assert_eq!(parse("Er TV-en på?"), Intent::Tv(TvCommand::Status));
+        assert_eq!(parse("Is party mode on?"), Intent::Party(crate::party::PartyCommand::Status));
+        assert_eq!(
+            parse("Turn on party mode"),
+            Intent::Party(crate::party::PartyCommand::On(crate::party::Pace::Normal))
+        );
+        assert_eq!(parse("Turn on the TV"), Intent::Tv(TvCommand::Power(true)));
+    }
+
+    #[test]
+    fn levels_without_a_percent_sign() {
+        let level = |p: u8, t: &str| Intent::LightLevel { level: LightLevel::Percent(p), target: t.to_owned() };
+        assert_eq!(parse("Set the living room lights to 50"), level(50, "the living room lights"));
+        assert_eq!(parse("Set the brightness to 30"), level(30, "the"));
+        assert_eq!(parse("Set the volume to 30"), Intent::Music(MusicCommand::VolumeTo(30)));
+        assert_eq!(
+            parse("Set a timer for 10 minutes"),
+            Intent::Timer(TimerCommand::Start { seconds: Some(600), name: None })
+        );
+    }
+
+    #[test]
+    fn dates() {
+        for phrase in [
+            "What's the date?",
+            "What's the date today?",
+            "What's today's date?",
+            "What day is it?",
+            "What day is it today?",
+            "What day of the week is it?",
+            "Hvilken dag er det i dag?",
+            "Hva er datoen i dag?",
+        ] {
+            assert_eq!(parse(phrase), Intent::Date, "{phrase}");
+        }
+        assert_eq!(parse("What time is it?"), Intent::Time);
+    }
+
+    #[test]
+    fn a_room_on_its_own_after_oh() {
+        assert!(matches!(parse("Oh, turn on the kitchen."), Intent::Lights { on: true, .. }));
     }
 
     /// Requests the living room Voice PE heard wrong, from the engine's logs (12-17 October 2026).

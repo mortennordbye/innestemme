@@ -27,6 +27,7 @@ impl Worker {
             intent,
             Intent::Weather { .. }
                 | Intent::Time
+                | Intent::Date
                 | Intent::Joke
                 | Intent::Transit(_)
                 | Intent::Power(_)
@@ -151,6 +152,7 @@ impl Worker {
                         let (colour, _) = house::lockdown_lights(ha).map_err(failed)?;
                         plan.set(lamps, &colour, |_| plan::Effect::new("party", "follows the music"));
                     }
+                    PartyCommand::Status => {}
                     PartyCommand::Off => {
                         let ids = house::snapshot_lights(ha, house::PARTY_SCENE).map_err(failed)?;
                         let ids = ids.ok_or("There's no party on.")?;

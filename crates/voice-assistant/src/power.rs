@@ -30,6 +30,8 @@ pub enum When {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerQuery {
     Now,
+    /// "What's the electricity price tomorrow": tomorrow's range.
+    Tomorrow,
     Cheapest(When),
     Dearest(When),
 }
@@ -69,10 +71,13 @@ pub fn parse(text: &str) -> Option<PowerQuery> {
     if words.iter().any(|w| CHEAP_WORDS.contains(&w.as_str())) || pair("best", "time") {
         return Some(PowerQuery::Cheapest(when));
     }
-    if words.iter().any(|w| DEAR_WORDS.contains(&w.as_str())) {
+    // "How expensive is power", "er strømmen dyr" ask the price; "when is it most expensive" the dearest.
+    let plain_dear = ["expensive", "dyr"];
+    let superlative = has("most") || has("when") || has("når") || has("hour") || has("time");
+    if words.iter().any(|w| DEAR_WORDS.contains(&w.as_str()) && (!plain_dear.contains(&w.as_str()) || superlative)) {
         return Some(PowerQuery::Dearest(when));
     }
-    Some(PowerQuery::Now)
+    Some(if when == When::Tomorrow { PowerQuery::Tomorrow } else { PowerQuery::Now })
 }
 
 /// The price area for a place in Norway, roughly by its coordinates: NO4 north of Saltfjellet,
@@ -148,6 +153,35 @@ impl Power {
                         price_of(current),
                         format_price(low, lang),
                         format_price(high, lang)
+                    )
+                })
+            }
+            PowerQuery::Tomorrow => {
+                let Some(day) = self.day(today.checked_add(1.day())?)? else {
+                    return Ok(if no {
+                        "Morgendagens strømpriser kommer rundt klokka ett.".into()
+                    } else {
+                        "Tomorrow's prices come out around one in the afternoon.".into()
+                    });
+                };
+                let low = day.iter().map(price).fold(f64::MAX, f64::min);
+                let high = day.iter().map(price).fold(f64::MIN, f64::max);
+                let mean = day.iter().map(price).sum::<f64>() / day.len().max(1) as f64;
+                Ok(if no {
+                    format!(
+                        "I morgen koster strømmen fra {} til {} {}. Snittet er {}.",
+                        format_price(low, lang),
+                        format_price(high, lang),
+                        per_kwh(lang),
+                        format_price(mean, lang)
+                    )
+                } else {
+                    format!(
+                        "Tomorrow, power costs from {} to {} {}. On average {}.",
+                        format_price(low, lang),
+                        format_price(high, lang),
+                        per_kwh(lang),
+                        format_price(mean, lang)
                     )
                 })
             }
@@ -227,7 +261,9 @@ impl Power {
         let kept = |date: Date| self.days.iter().any(|(d, ..)| *d == date);
         let tomorrow = matches!(
             query,
-            PowerQuery::Cheapest(When::Tonight | When::Tomorrow) | PowerQuery::Dearest(When::Tonight | When::Tomorrow)
+            PowerQuery::Tomorrow
+                | PowerQuery::Cheapest(When::Tonight | When::Tomorrow)
+                | PowerQuery::Dearest(When::Tonight | When::Tomorrow)
         );
         kept(today) && (!tomorrow || today.tomorrow().is_ok_and(kept))
     }
@@ -330,6 +366,11 @@ mod tests {
         assert_eq!(parse("when is power cheapest today"), Some(PowerQuery::Cheapest(When::Today)));
         assert_eq!(parse("når er strømmen dyrest i dag"), Some(PowerQuery::Dearest(When::Today)));
         assert_eq!(parse("turn off the power to the tv"), None);
+        assert_eq!(parse("what's the electricity price tomorrow"), Some(PowerQuery::Tomorrow));
+        assert_eq!(parse("hva koster strømmen i morgen"), Some(PowerQuery::Tomorrow));
+        assert_eq!(parse("how expensive is power"), Some(PowerQuery::Now));
+        assert_eq!(parse("is electricity expensive now"), Some(PowerQuery::Now));
+        assert_eq!(parse("when is electricity most expensive"), Some(PowerQuery::Dearest(When::Today)));
         assert_eq!(parse("what's the weather"), None);
     }
 
