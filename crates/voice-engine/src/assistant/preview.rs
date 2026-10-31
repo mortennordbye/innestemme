@@ -34,6 +34,8 @@ impl Worker {
                 | Intent::Power(_)
                 | Intent::LightsStatus { .. }
                 | Intent::WhosHome(_)
+                | Intent::WhereIs { .. }
+                | Intent::Convert(_)
                 | Intent::Briefing
                 | Intent::News
                 | Intent::Lookup(_)
@@ -51,6 +53,7 @@ impl Worker {
                         | HouseCommand::Camera(Switch::Status)
                         | HouseCommand::Alarm(Switch::Status | Switch::Off)
                         | HouseCommand::Climate(..)
+                        | HouseCommand::Sensors(_)
                 )
         );
         let answer = match intent {

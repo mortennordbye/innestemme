@@ -12,6 +12,7 @@ use crate::house::{HouseCommand, Indoors, Reading, Routine};
 use crate::intent::{self, Day, Focus, Intent, LightLevel, MusicCommand};
 use crate::lang::Lang;
 use crate::power::{PowerQuery, When};
+use crate::sensors::SensorQuery;
 use crate::shopping::ListCommand;
 use crate::timer::{self, TimerCommand, Which};
 use crate::transit::{Mode, TransitQuery};
@@ -362,8 +363,20 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             Some("bedtime") => Intent::Routine(Routine::Bedtime),
             Some("lockdown") => Intent::Routine(Routine::Lockdown),
             Some("stand_down") => Intent::Routine(Routine::StandDown),
+            Some("batteries") => Intent::House(HouseCommand::Sensors(SensorQuery::Battery(None))),
+            Some("leaks") => Intent::House(HouseCommand::Sensors(SensorQuery::Leaks)),
             _ => Intent::House(HouseCommand::Status),
         }),
+        // Said again as a request, so the rules' own unit names apply.
+        "convert" => {
+            let value = args["value"].as_f64().or_else(|| text("value").and_then(|v| v.replace(',', ".").parse().ok()));
+            let from = text("from").unwrap_or_default();
+            let said = format!("{} {from} in {}", value.unwrap_or(1.0), text("to").unwrap_or_default());
+            match crate::units::parse(&said.to_lowercase()) {
+                Some(conversion) => Decision::Act(Intent::Convert(conversion)),
+                None => return Err(anyhow!("cannot convert {said:?}")),
+            }
+        }
         "ignore" => Decision::Ignore,
         other => return Err(anyhow!("the language model called an unknown tool {other:?}")),
     })
@@ -470,7 +483,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "who_is_home",
-            "Who is home, or whether one person is.",
+            "Who is home, or whether or where one person is.",
             json!({ "type": "object", "properties": {
             "name": { "type": "string", "description": "Omit for everyone" }
         } })
@@ -505,9 +518,18 @@ pub fn tools() -> Value {
         ),
         tool(
             "house",
-            "House check, or routine when leaving, coming home, going to bed, lockdown (red lights) or standing it down.",
+            "House check, low batteries, leaks, or routine when leaving, coming home, going to bed, lockdown (red lights) or standing it down.",
             json!({ "type": "object", "required": ["action"], "properties": {
-            "action": { "type": "string", "enum": ["status", "leaving", "home", "bedtime", "lockdown", "stand_down"] }
+            "action": { "type": "string", "enum": ["status", "batteries", "leaks", "leaving", "home", "bedtime", "lockdown", "stand_down"] }
+        } })
+        ),
+        tool(
+            "convert",
+            "Convert a length, weight, volume or temperature to another unit.",
+            json!({ "type": "object", "required": ["value", "from", "to"], "properties": {
+            "value": { "type": "number" },
+            "from": { "type": "string", "description": "Unit, e.g. miles" },
+            "to": { "type": "string" }
         } })
         ),
         tool("joke", "Tell a joke.", none.clone()),
@@ -539,7 +561,7 @@ pub fn system_prompt(name: &str, home: Option<&str>, room: Option<&str>, today: 
         "You are {name}, a voice assistant that controls a home.{home}{room} Today is {today}.\n\
          Rule 1: for the weather, lights, brightness or colour, a light scene or mood, music, the TV, a \
          timer or reminder, the shopping list, departures, electricity prices, who is home, a lost phone, the \
-         temperature indoors, the house, or something funny, call the matching tool. Do not describe the action; the tool does it and speaks.\n\
+         temperature indoors, the house, batteries or leaks, a unit conversion, or something funny, call the matching tool. Do not describe the action; the tool does it and speaks.\n\
          Rule 2: if the words were addressed to another person or are background talk, call ignore.\n\
          Rule 3: otherwise answer from your own knowledge in one short spoken sentence, no markdown. \
          Never say you did something without calling a tool.\n\
@@ -657,6 +679,15 @@ mod tests {
             parse_reply(&call("indoor_climate", r#"{"room":"here"}"#)).unwrap(),
             Decision::Act(Intent::House(HouseCommand::Climate(Indoors::Here, Reading::Temperature)))
         );
+        assert_eq!(
+            parse_reply(&call("house", r#"{"action":"batteries"}"#)).unwrap(),
+            Decision::Act(Intent::House(HouseCommand::Sensors(SensorQuery::Battery(None))))
+        );
+        assert_eq!(
+            parse_reply(&call("convert", r#"{"value":3,"from":"Cups","to":"millilitres"}"#)).unwrap(),
+            Decision::Act(Intent::Convert(crate::units::parse("3 cups in millilitres").unwrap()))
+        );
+        assert!(parse_reply(&call("convert", r#"{"value":3,"from":"cups","to":"metres"}"#)).is_err());
         assert_eq!(parse_reply(&call("ignore", "{}")).unwrap(), Decision::Ignore);
         // Some servers send the arguments as an object.
         let object = json!({ "tool_calls": [{ "function": { "name": "joke", "arguments": {} } }] });

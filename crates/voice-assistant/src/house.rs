@@ -25,6 +25,8 @@ pub enum SunEvent {
     Sunset,
     /// "When does it get dark?": dusk.
     Dark,
+    /// "Is it dark outside?" (`true`), "is it light yet?" (`false`): now, and the next change.
+    IsDark(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +44,8 @@ pub enum HouseCommand {
     Alarm(Switch),
     /// Temperature or humidity indoors: "how warm is it in the bedroom".
     Climate(Indoors, Reading),
+    /// Battery levels and leak sensors: "which batteries are low", "is there a leak".
+    Sensors(crate::sensors::SensorQuery),
 }
 
 /// Where an indoor climate question is about.
@@ -126,6 +130,10 @@ pub fn parse(words: &[String]) -> Option<HouseCommand> {
     if let Some(command) = phone(words) {
         return Some(command);
     }
+    // After the phone: "how much battery does my phone have" is the phone's.
+    if let Some(query) = crate::sensors::parse(words) {
+        return Some(HouseCommand::Sensors(query));
+    }
     if let Some(command) = guest_wifi(words) {
         return Some(HouseCommand::GuestWifi(command));
     }
@@ -159,6 +167,8 @@ const TEMPERATURE_WORDS: &[&str] = &[
 ];
 const HUMIDITY_WORDS: &[&str] =
     &["humid", "humidity", "dry", "damp", "muggy", "fukt", "fuktig", "fuktighet", "fuktigheten", "tørr", "tørt"];
+/// Humidity by name, which is asked about indoors even without a place.
+const HUMIDITY_NOUNS: &[&str] = &["humidity", "fuktighet", "fuktigheten"];
 /// Both readings: "what's the climate in the bedroom", "inneklimaet".
 const CLIMATE_WORDS: &[&str] = &["climate", "inneklima", "inneklimaet", "klima", "klimaet"];
 const INSIDE_WORDS: &[&str] =
@@ -214,6 +224,9 @@ fn climate(words: &[String]) -> Option<(Indoors, Reading)> {
         Indoors::Here
     } else if has_any(words, INSIDE_WORDS) || INSIDE_PHRASES.iter().any(|p| contains_words(&text, p)) {
         Indoors::Everywhere
+    } else if !temperature && (has_any(words, HUMIDITY_NOUNS) || words.iter().any(|w| w.starts_with("luftfukt"))) {
+        // "What's the humidity": the weather never says it, so it is this room's.
+        Indoors::Here
     } else {
         return None;
     };
@@ -287,8 +300,24 @@ fn sun(words: &[String]) -> Option<SunEvent> {
     if when && dark {
         return Some(SunEvent::Dark);
     }
-    let light = ["get light", "gets light", "blir det lyst"].iter().any(|p| contains_words(&text, p));
-    (when && light).then_some(SunEvent::Sunrise)
+    let light = ["get light", "gets light", "be light", "get bright", "blir det lyst", "blir lyst"]
+        .iter()
+        .any(|p| contains_words(&text, p));
+    if when && light {
+        return Some(SunEvent::Sunrise);
+    }
+    // "Is it dark outside", "is it light yet", "er det mørkt ute"; not "is it too dark in here".
+    let rest =
+        ["outside", "out", "yet", "already", "now", "still", "ute", "nå", "enda", "ennå", "allerede", "fortsatt"];
+    let now = |start: &str| {
+        text.strip_prefix(start).is_some_and(|tail| {
+            tail.is_empty() || tail.starts_with(' ') && tail.split_whitespace().all(|w| rest.contains(&w))
+        })
+    };
+    if now("is it dark") || now("er det mørkt") {
+        return Some(SunEvent::IsDark(true));
+    }
+    (now("is it light") || now("er det lyst")).then_some(SunEvent::IsDark(false))
 }
 
 const PHONE_WORDS: &[&str] = &[
@@ -807,12 +836,33 @@ fn capitalize(text: &str) -> String {
     chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
+/// The sun's elevation in degrees below which it is dark: the end of civil twilight, as dusk.
+const DARK_BELOW: f64 = -6.0;
+
 /// "Sunset is at 18:19." from the `sun.sun` state.
 pub fn sun_answer(sun: &Value, event: SunEvent, lang: Lang) -> Result<String> {
     let key = match event {
         SunEvent::Sunrise => "next_rising",
         SunEvent::Sunset => "next_setting",
         SunEvent::Dark => "next_dusk",
+        SunEvent::IsDark(asked_dark) => {
+            let elevation = sun["attributes"]["elevation"].as_f64().context("no sun elevation in Home Assistant")?;
+            let dark = elevation < DARK_BELOW;
+            let no = lang == Lang::Norwegian;
+            // Fixed wording on its own, the time in the next sentence.
+            let now = match (dark, dark == asked_dark, no) {
+                (true, true, false) => "Yes, it's dark.",
+                (true, false, false) => "No, it's still dark.",
+                (false, true, false) => "Yes, it's light.",
+                (false, false, false) => "No, it's still light.",
+                (true, true, true) => "Ja, det er mørkt.",
+                (true, false, true) => "Nei, det er fortsatt mørkt.",
+                (false, true, true) => "Ja, det er lyst.",
+                (false, false, true) => "Nei, det er fortsatt lyst.",
+            };
+            let next = sun_answer(sun, if dark { SunEvent::Sunrise } else { SunEvent::Dark }, lang)?;
+            return Ok(format!("{now} {next}"));
+        }
     };
     let at: jiff::Timestamp = sun["attributes"][key].as_str().context("no sun times in Home Assistant")?.parse()?;
     let at = at.to_zoned(jiff::tz::TimeZone::system());
@@ -825,14 +875,18 @@ pub fn sun_answer(sun: &Value, event: SunEvent, lang: Lang) -> Result<String> {
         (SunEvent::Sunset, false, true) => format!("The sun has set. Tomorrow it sets at {time}."),
         (SunEvent::Sunrise, false, false) => format!("Sunrise is at {time}."),
         (SunEvent::Sunrise, false, true) => format!("Sunrise is at {time} tomorrow."),
-        (SunEvent::Dark, false, false) => format!("It gets dark at about {time}."),
-        (SunEvent::Dark, false, true) => format!("It's already dark. Tomorrow it gets dark at about {time}."),
+        (SunEvent::Dark | SunEvent::IsDark(_), false, false) => format!("It gets dark at about {time}."),
+        (SunEvent::Dark | SunEvent::IsDark(_), false, true) => {
+            format!("It's already dark. Tomorrow it gets dark at about {time}.")
+        }
         (SunEvent::Sunset, true, false) => format!("Solen går ned klokka {time}."),
         (SunEvent::Sunset, true, true) => format!("Solen har gått ned. I morgen går den ned klokka {time}."),
         (SunEvent::Sunrise, true, false) => format!("Solen står opp klokka {time}."),
         (SunEvent::Sunrise, true, true) => format!("Solen står opp klokka {time} i morgen."),
-        (SunEvent::Dark, true, false) => format!("Det blir mørkt rundt {time}."),
-        (SunEvent::Dark, true, true) => format!("Det er allerede mørkt. I morgen blir det mørkt rundt {time}."),
+        (SunEvent::Dark | SunEvent::IsDark(_), true, false) => format!("Det blir mørkt rundt {time}."),
+        (SunEvent::Dark | SunEvent::IsDark(_), true, true) => {
+            format!("Det er allerede mørkt. I morgen blir det mørkt rundt {time}.")
+        }
     })
 }
 
@@ -1422,6 +1476,10 @@ mod tests {
         assert_eq!(house("make it warmer in here"), None);
         assert_eq!(house("make the bedroom lights warmer"), None);
         assert_eq!(house("hvordan blir været i morgen"), None);
+        // Humidity without a place is this room's: the weather never says it.
+        assert_eq!(house("what's the humidity"), climate(Here, Humidity));
+        assert_eq!(house("hva er luftfuktigheten"), climate(Here, Humidity));
+        assert_eq!(house("what's the humidity outside"), None);
     }
 
     fn rooms() -> Vec<RoomClimate> {
@@ -1493,6 +1551,33 @@ mod tests {
         assert_eq!(house("når går solen ned"), Some(HouseCommand::Sun(Sunset)));
         assert_eq!(house("når blir det mørkt"), Some(HouseCommand::Sun(Dark)));
         assert_eq!(house("it's too dark in the kitchen"), None);
+        assert_eq!(house("when does it get light"), Some(HouseCommand::Sun(Sunrise)));
+        assert_eq!(house("when will it be light"), Some(HouseCommand::Sun(Sunrise)));
+        assert_eq!(house("is it dark outside"), Some(HouseCommand::Sun(IsDark(true))));
+        assert_eq!(house("is it light yet"), Some(HouseCommand::Sun(IsDark(false))));
+        assert_eq!(house("er det mørkt ute"), Some(HouseCommand::Sun(IsDark(true))));
+        assert_eq!(house("is it too dark in here"), None);
+    }
+
+    #[test]
+    fn says_whether_it_is_dark() {
+        let tomorrow = jiff::Zoned::now().checked_add(jiff::Span::new().days(1)).unwrap().timestamp().to_string();
+        let sun = |elevation: f64| json!({ "attributes": { "elevation": elevation, "next_rising": tomorrow, "next_dusk": tomorrow } });
+        let answer =
+            |elevation: f64, dark: bool| sun_answer(&sun(elevation), SunEvent::IsDark(dark), Lang::English).unwrap();
+        assert!(answer(-20.0, true).starts_with("Yes, it's dark. Sunrise is at "));
+        assert!(answer(-20.0, false).starts_with("No, it's still dark. "));
+        assert!(answer(15.0, true).starts_with("No, it's still light. "));
+        assert!(answer(-3.0, false).starts_with("Yes, it's light. "));
+    }
+
+    #[test]
+    fn battery_and_leak_questions_are_the_sensors() {
+        use crate::sensors::SensorQuery;
+        assert_eq!(house("which batteries are low"), Some(HouseCommand::Sensors(SensorQuery::Battery(None))));
+        assert_eq!(house("is there a leak"), Some(HouseCommand::Sensors(SensorQuery::Leaks)));
+        // The phone's battery is the phone skill's.
+        assert_eq!(house("what's the battery on my phone"), Some(HouseCommand::PhoneBattery(None)));
     }
 
     #[test]

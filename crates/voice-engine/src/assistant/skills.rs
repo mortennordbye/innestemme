@@ -145,6 +145,19 @@ impl Worker {
         }
     }
 
+    /// "Where is Ingrid?", "is Ingrid at work?", "when will Ingrid be home?"
+    pub(super) fn where_is(&mut self, name: &str, zone: Option<&str>, arriving: bool, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let Some(ha) = &self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        match ha.people() {
+            Ok(people) => voice_assistant::people::where_answer(&people, name, zone, arriving, lang),
+            Err(error) => unreachable(&error, no),
+        }
+    }
+
     /// "Who's home?": everyone and where they are; "is Ingrid home?": that person.
     pub(super) fn whos_home(&mut self, name: Option<&str>, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
