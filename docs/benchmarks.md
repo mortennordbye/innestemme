@@ -149,6 +149,29 @@ English and Norwegian.
 - The system prompt and tools must not change between requests (no clock, no language line), or
   the prompt cache misses: a follow-up took 4.2 s before and 0.87 s after.
 
+## Language model fallback, newer small models (2026-10-31, M4 Pro, Ollama 0.40.13 in colima, 6 CPUs, 4096 context)
+
+`llm_eval` now scores itself: 42 phrased requests the rules miss, and 20 transcripts the rules did not
+understand on the Voice PE from 24 to 31 October (mishearings, the room, the TV, an answer heard back).
+
+| Model | Download | Phrased | Heard | p50 | Notes |
+|---|---|---|---|---|---|
+| qwen3:4b-instruct | 2.5 GB | 38/42 | 17/20 | 0.84 s | best; misses are mostly harmless (who's home for "everything fine back home") |
+| qwen3.5:4b | 3.3 GB | 36/42 | 15/20 | 4.5 s | no thinking (9 tokens for "say hi"), still 5x slower on CPU |
+| qwen3.5:2b | 2.7 GB | 32/42 | 7/20 | 1.7 s | acts on room talk |
+| lfm3:1.7b | 1.1 GB | 29/42 | 9/20 | 1.5 s | wrong actions: music louder for "lower the music", lights on for "shut everything off" |
+| granite4:3b | 2.1 GB | 27/42 | 7/20 | 0.9 s | |
+| bonsai-2:2b | 0.9 GB | 25/42 | 11/20 | 4.5 s | ternary weights are slow on llama.cpp's CPU path |
+| bonsai-2:4b | 1.6 GB | 22/42 | 15/20 | 10.9 s | writes tool calls as text |
+| qwen3.5:0.8b | 1.3 GB | 16/42 | 12/20 | 1.3 s | describes its tools instead of calling them |
+| gemma4:e2b | 4.6 GB | - | - | - | does not load in Ollama 0.40.13 ("Gemma4Assistant requires ctx_other") |
+
+- Nothing smaller beats Qwen3 4B instruct yet; the small ones err by acting, which is worse than "didn't catch that".
+- The node's i7-8700T has about a sixth of the M4 Pro's memory bandwidth, which bounds token speed: expect
+  several seconds per answer there for a 4B model. Measure on the node before turning `llm-url` on.
+- In the "heard" set, the language model adds little over rules: "Oh, I'm home." (welcome home), a reply to
+  "Why is your name Darby?", a joke for "Do something."; the rest is rightly ignored either way.
+
 ## Name matching (2026-09-24, whisper-base, `say` voices, 44 utterances with the user's names)
 
 | Approach | Names right | Per utterance |
