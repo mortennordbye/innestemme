@@ -36,7 +36,9 @@ weather?"), with known misspellings (`dialog.rs`).
 8 s on the Mac), for recognised requests only, so room chatter is ignored. Speech that repeats an answer of the last 30 s is the Sonos heard back and is dropped. An
 unrecognised request after a wake gets "Sorry, I didn't catch that." only when Parakeet hears the name in the wake
 word itself, so a false wake by the TV stays silent. That check runs as soon as the device wakes, while the
-request is still being said, so the reply does not wait for it.
+request is still being said, so the reply does not wait for it. A wake word without the name leaves the music and the TV playing,
+and what follows it is taken as in the follow-up window: no small talk, and no long speech unless it opens like a
+request.
 
 **Sir or ma'am.** With `honorific-female` set, the end of the audio before each wake word (1.5 s) goes to a
 speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how
