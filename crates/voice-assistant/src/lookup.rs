@@ -111,6 +111,20 @@ pub fn topic(text: &str) -> Option<String> {
     Some(topic.join(" "))
 }
 
+/// Whether a search hit's title shares a word with the topic, by its first four letters
+/// ("holes" and "Hole", "Norwegian" and "Norway").
+fn related(topic: &str, title: &str) -> bool {
+    let stems = |text: &str| -> Vec<String> {
+        text.split_whitespace()
+            .map(normalize)
+            .filter(|w| w.chars().count() >= 3 && !ARTICLES.contains(&w.as_str()))
+            .map(|w| w.chars().take(4).collect())
+            .collect()
+    };
+    let title = stems(title);
+    stems(topic).iter().any(|t| title.contains(t))
+}
+
 pub struct Lookup {
     agent: ureq::Agent,
 }
@@ -149,7 +163,9 @@ impl Lookup {
         // The exact article first ("Black hole"), else the best search hit.
         let mut extract = self.summary(host, topic)?;
         if extract.is_none() {
-            for title in self.search(host, topic)? {
+            // A hit that shares no word with the topic is a misheard request ("what's the clap
+            // shoe" found a murder case), not an answer to it.
+            for title in self.search(host, topic)?.into_iter().filter(|t| related(topic, t)) {
                 extract = self.summary(host, &title)?;
                 if extract.is_some() {
                     break;
@@ -246,6 +262,14 @@ pub(crate) fn encode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_hits_must_share_a_word() {
+        assert!(related("black holes", "Black hole"));
+        assert!(related("norwegian krone", "Norway"));
+        assert!(related("jonas gahr støre", "Jonas Gahr Støre"));
+        assert!(!related("clap shoe", "Danilo Restivo"));
+    }
 
     #[test]
     fn finds_the_topic() {

@@ -3751,15 +3751,22 @@ fn is_echo(said: &[&str], heard: &str) -> bool {
     let said: HashSet<String> = said.iter().flat_map(|text| echo_words(text)).collect();
     let heard = echo_words(heard);
     let new = heard.iter().filter(|w| !said.contains(*w)).count();
-    heard.len() >= 2 && new <= 1 && new * 5 <= heard.len()
+    // A long stretch of a long answer comes back garbled ("Barnett" as "barn it"), but mostly in its
+    // words; nobody asks a follow-up of that many words made of the answer's.
+    let garbled = heard.len() >= ECHO_LONG && new * 4 <= heard.len();
+    heard.len() >= 2 && (new <= 1 && new * 5 <= heard.len() || garbled)
 }
+
+/// Words from which a heard stretch may be a garbled echo.
+const ECHO_LONG: usize = 8;
 
 /// Words for comparing what was heard with what was said, with numbers as digits: the speech
 /// says "1 minute", the transcriber hears "one minute".
 fn echo_words(text: &str) -> Vec<String> {
     const NUMBERS: &[&str] =
         &["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
-    text.split_whitespace()
+    // "40-year" is said as "40 year".
+    text.split(|c: char| c.is_whitespace() || c == '-')
         .map(voice_assistant::dialog::normalize)
         .filter(|w| !w.is_empty())
         .map(|w| NUMBERS.iter().position(|n| *n == w).map_or(w, |n| n.to_string()))
@@ -3923,6 +3930,11 @@ mod tests {
         assert!(!is_echo(&said, "Timer"));
         assert!(!is_echo(&["You have 2 timers. Which one?"], "The 1 minute timer."));
         assert!(!is_echo(&[], "Turn on the kitchen."));
+        let wiki = "According to Wikipedia, Danilo Restivo is an Italian convicted murderer and suspected serial \
+                    killer. Restivo is serving a life sentence with a 40-year tariff for murdering his neighbour \
+                    Heather Barnett in Bournemouth, England, in November 2002.";
+        assert!(is_echo(&[wiki], "With a 40 year tariff for murdering his barn it 40 stop"));
+        assert!(!is_echo(&["Tomorrow in Oslo: heavy rain, 3 to 6 degrees."], "And what about tomorrow in Bergen?"));
     }
 
     #[test]
