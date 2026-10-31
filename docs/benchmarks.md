@@ -203,7 +203,7 @@ sane text; `3/10` took 160 to 607 ms and turned one request into "What are you d
 
 ## Speech to text on the Voice PE's utterances, 2026-10-17
 
-156 utterances the engine cut from the living room Voice PE (`target/utterances/utterance-*.wav`, 23 min),
+156 utterances the engine cut from the living room Voice PE (`target/utterances/utterance-*.wav`, 10 min),
 4 CPU threads on an M4 Pro. Reference: whisper-large-v3-turbo (mlx, Metal). "Same intent": of the 94
 utterances whose reference parses to a request, how many parse to the identical intent (light and scene
 targets compare the raw text, so this undercounts for every system alike). Others with
@@ -226,6 +226,39 @@ targets compare the raw text, so this undercounts for every system alike). Other
   going to play a little bit more"). It writes numbers as words ("thirty percent").
 - Moonshine returns nothing for many of these recordings (its own test file works; the level is not the cause).
 - The streaming zipformer keeps up easily (real-time factor 0.02) but is the least accurate after Moonshine.
+
+## Smaller Parakeet models, 2026-10-31
+
+The same 156 utterances (595 s of audio, 3.8 s on average) through the engine's own `Parakeet` load and
+transcribe path, M4 Pro CPU, scored with `examples/stt_score.rs`. The original reference file was gone, so it
+was rebuilt with mlx-whisper large-v3-turbo (English forced). The new reference loops on some noise
+recordings and finds 93 requests instead of 94, so every WER here is 53-56% and only the comparison between
+rows holds. The 0.6B v2 took 189 ms median here, not the 70 ms in the table above; two runs agreed, and 66 ms
+per second of audio matches the wake word check's timings, so the older figure is likely wrong.
+
+| System | WER | Same intent | Median | p90 | ms per s of audio |
+|---|---|---|---|---|---|
+| parakeet-tdt-0.6b-v2 (the engine), 4 threads | 54% | 73/93 | 189 ms | 445 ms | 66 |
+| parakeet-tdt-0.6b-v2, 3 threads | 54% | 73/93 | 236 ms | 559 ms | 85 |
+| parakeet-tdt-0.6b-v2, 2 threads | 54% | 73/93 | 330 ms | 796 ms | 119 |
+| parakeet tdt 110M transducer, 4 threads | 55% | 70/93 | 50 ms | 136 ms | 18 |
+| parakeet tdt 110M transducer, 2 threads | 55% | 70/93 | 111 ms | 315 ms | 41 |
+| parakeet tdt_ctc 110M, CTC, 4 threads | 56% | 64/93 | 46 ms | 107 ms | 16 |
+| parakeet tdt_ctc 110M, CTC, 2 threads | 56% | 64/93 | 81 ms | 176 ms | 28 |
+| parakeet-tdt-0.6b-v3, 4 threads | 53% | 71/93 | 191 ms | 479 ms | 68 |
+
+- The 110M transducer is 3.7x faster for three fewer requests understood. It acted on noise twice (the 0.6B v2
+  five times) but returned nothing for 40 utterances (v2: 32), and sometimes writes a garbled sentence on TV
+  noise where v2 stays silent. It writes "Jervis" more often (9 of 11 wake names close to Jarvis, v2 10).
+- CTC decoding gives fragments ("shouldition") and loses 9 requests for little speed; v3 is no better in
+  English.
+- Fewer threads are no lever: v2 at 2 threads is 1.8x slower.
+- Models: k2-fsa/sherpa-onnx release `asr-models`, `sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8`
+  (108 MB) and `sherpa-onnx-nemo-parakeet_tdt_ctc_110m-en-36000-int8` (104 MB); the Hugging Face repos with
+  those names are empty, while the engine fetches from Hugging Face today. v3:
+  `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` (670 MB).
+- Not switched. Before it is: the name check on the wake word (`examples/wake_text.rs`) with the 110M, a
+  setting for the model with v2 as the default, and a way to fetch the release tarball.
 
 ## End to end in the cluster with Parakeet, 2026-10-17
 
