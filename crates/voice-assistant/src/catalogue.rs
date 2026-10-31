@@ -46,7 +46,7 @@ pub const SKILLS: &[Skill] = &[
         does: "Dims, brightens or colours lights.",
         source: "Home Assistant",
         calls: &["light.turn_on (brightness_pct, color_name, color_temp)"],
-        examples: &["Dim the living room to 30 percent", "Make the bedroom lights red", "Brighter"],
+        examples: &["Dim the living room to 30 percent", "Make the bedroom lights red", "Increase the brightness"],
         norwegian: &["Demp stua til 30 prosent"],
     },
     Skill {

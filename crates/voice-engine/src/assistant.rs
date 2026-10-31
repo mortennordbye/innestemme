@@ -1170,7 +1170,7 @@ impl Worker {
         let request = match music_by_sound(&request, playing) {
             Some(meant) if addressed || self.woken_at.is_some() => {
                 info!(heard = request, meant, "music request by its shape");
-                meant.to_owned()
+                meant
             }
             _ => request,
         };
@@ -3615,12 +3615,23 @@ fn sounds_like_a_request(text: &str) -> bool {
 /// Whisper hears "pause" and "play" after the wake word as "please", "nice", "post": a short request
 /// that ends in "music" and is nothing else means pausing it when it was playing, else playing it.
 /// A prompt with the command words fixes some of these but makes up commands from room noise.
-fn music_by_sound(request: &str, playing: bool) -> Option<&'static str> {
+fn music_by_sound(request: &str, playing: bool) -> Option<String> {
     let words: Vec<String> =
         request.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
     // "Stop" over music means the music, not "never mind".
     if bare_stop(request) && playing {
-        return Some("pause the music");
+        return Some("pause the music".into());
+    }
+    // Over music, a short request with a percentage and no light is the volume: "put the percentage
+    // at 70 percent", "trop with the sign at 50 percent" (drop the sound).
+    if playing && words.len() <= 8 && intent::parse(request) == Intent::Unknown {
+        let percent = words.windows(2).find_map(|p| {
+            let n = p[0].parse::<u8>().ok().filter(|n| *n <= 100)?;
+            ["percent", "prosent"].contains(&p[1].as_str()).then_some(n)
+        });
+        if let Some(n) = percent {
+            return Some(format!("set the volume to {n}"));
+        }
     }
     // "Play my liked songs" comes out as "claim a light song", "they're my like songs", "clean
     // my life's songs": the play is lost under the wake word's end and "liked" sounds like these.
@@ -3629,14 +3640,11 @@ fn music_by_sound(request: &str, playing: bool) -> Option<&'static str> {
         .iter()
         .any(|w| ["like", "liked", "likes", "light", "lights", "life", "life's", "lifes"].contains(&w.as_str()));
     if songs && liked && words.len() <= 5 && intent::parse(request) == Intent::Unknown {
-        return Some("play my liked songs");
+        return Some("play my liked songs".into());
     }
     let music = words.last().is_some_and(|w| ["music", "musikk", "musikken"].contains(&w.as_str()));
-    (music && words.len() <= 4 && intent::parse(request) == Intent::Unknown).then_some(if playing {
-        "pause the music"
-    } else {
-        "play some music"
-    })
+    (music && words.len() <= 4 && intent::parse(request) == Intent::Unknown)
+        .then(|| if playing { "pause the music" } else { "play some music" }.into())
 }
 
 /// An action whose result is heard (the music stops, the next song starts) needs no words, which
@@ -3972,19 +3980,22 @@ mod tests {
 
     #[test]
     fn misheard_music_requests() {
-        assert_eq!(music_by_sound("Nice music.", true), Some("pause the music"));
-        assert_eq!(music_by_sound("Please song music.", false), Some("play some music"));
-        assert_eq!(music_by_sound("Tyson music.", true), Some("pause the music"));
+        assert_eq!(music_by_sound("Nice music.", true), Some("pause the music".into()));
+        assert_eq!(music_by_sound("Please song music.", false), Some("play some music".into()));
+        assert_eq!(music_by_sound("Tyson music.", true), Some("pause the music".into()));
         assert_eq!(music_by_sound("Pause the music.", false), None);
         assert_eq!(music_by_sound("I really like this kind of music", true), None);
         assert_eq!(music_by_sound("Nice weather.", true), None);
-        assert_eq!(music_by_sound("They're my like songs.", false), Some("play my liked songs"));
-        assert_eq!(music_by_sound("claim a light song.", false), Some("play my liked songs"));
-        assert_eq!(music_by_sound("Clean my life's songs.", true), Some("play my liked songs"));
+        assert_eq!(music_by_sound("They're my like songs.", false), Some("play my liked songs".into()));
+        assert_eq!(music_by_sound("claim a light song.", false), Some("play my liked songs".into()));
+        assert_eq!(music_by_sound("Clean my life's songs.", true), Some("play my liked songs".into()));
         assert_eq!(music_by_sound("I like songs about the sea and the long summer nights", false), None);
-        assert_eq!(music_by_sound("Stop.", true), Some("pause the music"));
-        assert_eq!(music_by_sound("stop it", true), Some("pause the music"));
+        assert_eq!(music_by_sound("Stop.", true), Some("pause the music".into()));
+        assert_eq!(music_by_sound("stop it", true), Some("pause the music".into()));
         assert_eq!(music_by_sound("Stop.", false), None);
+        assert_eq!(music_by_sound("Put the percentage at 70 percent.", true), Some("set the volume to 70".into()));
+        assert_eq!(music_by_sound("Trop with the sign at 50 percent.", true), Some("set the volume to 50".into()));
+        assert_eq!(music_by_sound("Put the percentage at 70 percent.", false), None);
     }
 
     #[test]
