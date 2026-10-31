@@ -1010,7 +1010,6 @@ impl Worker {
                     self.address(None);
                     self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
                     self.emit(AssistantEvent::Listening);
-                    self.hush();
                     // Checked while the request is still being said: done when a reply needs it,
                     // it held up "didn't catch that" by a quarter of a second on the cluster.
                     self.wake_named = match wake {
@@ -1018,6 +1017,13 @@ impl Worker {
                         WakeName::Check(audio) => self.name_in(&audio),
                         WakeName::Heard => Some(true),
                     };
+                    // Most wakes without the name are the TV or the room (Loki, 24-31 Oct: about 48
+                    // of 58), and pausing paused the TV under them. A real one still acts, over the music.
+                    if self.wake_named == Some(false) {
+                        info!("no name in the wake word: the music plays on");
+                    } else {
+                        self.hush();
+                    }
                 }
                 Job::CheckName(audio, reply) => {
                     let _ = reply.send(self.name_in(&audio));
@@ -1179,7 +1185,8 @@ impl Worker {
         // Without the name, only act on something recognisable: in the follow-up window the
         // microphone also hears the room.
         // With a language model, it decides whether unrecognised words were meant for the assistant.
-        let unknown = intent::parse(&request) == Intent::Unknown;
+        let parsed = intent::parse(&request);
+        let unknown = parsed == Intent::Unknown;
         if let (false, Some(learned)) = (unknown, &self.config.learned) {
             if let Some(pair) = learned.understood(&request) {
                 info!(heard = pair.said, meant = pair.meant, "correction learned");
@@ -1191,8 +1198,12 @@ impl Worker {
             self.pending_lights.is_some() || confirming || self.timers.awaiting_duration() || self.list_is_open();
         // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
         // for murdering his barn it 40 stop" set the volume.
-        let room = !addressed && self.woken_at.is_none() && room_talk(&request);
-        if !pending && (room || (!addressed && unknown && self.config.llm.is_none())) {
+        // A wake word without the name is as unsure as the follow-up window: the TV's "just because
+        // 2 bitches ..." set the volume to 70 percent, its "Sorry." was told "Don't mention it.".
+        let unnamed = self.woken_at.is_some() && self.wake_named == Some(false);
+        let room = !addressed && (self.woken_at.is_none() || unnamed) && room_talk(&request);
+        let chat = !addressed && unnamed && matches!(parsed, Intent::SmallTalk(_));
+        if !pending && (room || chat || (!addressed && unknown && self.config.llm.is_none())) {
             info!(text = heard.text, "not addressed");
             self.not_understood(&heard.text, audio, ended, heard.lang, start);
             return;
@@ -4023,6 +4034,8 @@ mod tests {
     #[test]
     fn room_talk_in_the_follow_up() {
         assert!(room_talk("With a 40 year tariff for murdering his barn it 40 stop"));
+        // The TV after a wake word without the name (Loki, 31 Oct): parsed as "volume up by 2".
+        assert!(room_talk("Everyone knows that you'd mad. It weren't your fault that I is dead. Just because 2 bitches was giving you that."));
         assert!(!room_talk("And the kitchen too."));
         assert!(!room_talk("Turn on all the lights in the living room and the kitchen."));
         assert!(!room_talk("What is the temperature in the bedroom right now, please?"));

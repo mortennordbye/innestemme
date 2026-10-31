@@ -14,7 +14,7 @@ const SPELLINGS: &[(&str, &[&str])] = &[
         "jarvis",
         &[
             "jarvis", "jarvis's", "jarvis'", "jarris", "jervis", "jarvus", "jarviss", "jarves", "javis", "jaris",
-            "jarvas", "jarviz", "jarvice", "jarbis", "charvis", "jervis's", "darvis",
+            "jarvas", "jarviz", "jarvice", "jarbis", "charvis", "jervis's", "darvis", "jargis", "ajaris",
         ],
     ),
     ("homie", &["homie", "homies", "homie's", "homey", "homy", "homi", "hommie", "homee", "homeie"]),
@@ -30,7 +30,7 @@ const SPELLINGS: &[(&str, &[&str])] = &[
 /// Everyday words a transcriber writes for the name in a wake word ("Hey German."). They count only
 /// right after a greeting and only in the wake word's own audio, which the wake word model already
 /// scored as a near miss.
-const AFTER_GREETING: &[(&str, &[&str])] = &[("jarvis", &["german", "germans", "drivers"])];
+const AFTER_GREETING: &[(&str, &[&str])] = &[("jarvis", &["german", "germans", "drivers", "doris", "james"])];
 
 /// The assistant's name as the transcript shows it: the name itself plus known spellings.
 #[derive(Clone, Debug)]
@@ -147,14 +147,24 @@ mod tests {
         assert!(!"That's my parents.".split_whitespace().any(|w| wake.matches(&normalize(w))));
     }
 
-    /// Wake words Parakeet heard as everyday words (Loki, 27-28 Oct).
+    /// Wake words Parakeet heard as everyday words (Loki, 27-31 Oct).
     #[test]
     fn hears_jarvis_in_a_wake_word() {
         let wake = WakeWord::new("Jarvis");
-        for heard in ["Hey German.", "Hey Germans.", "Hey drivers!", "Hey Darvis.", "Hey, Jarvis."] {
+        for heard in [
+            "Hey German.",
+            "Hey Germans.",
+            "Hey drivers!",
+            "Hey Darvis.",
+            "Hey, Jarvis.",
+            "Hey Jargis.",
+            "Ajaris",
+            "Hey Doris.",
+            "Hey James.",
+        ] {
             assert!(wake.in_wake_word(heard), "{heard}");
         }
-        for heard in ["German.", "The drivers are late.", "Yeah.", "", "Hey there."] {
+        for heard in ["German.", "The drivers are late.", "Doris called.", "Yeah.", "", "Hey there."] {
             assert!(!wake.in_wake_word(heard), "{heard}");
         }
         // Elsewhere they are the words they are.
