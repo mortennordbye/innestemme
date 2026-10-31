@@ -5,7 +5,7 @@ use std::time::Duration;
 use tracing::{info, warn};
 use voice_assistant::ha::{self, HomeAssistant};
 use voice_assistant::house;
-use voice_assistant::intent::Day;
+use voice_assistant::intent::{Day, Focus};
 use voice_assistant::lang::Lang;
 use voice_assistant::party::{Pace, PartyCommand};
 use voice_assistant::shopping::ListCommand;
@@ -115,7 +115,7 @@ impl Worker {
     }
 
     /// A named place, else the home: the address when it is set, else the `home` place name.
-    pub(super) fn weather(&mut self, place: Option<String>, day: Day, lang: Lang) -> String {
+    pub(super) fn weather(&mut self, place: Option<String>, day: Day, focus: Focus, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let named = place.or_else(|| self.home_location.is_none().then(|| self.config.home.clone()).flatten());
         let location = match named {
@@ -124,10 +124,10 @@ impl Worker {
                 None if no => return "Hvilket sted? Si for eksempel været i Oslo.".into(),
                 None => return "Which place? Say, for example, the weather in London.".into(),
             },
-            Some(name) => self.weather.find(&name),
+            Some(name) => self.weather.find(&name, self.home_location.as_ref()),
         };
         let report = location.and_then(|location| match location {
-            Some(location) => self.weather.report(&location, day, lang).map(Some),
+            Some(location) => self.weather.report(&location, day, focus, lang).map(Some),
             None => Ok(None),
         });
         match report {
@@ -224,7 +224,7 @@ impl Worker {
             parts[0] = format!("{greeting}! {}", time_of_day(lang));
         }
         if self.home_location.is_some() || self.config.home.is_some() {
-            parts.push(self.weather(None, Day::Today, lang));
+            parts.push(self.weather(None, Day::Today, Focus::General, lang));
         }
         if let Some(ha) = &self.home_assistant {
             if let Ok((answer, _)) = self.shopping.run(ha, &ListCommand::Read, lang) {
@@ -247,10 +247,10 @@ impl Worker {
     pub(super) fn distance(&mut self, query: &voice_assistant::distance::Query, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let from = match &query.from {
-            Some(name) => self.weather.find(name),
+            Some(name) => self.weather.find(name, self.home_location.as_ref()),
             None => Ok(self.home_location.clone()),
         };
-        let places = from.and_then(|from| Ok((from, self.weather.find(&query.to)?)));
+        let places = from.and_then(|from| Ok((from, self.weather.find(&query.to, self.home_location.as_ref())?)));
         match places {
             Ok((Some(from), Some(to))) => voice_assistant::distance::answer(&from, &to, lang),
             Ok((None, _)) if query.from.is_none() && no => "Hvor fra? Si for eksempel fra Oslo til Bergen.".into(),

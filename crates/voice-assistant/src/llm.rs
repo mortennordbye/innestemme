@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
 use crate::house::{HouseCommand, Indoors, Reading, Routine};
-use crate::intent::{Day, Intent, LightLevel, MusicCommand};
+use crate::intent::{self, Day, Focus, Intent, LightLevel, MusicCommand};
 use crate::lang::Lang;
 use crate::power::{PowerQuery, When};
 use crate::shopping::ListCommand;
@@ -165,7 +165,8 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
     Ok(match name {
         "weather" => Decision::Act(Intent::Weather {
             place: text("place"),
-            day: if text("day").as_deref() == Some("tomorrow") { Day::Tomorrow } else { Day::Today },
+            day: text("day").map_or(Day::Today, |day| intent::day_named(&day.replace('_', " "))),
+            focus: Focus::General,
         }),
         // One tool for switching, levels and scenes; "light_settings" and "scene" are the older
         // separate tools, still accepted from models that write calls as text.
@@ -385,10 +386,10 @@ pub fn tools() -> Value {
     json!([
         tool(
             "weather",
-            "Weather now and today, or tomorrow's forecast, for a place.",
+            "Weather now or the forecast for a day, for a place.",
             json!({ "type": "object", "properties": {
             "place": { "type": "string", "description": "City; omit for home" },
-            "day": { "type": "string", "enum": ["today", "tomorrow"] }
+            "day": { "type": "string", "enum": ["today", "tonight", "tomorrow", "day_after_tomorrow", "weekend", "saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday"] }
         } })
         ),
         tool(
@@ -553,7 +554,7 @@ mod tests {
         let call = |name: &str, args: &str| json!({ "tool_calls": [{ "type": "function", "function": { "name": name, "arguments": args } }] });
         assert_eq!(
             parse_reply(&call("weather", r#"{"place":"Bergen","day":"tomorrow"}"#)).unwrap(),
-            Decision::Act(Intent::Weather { place: Some("Bergen".into()), day: Day::Tomorrow })
+            Decision::Act(Intent::Weather { place: Some("Bergen".into()), day: Day::Tomorrow, focus: Focus::General })
         );
         assert_eq!(
             parse_reply(&call("lights", r#"{"target":"kitchen","on":false}"#)).unwrap(),

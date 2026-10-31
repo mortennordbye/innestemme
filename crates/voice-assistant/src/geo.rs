@@ -90,9 +90,80 @@ struct Place {
     longitude: f64,
 }
 
-/// A place by name. A Norwegian place with that exact name wins over a bigger one abroad, so a
-/// misheard "Verden" does not end up in Germany when Norway has none, and "Bergen" is Bergen.
-pub fn place(agent: &ureq::Agent, name: &str) -> Result<Option<Location>> {
+/// Larger Norwegian towns, asked about often enough to know without a lookup and to match a
+/// misheard name against.
+const TOWNS: &[(&str, f64, f64)] = &[
+    ("Oslo", 59.91, 10.75),
+    ("Bergen", 60.39, 5.32),
+    ("Trondheim", 63.43, 10.40),
+    ("Stavanger", 58.97, 5.73),
+    ("Drammen", 59.74, 10.20),
+    ("Fredrikstad", 59.22, 10.93),
+    ("Kristiansand", 58.15, 8.00),
+    ("Sandnes", 58.85, 5.74),
+    ("Tromsø", 69.65, 18.96),
+    ("Sarpsborg", 59.28, 11.11),
+    ("Skien", 59.21, 9.61),
+    ("Ålesund", 62.47, 6.15),
+    ("Sandefjord", 59.13, 10.22),
+    ("Haugesund", 59.41, 5.27),
+    ("Tønsberg", 59.27, 10.41),
+    ("Moss", 59.43, 10.66),
+    ("Porsgrunn", 59.14, 9.66),
+    ("Bodø", 67.28, 14.40),
+    ("Arendal", 58.46, 8.77),
+    ("Hamar", 60.79, 11.07),
+    ("Larvik", 59.05, 10.04),
+    ("Halden", 59.12, 11.39),
+    ("Lillehammer", 61.12, 10.47),
+    ("Molde", 62.74, 7.16),
+    ("Kongsberg", 59.67, 9.65),
+    ("Gjøvik", 60.80, 10.69),
+    ("Harstad", 68.80, 16.54),
+    ("Narvik", 68.44, 17.43),
+    ("Alta", 69.97, 23.27),
+    ("Kristiansund", 63.11, 7.73),
+    ("Lillestrøm", 59.96, 11.05),
+    ("Asker", 59.83, 10.44),
+    ("Sandvika", 59.89, 10.52),
+    ("Hammerfest", 70.66, 23.68),
+];
+
+/// What the transcriber has written for a town, from the engine's logs. Too far from the name for
+/// the sound-alike check, which would also take common words at that distance.
+const HEARD_AS: &[(&str, &[&str])] = &[("Oslo", &["us of", "all slow", "as low", "oz low", "os low", "oslow"])];
+
+/// A place known without a lookup: the home by its name, a town, or what a town is heard as.
+fn known(name: &str, home: Option<&Location>) -> Option<Location> {
+    let name = name.trim().to_lowercase();
+    if let Some(home) = home.filter(|h| h.label.to_lowercase() == name) {
+        return Some(home.clone());
+    }
+    let town = HEARD_AS.iter().find(|(_, heard)| heard.contains(&name.as_str())).map(|(town, _)| *town);
+    let town = town.unwrap_or(&name);
+    TOWNS.iter().find(|(t, ..)| t.to_lowercase() == town.to_lowercase()).map(|&(label, latitude, longitude)| Location {
+        latitude,
+        longitude,
+        label: label.to_owned(),
+    })
+}
+
+/// The home or a town the whole name sounds like ("Bergan", "Tronheim").
+fn sounds_like(name: &str, home: Option<&Location>) -> Option<Location> {
+    let names = crate::names::Names::new(home.map(|h| h.label.as_str()).into_iter().chain(TOWNS.iter().map(|t| t.0)));
+    let found = names.best(name)?;
+    // A town in part of the name ("Moss" in "Mossel Bay") is not the place asked for.
+    (found.words == (0..name.split_whitespace().count())).then(|| known(found.name, home)).flatten()
+}
+
+/// A place by name. The home, a larger town or a known mishearing of one needs no lookup. Then
+/// a Norwegian place with that exact name wins over a bigger one abroad, so a misheard "Verden"
+/// does not end up in Germany when Norway has none; then the home or a town it sounds like; then
+/// the best place anywhere.
+pub fn place(agent: &ureq::Agent, name: &str, home: Option<&Location>) -> Result<Option<Location>> {
+    if let Some(known) = known(name, home) {
+        return Ok(Some(known));
+    }
     let search = |country: Option<&str>| -> Result<Vec<Place>> {
         let mut call = agent
             .get("https://geocoding-api.open-meteo.com/v1/search")
@@ -107,11 +178,14 @@ pub fn place(agent: &ureq::Agent, name: &str) -> Result<Option<Location>> {
     };
     let same = |p: &Place| p.name.to_lowercase() == name.trim().to_lowercase();
     let norway = search(Some("NO"))?;
-    let chosen = match norway.into_iter().find(same) {
-        Some(place) => Some(place),
-        None => search(None)?.into_iter().next(),
-    };
-    Ok(chosen.map(|p| Location { latitude: p.latitude, longitude: p.longitude, label: p.name }))
+    let location = |p: Place| Location { latitude: p.latitude, longitude: p.longitude, label: p.name };
+    if let Some(place) = norway.into_iter().find(same) {
+        return Ok(Some(location(place)));
+    }
+    if let Some(alike) = sounds_like(name, home) {
+        return Ok(Some(alike));
+    }
+    Ok(search(None)?.into_iter().next().map(location))
 }
 
 #[cfg(test)]
@@ -124,5 +198,33 @@ mod tests {
         assert_eq!(parse_coordinates("59.9133 10.7403"), Some((59.9133, 10.7403)));
         assert_eq!(parse_coordinates("Karl Johans gate 22, Oslo"), None);
         assert_eq!(parse_coordinates("95, 10"), None);
+    }
+
+    fn label(found: Option<Location>) -> Option<String> {
+        found.map(|l| l.label)
+    }
+
+    #[test]
+    fn towns_and_their_mishearings_need_no_lookup() {
+        assert_eq!(label(known("Bergen", None)).as_deref(), Some("Bergen"));
+        assert_eq!(label(known("tromsø", None)).as_deref(), Some("Tromsø"));
+        // "How is the weather in us of tomorrow?", "... at all slow tomorrow?"
+        assert_eq!(label(known("us of", None)).as_deref(), Some("Oslo"));
+        assert_eq!(label(known("all slow", None)).as_deref(), Some("Oslo"));
+        assert_eq!(known("Hamburg", None), None);
+        let home = Location { latitude: 59.95, longitude: 10.77, label: "Nydalen".into() };
+        assert_eq!(known("nydalen", Some(&home)), Some(home));
+    }
+
+    #[test]
+    fn sound_alikes_of_the_home_and_towns() {
+        let home = Location { latitude: 59.95, longitude: 10.77, label: "Nydalen".into() };
+        assert_eq!(label(sounds_like("bergan", None)).as_deref(), Some("Bergen"));
+        assert_eq!(label(sounds_like("tronheim", None)).as_deref(), Some("Trondheim"));
+        assert_eq!(label(sounds_like("stavangar", None)).as_deref(), Some("Stavanger"));
+        assert_eq!(label(sounds_like("nydal'n", Some(&home))).as_deref(), Some("Nydalen"));
+        assert_eq!(sounds_like("new york", None), None);
+        assert_eq!(sounds_like("london", None), None);
+        assert_eq!(sounds_like("mossel bay", None), None);
     }
 }
