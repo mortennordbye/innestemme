@@ -591,11 +591,11 @@ impl AssistantProcessor {
             let mut ha = HomeAssistant::new(url, token);
             // Once for the calls of one request: a lockdown makes three.
             let (failed, last) = (jobs.clone(), std::sync::Mutex::new(None::<Instant>));
-            ha.write_behind(move |_| {
+            ha.write_behind(move |error| {
                 let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
                 if last.is_none_or(|at| at.elapsed() > Duration::from_secs(10)) {
                     *last = Some(Instant::now());
-                    let _ = failed.send(Job::Failed("Sorry, I couldn't reach Home Assistant.".into()));
+                    let _ = failed.send(Job::Failed(unreachable_text(error, false).into()));
                 }
             })?;
             match ha.check() {
@@ -1808,6 +1808,7 @@ impl Worker {
             "I couldn't find that light.",
             "I couldn't find that scene.",
             "Sorry, I couldn't reach Home Assistant.",
+            "Sorry, Home Assistant couldn't do all of that.",
             "Sorry, I couldn't find that place.",
             "Okay, I'm ringing your phone.",
         ]
@@ -3868,8 +3869,17 @@ fn time_of_day(lang: Lang) -> String {
 
 fn unreachable(error: &anyhow::Error, no: bool) -> String {
     warn!(%error, "home assistant call failed");
-    if no { "Beklager, jeg får ikke kontakt med Home Assistant." } else { "Sorry, I couldn't reach Home Assistant." }
-        .into()
+    unreachable_text(error, no).into()
+}
+
+/// A device that did not answer is not Home Assistant being out of reach.
+fn unreachable_text(error: &anyhow::Error, no: bool) -> &'static str {
+    match (voice_assistant::ha::refused(error), no) {
+        (true, false) => "Sorry, Home Assistant couldn't do all of that.",
+        (true, true) => "Beklager, Home Assistant fikk ikke gjort alt.",
+        (false, false) => "Sorry, I couldn't reach Home Assistant.",
+        (false, true) => "Beklager, jeg får ikke kontakt med Home Assistant.",
+    }
 }
 
 pub(crate) fn save_wav(
@@ -3995,6 +4005,19 @@ mod tests {
         );
         // Spotify from a phone plays on the speaker alone: that is paused.
         assert_eq!(hushed(vec![playing("media_player.living_room", true)]), ["media_player.living_room"]);
+    }
+
+    #[test]
+    fn a_refused_call_is_not_an_unreachable_home_assistant() {
+        let refused = anyhow::Error::new(voice_assistant::ha::Refused {
+            path: "/api/services/light/turn_off".into(),
+            status: 500,
+        });
+        assert_eq!(unreachable_text(&refused, false), "Sorry, Home Assistant couldn't do all of that.");
+        assert_eq!(
+            unreachable_text(&anyhow::anyhow!("timeout: global"), false),
+            "Sorry, I couldn't reach Home Assistant."
+        );
     }
 
     #[test]
