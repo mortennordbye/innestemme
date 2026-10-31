@@ -8,8 +8,9 @@ use serde::Deserialize;
 use crate::dialog::normalize;
 use crate::lang::Lang;
 
-/// Spoken answers stop after this many words, at a sentence end where possible.
-const MAX_WORDS: usize = 35;
+/// Spoken answers stop after this many words, at a sentence end where possible: by voice the
+/// first sentence or two is the answer, and 40 words took over ten seconds to say.
+const MAX_WORDS: usize = 25;
 
 /// Openings that ask about a topic, longest first; what follows is the topic.
 const OPENINGS: &[&str] = &[
