@@ -530,7 +530,13 @@ pub const ROUTINE_ANSWERS: &[&str] = &[
     "Welcome home.",
 ];
 
+/// Words that open a sentence without changing it.
+const OPENERS: &[&str] = &["oh", "well", "so", "okay", "ok", "yeah", "right", "alright", "hey"];
+
 pub fn routine(words: &[String]) -> Option<Routine> {
+    // An opening the speaker adds: "oh, I'm home", "well, good night".
+    let start = words.iter().position(|w| !OPENERS.contains(&w.as_str())).unwrap_or(words.len());
+    let words = &words[start..];
     if words.len() > 9 {
         return None;
     }

@@ -1194,6 +1194,8 @@ mod tests {
         assert_eq!(parse("Hey, what time is it?"), Intent::Time);
         assert_eq!(parse("What's the temperaturing size?"), parse("What's the temperature inside?"));
         assert_eq!(parse("What time is this?"), Intent::Time);
+        assert_eq!(parse("Oh, I'm home."), Intent::Routine(house::Routine::Home));
+        assert!(matches!(parse("Why is your name Darby?"), Intent::SmallTalk(_)));
         assert_eq!(parse("hva er klokka?"), Intent::Time);
         assert_eq!(parse("hvor mye er klokken"), Intent::Time);
         assert_eq!(parse("What time is it now?"), Intent::Time);
