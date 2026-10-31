@@ -705,7 +705,6 @@ impl Bridge<'_> {
         self.device.event(Event::WakeWordEnd, &[]).await?;
         self.device.event(Event::SttStart, &[]).await?;
         self.preroll.clear();
-        assistant.voice_of(&wake);
         if self.dump.is_some() {
             self.recording.clone_from(&wake);
         }
@@ -722,6 +721,8 @@ impl Bridge<'_> {
             }
             None => assistant.woke_on(resample::to_24k(&wake, DEVICE_RATE)),
         }
+        // After the wake job: the worker resets whom it addresses on a wake, so the voice must come later.
+        assistant.voice_of(&wake);
         Ok(())
     }
 
