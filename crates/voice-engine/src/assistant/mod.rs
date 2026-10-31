@@ -850,7 +850,7 @@ impl Worker {
     fn act(&mut self, intent: Intent, lang: Lang) -> Option<String> {
         let no = lang == Lang::Norwegian;
         Some(match intent {
-            Intent::Weather { place, day } => self.weather(place, day, lang),
+            Intent::Weather { place, day, focus } => self.weather(place, day, focus, lang),
             Intent::Transit(query) => {
                 if !self.transit.is_configured() {
                     return Some(if no {

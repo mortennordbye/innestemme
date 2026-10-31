@@ -34,6 +34,12 @@ const NUMBER_SHAPES: &[(&str, u32)] = &[
     ("it's # degree in ", 100),
     ("the high today is #", 100),
     ("# to # degrees", 100),
+    ("down to # degree", 100),
+    ("the wind is # metre", 100),
+    ("the wind gets up to # metre", 100),
+    // When rain starts and stops: "Rain is expected from around 14:00 to 17:00."
+    ("is expected from around #:#", 59),
+    ("it should stop around #:#", 59),
     // The time: "It's 16:50."
     ("it's #:#", 59),
     // Departures: the line ("The next bus is the 31 to Snarøya, from Wessels plass."), then when.

@@ -64,6 +64,17 @@ tools), else gets the short fallback. The cluster runs without one.
 house, tv, news, lookup, calc, distance, party, smalltalk, jokes). `catalogue.rs` lists them for people: what each
 does, its data source, the calls it makes and example phrases, which the tests parse.
 
+**Weather.** MET's forecast reaches about nine days (hourly for the first two and a half, then in six-hour
+steps), so a question about tonight, tomorrow, a weekday ("on Saturday", "på lørdag") or the weekend is answered
+from it, and a day past its end is said to be ("The forecast doesn't reach Wednesday yet."). Times in a question
+("in the morning", "at 6", "later") are never taken for the place; "at home" and "here" are the home. "Will it
+rain later", "do I need an umbrella" and "should I bring a jacket" are answered from the hourly steps: when rain
+starts or stops for the rest of the day (at least six hours ahead) or tonight. "How windy is it" says the wind in
+m/s, calm or not. A place is looked up in this order: the home by its name, a larger Norwegian town or a known
+mishearing of one ("us of" and "all slow" for Oslo), an exact match in Norway from Open-Meteo's geocoder, the
+home or a town the whole name sounds like (`names.rs`, "Bergan", "Tronheim"), then the geocoder's best match
+anywhere. Places found or not are kept in memory.
+
 **Home Assistant.** REST only (`ha.rs`): one template call lists every light with its area, service calls do the
 rest. Writes that the answer does not depend on (lights, scenes, the lockdown, routines, ringing a phone, pausing
 and resuming music) go to a queue on a thread of their own and run in order, because Home Assistant answers a
