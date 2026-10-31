@@ -80,8 +80,8 @@ the 500 heard most are rendered first after a start, so a new voice has them rea
 kept only for a few frequent shapes. Fixed wording and live data are separate sentences, so only the data is
 synthesized. A slow skill opens with a cached lead-in ("Checking the forecast, sir.") while it fetches. The home's forecast
 and the electricity prices are fetched every 4 minutes while idle, so those answers need no request and skip the
-lead-in, which would only hold them back by its own 2 s. A
-sentence heard before it was rendered is logged as `speech not rendered ahead`.
+lead-in, which would only hold them back by its own 2 s. When MET cannot be reached, a forecast up to six hours old
+still answers. A sentence heard before it was rendered is logged as `speech not rendered ahead`.
 
 **Satellite bridge.** `voice-esphome` speaks the ESPHome native API (plaintext or Noise) the way Home Assistant
 does, so the engine takes the device's microphone in place of Assist. Answers are wavs on the engine's HTTP port
