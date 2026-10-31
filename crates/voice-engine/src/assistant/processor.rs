@@ -64,7 +64,12 @@ pub struct AssistantProcessor {
 
 impl AssistantProcessor {
     /// `transcriber` is Whisper or Parakeet, one call per utterance the energy detector cuts.
-    pub fn new(transcriber: Box<dyn Transcribe>, tts: Box<dyn Tts>, config: AssistantConfig) -> anyhow::Result<Self> {
+    pub fn new(
+        transcriber: Box<dyn Transcribe>,
+        tts: Box<dyn Tts>,
+        mut config: AssistantConfig,
+    ) -> anyhow::Result<Self> {
+        let wake_listener = config.wake_listener.take();
         let (jobs, rx) = mpsc::channel();
         let (reply_tx, reply) = rtrb::RingBuffer::new(SAMPLE_RATE as usize * 60);
         let busy = Arc::new(AtomicBool::new(false));
@@ -142,6 +147,7 @@ impl AssistantProcessor {
             player: Player::new(speaker),
             tv,
             transcriber,
+            wake_listener,
             draft: None,
             follow_up_until: None,
             woken_at: None,
@@ -246,6 +252,9 @@ impl AssistantProcessor {
         }
         let start = Instant::now();
         worker.transcriber.transcribe(&[0i16; FRAME_SAMPLES * 12])?;
+        if let Some(listener) = &mut worker.wake_listener {
+            listener.transcribe(&[0i16; FRAME_SAMPLES * 12])?;
+        }
         info!(elapsed = ?start.elapsed(), "listener warmed up");
         std::thread::Builder::new().name("assistant".into()).spawn(move || worker.run(rx))?;
         let hear_now = Arc::new(AtomicBool::new(false));

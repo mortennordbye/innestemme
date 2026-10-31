@@ -4635,6 +4635,7 @@ name = "voice-assistant"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bzip2 0.5.2",
  "candle-core",
  "candle-nn",
  "candle-transformers",
@@ -4646,6 +4647,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sherpa-onnx",
+ "tar",
  "tracing",
  "tracing-subscriber",
  "tract-onnx",

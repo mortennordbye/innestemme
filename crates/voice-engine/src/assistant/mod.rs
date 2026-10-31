@@ -94,6 +94,9 @@ const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 const DATA_REFRESH: Duration = Duration::from_secs(240);
 
 pub struct AssistantConfig {
+    /// Listens for the name in a wake word instead of the main listener: the fast model misses
+    /// the name more often, and this check runs while the request is still being spoken.
+    pub wake_listener: Option<Box<dyn Transcribe>>,
     /// Place used when a weather question names none; also the home's name in answers.
     pub home: Option<String>,
     /// The home's street address or coordinates: exact weather, and the stops near it.
@@ -252,6 +255,7 @@ struct Worker {
     player: Player,
     tv: Tv,
     transcriber: Box<dyn Transcribe>,
+    wake_listener: Option<Box<dyn Transcribe>>,
     /// The latest draft and its transcripts.
     draft: Option<(Vec<i16>, Vec<Transcript>)>,
     /// Until then, speech counts without the name: after a bare name, and for a while after each

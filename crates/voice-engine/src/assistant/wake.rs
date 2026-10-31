@@ -38,7 +38,10 @@ impl Worker {
     /// than end the run in silence, which sounds as if the device never woke.
     /// Whether a wake word's audio holds the assistant's name.
     pub(super) fn name_in(&mut self, audio: &[i16]) -> Option<bool> {
-        let transcriber = &mut self.transcriber;
+        let transcriber = match &mut self.wake_listener {
+            Some(listener) => listener,
+            None => &mut self.transcriber,
+        };
         let start = Instant::now();
         let heard = match transcriber.transcribe(audio) {
             Ok(candidates) => candidates.into_iter().next().map(|c| c.text).unwrap_or_default(),
