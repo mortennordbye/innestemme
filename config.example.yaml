@@ -11,6 +11,10 @@
 wake-name: Homie
 # English answers like a butler, addressing you this way: "As you wish, sir."
 # honorific: sir
+# Address female voices this way and male ones by `honorific`, told apart by how the wake word sounds (a
+# 30 MB model, about 20 ms per wake word, off the answer's path). A voice it is not sure of, a child's
+# say, gets no honorific: "As you wish. The lights are off."
+# honorific-female: ma'am
 # Extra ways the transcriber writes the name on your voice (record some with `--dump-utterances`).
 wake-spellings: []
 # Place for weather questions that name none. Without it the assistant asks which place.

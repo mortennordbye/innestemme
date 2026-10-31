@@ -133,6 +133,11 @@ struct Args {
     /// Speak English answers like a butler and address the user this way, e.g. "sir".
     #[arg(long, env = "VOICE_HONORIFIC")]
     honorific: Option<String>,
+    /// Address female voices this way, e.g. "ma'am", and male ones by `--honorific`. Each wake word
+    /// is classified by how the voice sounds (a 30 MB model, downloaded on first use); a voice it
+    /// is not sure of gets no honorific.
+    #[arg(long, env = "VOICE_HONORIFIC_FEMALE")]
+    honorific_female: Option<String>,
     /// Other ways the transcriber writes the name, comma-separated (see DUMP / `--dump-utterances`).
     #[arg(long, env = "VOICE_WAKE_SPELLINGS", value_delimiter = ',')]
     wake_spellings: Vec<String>,
@@ -534,6 +539,22 @@ fn main() -> Result<()> {
                     speaker: args.speaker.clone(),
                     room: args.room.clone(),
                     honorific: args.honorific.clone(),
+                    honorific_female: args.honorific_female.clone(),
+                    voice_gender: match (&args.honorific, &args.honorific_female) {
+                        // Without the model everyone is addressed by `honorific`, as before.
+                        (Some(_), Some(_)) => match voice_assistant::voice_gender::VoiceGender::load(1) {
+                            Ok(model) => {
+                                info!("telling male and female voices apart");
+                                Some(Arc::new(model))
+                            }
+                            Err(error) => {
+                                warn!(error = format!("{error:#}"), "no voice gender model; one honorific for all");
+                                None
+                            }
+                        },
+                        (None, Some(_)) => anyhow::bail!("`--honorific-female` needs `--honorific`"),
+                        _ => None,
+                    },
                     tv: args.tv.clone(),
                     plex: args
                         .plex_url
@@ -642,6 +663,7 @@ fn main() -> Result<()> {
                 "wake_words": args.satellite_wake_words,
                 "voice": voice,
                 "honorific": args.honorific,
+                "honorific_female": args.honorific_female,
                 "norwegian": args.norwegian,
                 "language_model": args.llm_url.is_some(),
                 "version": option_env!("INNESTEMME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),

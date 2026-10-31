@@ -705,6 +705,7 @@ impl Bridge<'_> {
         self.device.event(Event::WakeWordEnd, &[]).await?;
         self.device.event(Event::SttStart, &[]).await?;
         self.preroll.clear();
+        assistant.voice_of(&wake);
         if self.dump.is_some() {
             self.recording.clone_from(&wake);
         }

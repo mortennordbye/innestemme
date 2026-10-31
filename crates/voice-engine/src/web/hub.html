@@ -790,7 +790,7 @@ async function loadSkills() {
     const chip = (k, v) => { const c = el("span", "chip"); c.append(k + " "); c.append(el("b", null, v)); chips.append(c); };
     if (about.wake_words?.length) chip("Wake word", about.wake_words.join(", "));
     if (about.voice) chip("Voice", about.voice);
-    if (about.honorific) chip("Calls you", about.honorific);
+    if (about.honorific) chip("Calls you", [about.honorific, about.honorific_female].filter(Boolean).join(" / "));
     chip("Understanding", about.language_model ? "rules + language model" : "rules only");
     chip("Norwegian", about.norwegian ? "on" : "off");
   } catch { skills = []; }
@@ -1870,7 +1870,7 @@ function renderSystem() {
   ]);
   card("Voice", [
     ["Voice", a.voice],
-    ["Calls you", a.honorific],
+    ["Calls you", [a.honorific, a.honorific_female].filter(Boolean).join(" / ") || null],
     ["Rendered ahead", sys.speech_cache ? `${sys.speech_cache.sentences.toLocaleString()} sentences · ${sys.speech_cache.mb} MB` : null],
     ["Answers on", a.answer_player || "the device"],
   ]);
