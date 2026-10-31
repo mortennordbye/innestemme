@@ -172,8 +172,9 @@ impl Party {
                 Err(_) => (0, 0.0),
             };
             counted += beats;
-            if since.elapsed() >= Duration::from_secs(10) {
-                info!(?mode, beats = counted, level = format!("{level:.2}"), "party mode: beats in 10 s");
+            // A minute at a time: every 10 s was most of the engine's log on a party evening.
+            if since.elapsed() >= Duration::from_secs(60) {
+                info!(?mode, beats = counted, level = format!("{level:.2}"), "party mode: beats in a minute");
                 (counted, since) = (0, Instant::now());
             }
             let colours = show.frame(mode, beats, level, start.elapsed());

@@ -111,6 +111,9 @@ const COLOURS: &[(&str, &[&str])] = &[
 ];
 const DIM_WORDS: &[&str] = &["dim", "dimm", "dimme", "demp", "dempe", "darker", "dimmer", "mørkere"];
 const BRIGHT_WORDS: &[&str] = &["brighten", "brighter", "lysere", "sterkere"];
+/// Verbs that only change the brightness next to a light or brightness word: "lower the brightness".
+const RAISE_WORDS: &[&str] = &["increase", "raise", "øk", "øke"];
+const LOWER_WORDS: &[&str] = &["decrease", "lower", "reduce", "senk", "senke"];
 const WARM_WORDS: &[&str] = &["warm", "warmer", "varm", "varmt", "varmere", "cosy", "cozy"];
 const COOL_WORDS: &[&str] = &["cool", "cooler", "cold", "colder", "kald", "kaldt", "kaldere"];
 /// Verbs that make a colour a light request without the word "light": "make the bedroom red".
@@ -200,6 +203,12 @@ fn light_level(words: &[String], text: &str) -> Option<LightLevel> {
     if any(BRIGHT_WORDS) {
         return Some(LightLevel::Brighter);
     }
+    if about_brightness && any(RAISE_WORDS) {
+        return Some(LightLevel::Brighter);
+    }
+    if about_brightness && any(LOWER_WORDS) {
+        return Some(LightLevel::Dimmer);
+    }
     if light && (has("up") || has("opp")) {
         return Some(LightLevel::Brighter);
     }
@@ -229,6 +238,8 @@ fn level_target(text: &str) -> String {
         LEVEL_FILLER.contains(&w)
             || DIM_WORDS.contains(&w)
             || BRIGHT_WORDS.contains(&w)
+            || RAISE_WORDS.contains(&w)
+            || LOWER_WORDS.contains(&w)
             || WARM_WORDS.contains(&w)
             || COOL_WORDS.contains(&w)
             || COLOURS.iter().any(|(_, spoken)| spoken.contains(&w))
@@ -528,6 +539,13 @@ fn music(words: &[String]) -> Option<MusicCommand> {
         return Some(MusicCommand::Previous);
     }
     const VOLUME: &[&str] = &["volume", "volumet", "sound", "lyd", "lyden", "turn", "skru", "it", "music", "musikken"];
+    // "Lower the brightness", "turn the lights down": the lights, unless the sound is named too.
+    let sound = ["volume", "volumet", "sound", "lyd", "lyden", "music", "musikk", "musikken"].iter().any(|w| has(w));
+    let lights = ["brightness", "lysstyrke", "lysstyrken"].iter().any(|w| has(w))
+        || words.iter().any(|w| LIGHT_WORDS.contains(&w.as_str()));
+    if lights && !sound {
+        return None;
+    }
     let volume = words.iter().any(|w| VOLUME.contains(&w.as_str()));
     // "Up" and "down" only after a volume word ("turn it up", "skru ned lyden"): in "show the bus
     // times ... up it" the "it" comes too late to be turned up.
@@ -578,11 +596,28 @@ fn volume_amount(words: &[String]) -> Option<(bool, u8)> {
 /// only: anything more ("in Tokyo", "does the shop close") is left to the language model.
 fn is_time_question(words: &[String]) -> bool {
     // Words around the question that do not change it: "what's the time today", "tell me the time please".
-    let filler = ["now", "please", "right", "today", "currently", "exactly", "again", "here", "nå", "da", "egentlig"];
+    // An opening the room adds: "hey, what time is it", "so what's the time".
+    let filler = [
+        "now",
+        "please",
+        "right",
+        "today",
+        "currently",
+        "exactly",
+        "again",
+        "here",
+        "hey",
+        "so",
+        "oh",
+        "well",
+        "nå",
+        "da",
+        "egentlig",
+    ];
     let phrase: Vec<&str> = words.iter().map(String::as_str).filter(|w| !filler.contains(w)).collect();
     matches!(
         phrase.as_slice(),
-        ["what", "time", "is", "it"]
+        ["what", "time", "is", "it" | "this"]
             | ["what's" | "whats", "the", "time"]
             | ["what", "is", "the", "time"]
             | ["tell", "me", "the", "time"]
@@ -717,6 +752,8 @@ const MISHEARD: &[(&[&str], &[&str])] = &[
     (&["who", "am", "i", "on"], &["what's", "on"]),
     (&["increase", "the", "sum"], &["increase", "the", "sound"]),
     (&["increased", "the", "sale"], &["increase", "the", "sound"]),
+    (&["temperaturing", "size"], &["temperature", "inside"]),
+    (&["temperature", "in", "size"], &["temperature", "inside"]),
 ];
 
 /// The request with known mishearings put right, as normalised words; unchanged when there are none.
@@ -1154,6 +1191,11 @@ mod tests {
     #[test]
     fn time_questions() {
         assert_eq!(parse("What time is it?"), Intent::Time);
+        assert_eq!(parse("Hey, what time is it?"), Intent::Time);
+        assert_eq!(parse("What's the temperaturing size?"), parse("What's the temperature inside?"));
+        assert_eq!(parse("What time is this?"), Intent::Time);
+        assert_eq!(parse("Oh, I'm home."), Intent::Routine(house::Routine::Home));
+        assert!(matches!(parse("Why is your name Darby?"), Intent::SmallTalk(_)));
         assert_eq!(parse("hva er klokka?"), Intent::Time);
         assert_eq!(parse("hvor mye er klokken"), Intent::Time);
         assert_eq!(parse("What time is it now?"), Intent::Time);
@@ -1236,6 +1278,13 @@ mod tests {
         is("it's a bit too bright in here", Dimmer, "in here");
         is("it's too dark in the kitchen", Brighter, "in the kitchen");
         is("det er for mørkt på kjøkkenet", Brighter, "det på kjøkkenet");
+        // From the engine's log: these were not understood, and "lower" was the music.
+        is("Increase the brightness.", Brighter, "the");
+        is("Increase the brightness in the living room.", Brighter, "the in the living room.");
+        is("lower the brightness", Dimmer, "the");
+        is("lower the lights in the kitchen", Dimmer, "the lights in the kitchen");
+        assert_eq!(parse("lower the volume"), Intent::Music(MusicCommand::Quieter));
+        assert_eq!(parse("lower the music"), Intent::Music(MusicCommand::Quieter));
         assert_eq!(level("make it warmer in here"), None);
         assert_eq!(level("set the living room to relax"), None);
         assert!(matches!(parse("play Purple Rain"), Intent::Music(_)));

@@ -15,6 +15,9 @@ use crate::lang::Lang;
 
 /// MET updates the forecast about hourly; answers within this reuse the last one.
 const CACHE: Duration = Duration::from_secs(600);
+/// When MET cannot be reached (a DNS outage in the cluster lasted over an hour), a forecast this
+/// old still answers: the hours ahead change little.
+const STALE_OK: Duration = Duration::from_secs(6 * 3600);
 
 pub struct Weather {
     agent: ureq::Agent,
@@ -53,9 +56,11 @@ impl Weather {
     /// Fetches `place`'s forecast once the kept one is half as old as it may get, so a question about
     /// it is always answered from memory.
     pub fn refresh(&mut self, place: &Location) -> Result<()> {
-        if !self.cache.get(&key(place)).is_some_and(|(at, _)| at.elapsed() < CACHE / 2) {
-            self.cache.remove(&key(place));
-            self.met(place)?;
+        let key = key(place);
+        if !self.cache.get(&key).is_some_and(|(at, _)| at.elapsed() < CACHE / 2) {
+            // The kept forecast stays until a new one has arrived.
+            let met = self.fetch(key)?;
+            self.cache.insert(key, (Instant::now(), met));
         }
         Ok(())
     }
@@ -67,20 +72,31 @@ impl Weather {
 
     fn met(&mut self, place: &Location) -> Result<&Met> {
         let key = key(place);
-        if !self.cache.get(&key).is_some_and(|(at, _)| at.elapsed() < CACHE) {
-            let met: Met = self
-                .agent
-                .get("https://api.met.no/weatherapi/locationforecast/2.0/complete")
-                .query("lat", format!("{:.2}", key.0 as f64 / 100.0))
-                .query("lon", format!("{:.2}", key.1 as f64 / 100.0))
-                .call()
-                .context("forecast request (MET Norway)")?
-                .body_mut()
-                .read_json()
-                .context("reading the forecast")?;
-            self.cache.insert(key, (Instant::now(), met));
+        let age = self.cache.get(&key).map(|(at, _)| at.elapsed());
+        if !age.is_some_and(|age| age < CACHE) {
+            match self.fetch(key) {
+                Ok(met) => {
+                    self.cache.insert(key, (Instant::now(), met));
+                }
+                Err(error) if age.is_some_and(|age| age < STALE_OK) => {
+                    tracing::warn!(error = format!("{error:#}"), ?age, "answering from an older forecast");
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(&self.cache[&key].1)
+    }
+
+    fn fetch(&self, key: (i64, i64)) -> Result<Met> {
+        self.agent
+            .get("https://api.met.no/weatherapi/locationforecast/2.0/complete")
+            .query("lat", format!("{:.2}", key.0 as f64 / 100.0))
+            .query("lon", format!("{:.2}", key.1 as f64 / 100.0))
+            .call()
+            .context("forecast request (MET Norway)")?
+            .body_mut()
+            .read_json()
+            .context("reading the forecast")
     }
 }
 

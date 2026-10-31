@@ -591,11 +591,11 @@ impl AssistantProcessor {
             let mut ha = HomeAssistant::new(url, token);
             // Once for the calls of one request: a lockdown makes three.
             let (failed, last) = (jobs.clone(), std::sync::Mutex::new(None::<Instant>));
-            ha.write_behind(move |_| {
+            ha.write_behind(move |error| {
                 let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
                 if last.is_none_or(|at| at.elapsed() > Duration::from_secs(10)) {
                     *last = Some(Instant::now());
-                    let _ = failed.send(Job::Failed("Sorry, I couldn't reach Home Assistant.".into()));
+                    let _ = failed.send(Job::Failed(unreachable_text(error, false).into()));
                 }
             })?;
             match ha.check() {
@@ -1116,7 +1116,8 @@ impl Worker {
         let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);
         let request = match self.config.wake.strip(&first.text) {
             Some(rest) if !rest.is_empty() => rest,
-            None if follow_up || self.woken_at.is_some() => first.text.clone(),
+            None if self.woken_at.is_some() => first.text.clone(),
+            None if follow_up && !room_talk(&first.text) => first.text.clone(),
             _ => return,
         };
         let request = self.learned_meaning(request);
@@ -1170,7 +1171,7 @@ impl Worker {
         let request = match music_by_sound(&request, playing) {
             Some(meant) if addressed || self.woken_at.is_some() => {
                 info!(heard = request, meant, "music request by its shape");
-                meant.to_owned()
+                meant
             }
             _ => request,
         };
@@ -1188,7 +1189,10 @@ impl Worker {
         let confirming = self.pending_confirm.is_some() && confirmation(&request).is_some();
         let pending =
             self.pending_lights.is_some() || confirming || self.timers.awaiting_duration() || self.list_is_open();
-        if !addressed && !pending && unknown && self.config.llm.is_none() {
+        // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
+        // for murdering his barn it 40 stop" set the volume.
+        let room = !addressed && self.woken_at.is_none() && room_talk(&request);
+        if !pending && (room || (!addressed && unknown && self.config.llm.is_none())) {
             info!(text = heard.text, "not addressed");
             self.not_understood(&heard.text, audio, ended, heard.lang, start);
             return;
@@ -1700,7 +1704,8 @@ impl Worker {
     /// said most, then the long tail.
     fn fixed_sentences(&self) -> (Vec<String>, Vec<String>) {
         let honorifics: Vec<Option<&str>> = match &self.persona {
-            Some(persona) => persona.honorifics().iter().map(|h| Some(h.as_str())).collect(),
+            // Plain as well: a voice the persona is unsure of hears the lead-in without one.
+            Some(persona) => persona.honorifics().iter().map(|h| Some(h.as_str())).chain([None]).collect(),
             None => vec![None],
         };
         let mut texts: Vec<String> = LEADS
@@ -1799,10 +1804,16 @@ impl Worker {
     fn home_sentences(&mut self) -> Vec<String> {
         let Some(ha) = &mut self.home_assistant else { return Vec::new() };
         let states = ["on", "off", "back on", "back off"];
-        let mut answers: Vec<String> =
-            ["I couldn't find that light.", "Sorry, I couldn't reach Home Assistant.", "Okay, I'm ringing your phone."]
-                .map(String::from)
-                .into();
+        let mut answers: Vec<String> = [
+            "I couldn't find that light.",
+            "I couldn't find that scene.",
+            "Sorry, I couldn't reach Home Assistant.",
+            "Sorry, Home Assistant couldn't do all of that.",
+            "Sorry, I couldn't find that place.",
+            "Okay, I'm ringing your phone.",
+        ]
+        .map(String::from)
+        .into();
         if let Ok(lights) = ha.lights() {
             let mut areas: Vec<String> =
                 lights.iter().map(|l| l.area.to_lowercase()).filter(|a| !a.is_empty()).collect();
@@ -3604,6 +3615,15 @@ const REQUEST_OPENINGS: &[&str] = &[
 const REQUEST_FILLER: &[&str] =
     &["hey", "hi", "ok", "okay", "please", "so", "um", "uh", "oh", "and", "now", "just", "hei", "kjære"];
 
+/// Words in a follow-up without the name, past which it has to open like a request: a long
+/// sentence that does not is the TV or the room.
+const FOLLOW_UP_MOST_WORDS: usize = 8;
+
+/// Speech in the follow-up window that is too long and does not open like a request.
+fn room_talk(text: &str) -> bool {
+    text.split_whitespace().count() > FOLLOW_UP_MOST_WORDS && !sounds_like_a_request(text)
+}
+
 /// Whether unrecognised speech opens like a request at all.
 fn sounds_like_a_request(text: &str) -> bool {
     text.split_whitespace()
@@ -3615,12 +3635,23 @@ fn sounds_like_a_request(text: &str) -> bool {
 /// Whisper hears "pause" and "play" after the wake word as "please", "nice", "post": a short request
 /// that ends in "music" and is nothing else means pausing it when it was playing, else playing it.
 /// A prompt with the command words fixes some of these but makes up commands from room noise.
-fn music_by_sound(request: &str, playing: bool) -> Option<&'static str> {
+fn music_by_sound(request: &str, playing: bool) -> Option<String> {
     let words: Vec<String> =
         request.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
     // "Stop" over music means the music, not "never mind".
     if bare_stop(request) && playing {
-        return Some("pause the music");
+        return Some("pause the music".into());
+    }
+    // Over music, a short request with a percentage and no light is the volume: "put the percentage
+    // at 70 percent", "trop with the sign at 50 percent" (drop the sound).
+    if playing && words.len() <= 8 && intent::parse(request) == Intent::Unknown {
+        let percent = words.windows(2).find_map(|p| {
+            let n = p[0].parse::<u8>().ok().filter(|n| *n <= 100)?;
+            ["percent", "prosent"].contains(&p[1].as_str()).then_some(n)
+        });
+        if let Some(n) = percent {
+            return Some(format!("set the volume to {n}"));
+        }
     }
     // "Play my liked songs" comes out as "claim a light song", "they're my like songs", "clean
     // my life's songs": the play is lost under the wake word's end and "liked" sounds like these.
@@ -3629,14 +3660,11 @@ fn music_by_sound(request: &str, playing: bool) -> Option<&'static str> {
         .iter()
         .any(|w| ["like", "liked", "likes", "light", "lights", "life", "life's", "lifes"].contains(&w.as_str()));
     if songs && liked && words.len() <= 5 && intent::parse(request) == Intent::Unknown {
-        return Some("play my liked songs");
+        return Some("play my liked songs".into());
     }
     let music = words.last().is_some_and(|w| ["music", "musikk", "musikken"].contains(&w.as_str()));
-    (music && words.len() <= 4 && intent::parse(request) == Intent::Unknown).then_some(if playing {
-        "pause the music"
-    } else {
-        "play some music"
-    })
+    (music && words.len() <= 4 && intent::parse(request) == Intent::Unknown)
+        .then(|| if playing { "pause the music" } else { "play some music" }.into())
 }
 
 /// An action whose result is heard (the music stops, the next song starts) needs no words, which
@@ -3841,8 +3869,17 @@ fn time_of_day(lang: Lang) -> String {
 
 fn unreachable(error: &anyhow::Error, no: bool) -> String {
     warn!(%error, "home assistant call failed");
-    if no { "Beklager, jeg får ikke kontakt med Home Assistant." } else { "Sorry, I couldn't reach Home Assistant." }
-        .into()
+    unreachable_text(error, no).into()
+}
+
+/// A device that did not answer is not Home Assistant being out of reach.
+fn unreachable_text(error: &anyhow::Error, no: bool) -> &'static str {
+    match (voice_assistant::ha::refused(error), no) {
+        (true, false) => "Sorry, Home Assistant couldn't do all of that.",
+        (true, true) => "Beklager, Home Assistant fikk ikke gjort alt.",
+        (false, false) => "Sorry, I couldn't reach Home Assistant.",
+        (false, true) => "Beklager, jeg får ikke kontakt med Home Assistant.",
+    }
 }
 
 pub(crate) fn save_wav(
@@ -3971,20 +4008,44 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_call_is_not_an_unreachable_home_assistant() {
+        let refused = anyhow::Error::new(voice_assistant::ha::Refused {
+            path: "/api/services/light/turn_off".into(),
+            status: 500,
+        });
+        assert_eq!(unreachable_text(&refused, false), "Sorry, Home Assistant couldn't do all of that.");
+        assert_eq!(
+            unreachable_text(&anyhow::anyhow!("timeout: global"), false),
+            "Sorry, I couldn't reach Home Assistant."
+        );
+    }
+
+    #[test]
+    fn room_talk_in_the_follow_up() {
+        assert!(room_talk("With a 40 year tariff for murdering his barn it 40 stop"));
+        assert!(!room_talk("And the kitchen too."));
+        assert!(!room_talk("Turn on all the lights in the living room and the kitchen."));
+        assert!(!room_talk("What is the temperature in the bedroom right now, please?"));
+    }
+
+    #[test]
     fn misheard_music_requests() {
-        assert_eq!(music_by_sound("Nice music.", true), Some("pause the music"));
-        assert_eq!(music_by_sound("Please song music.", false), Some("play some music"));
-        assert_eq!(music_by_sound("Tyson music.", true), Some("pause the music"));
+        assert_eq!(music_by_sound("Nice music.", true), Some("pause the music".into()));
+        assert_eq!(music_by_sound("Please song music.", false), Some("play some music".into()));
+        assert_eq!(music_by_sound("Tyson music.", true), Some("pause the music".into()));
         assert_eq!(music_by_sound("Pause the music.", false), None);
         assert_eq!(music_by_sound("I really like this kind of music", true), None);
         assert_eq!(music_by_sound("Nice weather.", true), None);
-        assert_eq!(music_by_sound("They're my like songs.", false), Some("play my liked songs"));
-        assert_eq!(music_by_sound("claim a light song.", false), Some("play my liked songs"));
-        assert_eq!(music_by_sound("Clean my life's songs.", true), Some("play my liked songs"));
+        assert_eq!(music_by_sound("They're my like songs.", false), Some("play my liked songs".into()));
+        assert_eq!(music_by_sound("claim a light song.", false), Some("play my liked songs".into()));
+        assert_eq!(music_by_sound("Clean my life's songs.", true), Some("play my liked songs".into()));
         assert_eq!(music_by_sound("I like songs about the sea and the long summer nights", false), None);
-        assert_eq!(music_by_sound("Stop.", true), Some("pause the music"));
-        assert_eq!(music_by_sound("stop it", true), Some("pause the music"));
+        assert_eq!(music_by_sound("Stop.", true), Some("pause the music".into()));
+        assert_eq!(music_by_sound("stop it", true), Some("pause the music".into()));
         assert_eq!(music_by_sound("Stop.", false), None);
+        assert_eq!(music_by_sound("Put the percentage at 70 percent.", true), Some("set the volume to 70".into()));
+        assert_eq!(music_by_sound("Trop with the sign at 50 percent.", true), Some("set the volume to 50".into()));
+        assert_eq!(music_by_sound("Put the percentage at 70 percent.", false), None);
     }
 
     #[test]

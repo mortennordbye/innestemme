@@ -19,7 +19,9 @@ const SERVICE_TIMEOUT: Duration = Duration::from_secs(20);
 const REFRESH: Duration = Duration::from_secs(600);
 
 /// Every light as `{"id", "name", "area", "group"}`, rendered by Home Assistant itself.
-const LIGHTS_TEMPLATE: &str = r#"[{% for s in states.light %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}, "area": {{ (area_name(s.entity_id) or "") | tojson }}, "group": {{ (s.attributes.entity_id is defined) | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
+// Unavailable lights are left out: switching one with the rest failed the whole call after
+// several seconds (an unplugged IKEA driver at good night).
+const LIGHTS_TEMPLATE: &str = r#"[{% for s in states.light if s.state != "unavailable" %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}, "area": {{ (area_name(s.entity_id) or "") | tojson }}, "group": {{ (s.attributes.entity_id is defined) | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
 
 /// Room names people say, in both languages, grouped by room. A request and an area match when
 /// they share a group, so "living room" finds an area called "Stue" and the other way round.
@@ -29,7 +31,7 @@ const ROOMS: &[&[&str]] = &[
     &["bedroom", "soverom", "soverommet"],
     &["office", "study", "kontor", "kontoret"],
     &["hallway", "hall", "entrance", "gang", "gangen", "entre", "entreen"],
-    &["bathroom", "bad", "badet", "baderom"],
+    &["bathroom", "bath", "bad", "badet", "baderom"],
     &["dining room", "spisestue", "spisestua"],
     &["kids room", "children's room", "barnerom", "barnerommet"],
 ];
@@ -126,6 +128,27 @@ pub enum SceneMatch<'a> {
     /// The scene exists in several rooms and the request named none.
     WhichRoom,
     NotFound,
+}
+
+/// Home Assistant was reached but the call failed (a device that did not answer): not the
+/// same answer as Home Assistant being out of reach.
+#[derive(Debug)]
+pub struct Refused {
+    pub path: String,
+    pub status: u16,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Home Assistant request to {} failed: http status: {}", self.path, self.status)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Whether Home Assistant answered the failed call itself.
+pub fn refused(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| e.is::<Refused>())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -268,6 +291,7 @@ impl HomeAssistant {
                 ureq::Error::StatusCode(401) => {
                     anyhow::anyhow!("Home Assistant rejected the token (401)")
                 }
+                ureq::Error::StatusCode(status) => Refused { path: path.to_owned(), status }.into(),
                 other => anyhow::anyhow!("Home Assistant request to {path} failed: {other}"),
             })
     }
@@ -783,6 +807,8 @@ mod tests {
         assert_eq!(resolve(&home(), "lyset i stua").unwrap().label, "Living Room");
         let norsk = vec![light("light.taklampe", "Taklampe", "Stue")];
         assert_eq!(resolve(&norsk, "the living room light").unwrap().ids, vec!["light.taklampe"]);
+        let bath = vec![light("light.bathroom", "Bathroom", "Bathroom")];
+        assert_eq!(resolve(&bath, "Turn on the light in the bath.").unwrap().ids, vec!["light.bathroom"]);
     }
 
     #[test]

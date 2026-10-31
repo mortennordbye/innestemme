@@ -361,6 +361,10 @@ pub fn parse(words: &[String]) -> Option<Chat> {
         return None;
     }
     let joined = words.join(" ");
+    // "Why is your name Jarvis?", with the name misheard ("Darby").
+    if joined.starts_with("why is your name") || joined.starts_with("why are you called") {
+        return Some(Chat::WhoAreYou);
+    }
     PHRASES.iter().find_map(|(chat, phrases)| phrases.iter().any(|p| matches(&joined, p)).then_some(*chat))
 }
 
