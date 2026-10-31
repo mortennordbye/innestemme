@@ -15,6 +15,10 @@ use crate::party;
 use super::screen::SCREEN_MOMENT;
 use super::{time_of_day, unreachable, Worker};
 
+/// How long the Hue bridge takes to let go of the lights once party mode's stream stops; calls
+/// to them before then are lost.
+const PARTY_RELEASE: Duration = Duration::from_secs(1);
+
 impl Worker {
     /// "Party mode": the Hue lights follow the music, after a snapshot to put them back from.
     pub(super) fn party(&mut self, command: PartyCommand, lang: Lang) -> String {
@@ -46,7 +50,8 @@ impl Worker {
             .into();
         }
         if let Some(ha) = &self.home_assistant {
-            if let Err(error) = house::party_snapshot(ha) {
+            let keep = self.config.party.mode().is_some() || self.party_under_lockdown;
+            if let Err(error) = house::party_snapshot(ha, keep) {
                 warn!(error = format!("{error:#}"), "party mode: no snapshot of the lights");
             }
         }
@@ -84,7 +89,7 @@ impl Worker {
         if let Some((url, token)) = self.config.home_assistant.clone() {
             // On a thread of its own: the bridge lets go of the lights after the stream's last frame.
             let restore = std::thread::Builder::new().name("party-restore".into()).spawn(move || {
-                std::thread::sleep(Duration::from_secs(1));
+                std::thread::sleep(PARTY_RELEASE);
                 if let Err(error) = house::party_restore(&HomeAssistant::new(&url, &token)) {
                     warn!(error = format!("{error:#}"), "party mode: could not put the lights back");
                 }
@@ -93,6 +98,19 @@ impl Worker {
                 warn!(%error, "party mode: could not put the lights back");
             }
         }
+        true
+    }
+
+    /// Ends party mode for a lockdown, keeping its snapshot for standing down: put back now, it
+    /// would land on the lockdown's red lights, and the lockdown's own snapshot would hold the
+    /// party's colours. Waits until the bridge has let go of the lights. Whether it was on.
+    pub(super) fn party_off_for_lockdown(&mut self) -> bool {
+        if self.config.party.mode().is_none() {
+            return false;
+        }
+        self.config.party.stop();
+        self.party_under_lockdown = true;
+        std::thread::sleep(PARTY_RELEASE);
         true
     }
 

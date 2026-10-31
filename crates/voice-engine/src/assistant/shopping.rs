@@ -12,26 +12,6 @@ use super::{unreachable, Worker};
 pub(super) const LIST_OPEN: Duration = Duration::from_secs(60);
 /// A reply longer than this while the list is open is the room talking, not items.
 pub(super) const LIST_REPLY_WORDS: usize = 6;
-/// Replies that close the list.
-pub(super) const LIST_DONE: &[&str] = &[
-    "that's all",
-    "that's it",
-    "that is all",
-    "that is it",
-    "that's everything",
-    "done",
-    "i'm done",
-    "all done",
-    "nothing else",
-    "nothing more",
-    "no more",
-    "finished",
-    "det var alt",
-    "det er alt",
-    "ferdig",
-    "ikke noe mer",
-    "ikke mer",
-];
 
 impl Worker {
     /// `brief`: one of several items said one after the other.
@@ -80,5 +60,18 @@ impl Worker {
 
     pub(super) fn list_is_open(&self) -> bool {
         self.list_open.is_some_and(|at| at.elapsed() < LIST_OPEN)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use voice_assistant::intent::{self, Intent};
+
+    /// Replies to the open list reach it only when nothing else claims them.
+    #[test]
+    fn open_list_replies_are_no_other_request() {
+        for reply in ["remove milk", "actually remove the milk", "add milk", "take the eggs off", "milk and eggs"] {
+            assert_eq!(intent::parse(reply), Intent::Unknown, "{reply}");
+        }
     }
 }

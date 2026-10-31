@@ -175,6 +175,7 @@ impl AssistantProcessor {
             room: None,
             warmed_prompt: String::new(),
             lockdown_volume: None,
+            party_under_lockdown: false,
             lockdown_tv: None,
             threat_turn: 0,
             music_under_answer: false,
@@ -219,6 +220,10 @@ impl AssistantProcessor {
                     warn!(url, %error, "home assistant not usable; light requests will fail")
                 }
             }
+            let failed = jobs.clone();
+            worker.player.on_late_failure(move |text| {
+                let _ = failed.send(Job::Failed(text));
+            });
             match worker.player.check(&ha) {
                 Ok(player) => info!(player, "music assistant connected"),
                 Err(error) => warn!(%error, "music assistant not usable; music requests will fail"),

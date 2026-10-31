@@ -16,6 +16,18 @@ use super::{unreachable, Worker};
 /// "Them" and "that" refer to the last lights for this long.
 const MEMORY: Duration = Duration::from_secs(120);
 
+/// The scene a light level change keeps the lights' previous look in, for "undo".
+const UNDO_SCENE: &str = "lights_undo";
+
+/// The last change to the lights, for "undo".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum LightChange {
+    /// Switched on or off.
+    Switched(bool),
+    /// A brightness or colour change; how they were before is kept in [`UNDO_SCENE`].
+    Level,
+}
+
 /// "In here", "this room", "her inne", "dette rommet".
 fn mentions_this_room(request: &str) -> bool {
     let text = format!(" {} ", request.to_lowercase().replace(|c: char| !c.is_alphanumeric() && c != ' ', " "));
@@ -92,10 +104,13 @@ impl Worker {
             Err(answer) => return answer,
         };
         let Some(ha) = &self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
-        if let Err(error) = ha.set_level(&target, level) {
+        // Queued ahead of the change, so the snapshot holds the look from before it.
+        let snapshot = serde_json::json!({ "scene_id": UNDO_SCENE, "snapshot_entities": target.ids });
+        if let Err(error) = ha.send("scene", "create", snapshot).and_then(|()| ha.set_level(&target, level)) {
             return unreachable(&error, no);
         }
         info!(label = target.label, ids = ?target.ids, ?level, "light level set");
+        self.last_lights = Some((target.clone(), LightChange::Level, Instant::now()));
         let label = target.label.to_lowercase();
         let lights = match (no, target.area) {
             (false, true) => format!("the {label} lights are"),
@@ -144,9 +159,30 @@ impl Worker {
             };
         }
         match self.recent_lights() {
-            Some((target, on)) => self.switch(&target, !on, lang, true),
+            Some((target, LightChange::Switched(on))) => self.switch(&target, !on, lang, true),
+            Some((target, LightChange::Level)) => self.restore_level(&target, lang),
             None if no => "Det er ingenting å angre.".into(),
             None => "There's nothing to undo.".into(),
+        }
+    }
+
+    /// The lights back as they were before a brightness or colour change.
+    fn restore_level(&mut self, target: &Target, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let Some(ha) = &self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
+        let scene = serde_json::json!({ "entity_id": format!("scene.{UNDO_SCENE}") });
+        if let Err(error) = ha.send("scene", "turn_on", scene) {
+            return unreachable(&error, no);
+        }
+        info!(label = target.label, ids = ?target.ids, "light level undone");
+        // The look from before the change is gone now: a second "undo" has nothing to go back to.
+        self.last_lights = None;
+        let label = target.label.to_lowercase();
+        match (no, target.area) {
+            (false, true) => format!("Okay, the {label} lights are back as they were."),
+            (false, false) => format!("Okay, the {label} is back as it was."),
+            (true, true) => format!("Ok, lyset i {label} er som før."),
+            (true, false) => format!("Ok, {label} er som før."),
         }
     }
 
@@ -158,8 +194,7 @@ impl Worker {
                 .into();
         };
         let on = match ha.lights_on() {
-            // Network gear reports its status LED as a light; nobody means that.
-            Ok(on) => on.into_iter().filter(|l| !l.name.ends_with(" LED")).collect::<Vec<_>>(),
+            Ok(on) => on,
             Err(error) => return unreachable(&error, no),
         };
         let question: String = request
@@ -184,6 +219,9 @@ impl Worker {
                 };
             }
         }
+        // Network gear and the Voice PE report their status LEDs as lights; asked by name, they
+        // answer for themselves, but nobody counts them among the lights left on.
+        let on: Vec<_> = on.into_iter().filter(|l| !l.status_led()).collect();
         let places = house::rooms_lit(&on);
         let list = house::join(&places, lang);
         match (no, places.is_empty()) {
@@ -194,8 +232,11 @@ impl Worker {
         }
     }
 
-    pub(super) fn recent_lights(&self) -> Option<(Target, bool)> {
-        self.last_lights.as_ref().filter(|(.., at)| at.elapsed() < MEMORY).map(|(target, on, _)| (target.clone(), *on))
+    pub(super) fn recent_lights(&self) -> Option<(Target, LightChange)> {
+        self.last_lights
+            .as_ref()
+            .filter(|(.., at)| at.elapsed() < MEMORY)
+            .map(|(target, change, _)| (target.clone(), *change))
     }
 
     pub(super) fn switch(&mut self, target: &Target, on: bool, lang: Lang, undo: bool) -> String {
@@ -207,7 +248,7 @@ impl Worker {
             return unreachable(&error, no);
         }
         info!(label = target.label, ids = ?target.ids, on, undo, "lights switched");
-        self.last_lights = Some((target.clone(), on, Instant::now()));
+        self.last_lights = Some((target.clone(), LightChange::Switched(on), Instant::now()));
         let label = target.label.to_lowercase();
         let state = match (no, on, undo) {
             (false, true, false) => "on",

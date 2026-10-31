@@ -827,6 +827,8 @@ mod tests {
         ];
         assert_eq!(resolve(&lights, "the living room lights").unwrap().ids, ["light.ceiling"]);
         assert_eq!(resolve(&lights, "the led ring").unwrap().ids, ["light.ring"]);
+        assert!(light("light.ring", "Home Assistant Voice 0a1f4d LED Ring", "").status_led());
+        assert!(light("light.usw_led", "USW-Lite-8-PoE LED", "").status_led());
         assert!(!light("light.sled", "Sled lamp", "").status_led());
     }
 

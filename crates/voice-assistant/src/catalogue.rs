@@ -87,9 +87,9 @@ pub const SKILLS: &[Skill] = &[
         name: "Undo",
         group: "Home",
         icon: "undo",
-        does: "Reverses the last lights or shopping list change.",
+        does: "Reverses the last lights change (on or off, brightness or colour) or shopping list change.",
         source: "The assistant's memory (two minutes)",
-        calls: &[],
+        calls: &["light.turn_on", "light.turn_off", "scene.turn_on", "todo.update_item"],
         examples: &["Undo", "Reverse that", "Switch it back"],
         norwegian: &["Angre"],
     },
@@ -153,7 +153,7 @@ pub const SKILLS: &[Skill] = &[
         name: "Party mode",
         group: "Home",
         icon: "music",
-        does: "Every Hue light follows the music the satellite hears: relaxed mode keeps the warm Relax light and lets it drift between warm shades and swell gently on the stronger beats; normal mode moves a new colour round the room on each beat and fades between them; fast mode flashes on every hit, as fast as the lights follow. Stopping it, or the music, puts the lights back.",
+        does: "Every Hue light follows the music the satellite hears: relaxed mode keeps the warm Relax light and lets it drift between warm shades and swell gently on the stronger beats; normal mode moves a new colour round the room on each beat and fades between them; fast mode flashes on every hit, as fast as the lights follow. Stopping it, or the music, puts the lights back; a lockdown ends it and standing down puts them back.",
         source: "The satellite's microphone, the Hue bridge's Entertainment API",
         calls: &["Hue entertainment_configuration", "scene.create", "scene.turn_on"],
         examples: &["Party mode", "Let's party", "Fast party mode", "Relaxed party mode", "Chill party", "Stop the party"],
@@ -316,8 +316,9 @@ pub const SKILLS: &[Skill] = &[
         group: "Everyday",
         icon: "cart",
         does: "Adds, removes, reads or clears the shopping list. After an add it stays open for a minute: say \
-               more items one after the other without \"add\", and \"that's all\" to finish. With \
-               norwegian-groceries, items are written under their Norwegian names.",
+               more items one after the other without \"add\", \"remove the milk\" to take one off, and \
+               \"that's all\" or \"no, that's it\" to finish. With norwegian-groceries, items are written \
+               under their Norwegian names.",
         source: "Home Assistant to-do list",
         calls: &["todo.add_item", "todo.update_item", "todo.get_items"],
         examples: &[
