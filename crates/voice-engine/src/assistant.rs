@@ -1116,7 +1116,8 @@ impl Worker {
         let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);
         let request = match self.config.wake.strip(&first.text) {
             Some(rest) if !rest.is_empty() => rest,
-            None if follow_up || self.woken_at.is_some() => first.text.clone(),
+            None if self.woken_at.is_some() => first.text.clone(),
+            None if follow_up && !room_talk(&first.text) => first.text.clone(),
             _ => return,
         };
         let request = self.learned_meaning(request);
@@ -1188,7 +1189,10 @@ impl Worker {
         let confirming = self.pending_confirm.is_some() && confirmation(&request).is_some();
         let pending =
             self.pending_lights.is_some() || confirming || self.timers.awaiting_duration() || self.list_is_open();
-        if !addressed && !pending && unknown && self.config.llm.is_none() {
+        // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
+        // for murdering his barn it 40 stop" set the volume.
+        let room = !addressed && self.woken_at.is_none() && room_talk(&request);
+        if !pending && (room || (!addressed && unknown && self.config.llm.is_none())) {
             info!(text = heard.text, "not addressed");
             self.not_understood(&heard.text, audio, ended, heard.lang, start);
             return;
@@ -3610,6 +3614,15 @@ const REQUEST_OPENINGS: &[&str] = &[
 const REQUEST_FILLER: &[&str] =
     &["hey", "hi", "ok", "okay", "please", "so", "um", "uh", "oh", "and", "now", "just", "hei", "kjære"];
 
+/// Words in a follow-up without the name, past which it has to open like a request: a long
+/// sentence that does not is the TV or the room.
+const FOLLOW_UP_MOST_WORDS: usize = 8;
+
+/// Speech in the follow-up window that is too long and does not open like a request.
+fn room_talk(text: &str) -> bool {
+    text.split_whitespace().count() > FOLLOW_UP_MOST_WORDS && !sounds_like_a_request(text)
+}
+
 /// Whether unrecognised speech opens like a request at all.
 fn sounds_like_a_request(text: &str) -> bool {
     text.split_whitespace()
@@ -3982,6 +3995,14 @@ mod tests {
         );
         // Spotify from a phone plays on the speaker alone: that is paused.
         assert_eq!(hushed(vec![playing("media_player.living_room", true)]), ["media_player.living_room"]);
+    }
+
+    #[test]
+    fn room_talk_in_the_follow_up() {
+        assert!(room_talk("With a 40 year tariff for murdering his barn it 40 stop"));
+        assert!(!room_talk("And the kitchen too."));
+        assert!(!room_talk("Turn on all the lights in the living room and the kitchen."));
+        assert!(!room_talk("What is the temperature in the bedroom right now, please?"));
     }
 
     #[test]

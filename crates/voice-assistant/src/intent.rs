@@ -752,6 +752,8 @@ const MISHEARD: &[(&[&str], &[&str])] = &[
     (&["who", "am", "i", "on"], &["what's", "on"]),
     (&["increase", "the", "sum"], &["increase", "the", "sound"]),
     (&["increased", "the", "sale"], &["increase", "the", "sound"]),
+    (&["temperaturing", "size"], &["temperature", "inside"]),
+    (&["temperature", "in", "size"], &["temperature", "inside"]),
 ];
 
 /// The request with known mishearings put right, as normalised words; unchanged when there are none.
@@ -1190,6 +1192,7 @@ mod tests {
     fn time_questions() {
         assert_eq!(parse("What time is it?"), Intent::Time);
         assert_eq!(parse("Hey, what time is it?"), Intent::Time);
+        assert_eq!(parse("What's the temperaturing size?"), parse("What's the temperature inside?"));
         assert_eq!(parse("What time is this?"), Intent::Time);
         assert_eq!(parse("hva er klokka?"), Intent::Time);
         assert_eq!(parse("hvor mye er klokken"), Intent::Time);

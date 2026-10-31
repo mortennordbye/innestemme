@@ -29,7 +29,7 @@ const ROOMS: &[&[&str]] = &[
     &["bedroom", "soverom", "soverommet"],
     &["office", "study", "kontor", "kontoret"],
     &["hallway", "hall", "entrance", "gang", "gangen", "entre", "entreen"],
-    &["bathroom", "bad", "badet", "baderom"],
+    &["bathroom", "bath", "bad", "badet", "baderom"],
     &["dining room", "spisestue", "spisestua"],
     &["kids room", "children's room", "barnerom", "barnerommet"],
 ];
@@ -783,6 +783,8 @@ mod tests {
         assert_eq!(resolve(&home(), "lyset i stua").unwrap().label, "Living Room");
         let norsk = vec![light("light.taklampe", "Taklampe", "Stue")];
         assert_eq!(resolve(&norsk, "the living room light").unwrap().ids, vec!["light.taklampe"]);
+        let bath = vec![light("light.bathroom", "Bathroom", "Bathroom")];
+        assert_eq!(resolve(&bath, "Turn on the light in the bath.").unwrap().ids, vec!["light.bathroom"]);
     }
 
     #[test]
