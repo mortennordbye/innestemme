@@ -12,11 +12,11 @@ As deployed: a Home Assistant Voice PE in the living room, answers on a Sonos.
 |---|---|---|
 | 1. The Voice PE streams its microphone all the time (16 kHz) | `firmware/`, `voice-esphome` | |
 | 2. openWakeWord scores the stream; "Hey Jarvis" above `wake-threshold` starts a request, a lower score from `wake-check-from` only when Parakeet hears the name | `voice-assistant/src/wakeword.rs` | about 1 ms per 80 ms of audio |
-| 3. Music that plays in the room is paused (queued, see below) | `assistant.rs` `hush` | |
+| 3. Music that plays in the room is paused (queued, see below) | `assistant/hush.rs` `hush` | |
 | 4. An energy detector cuts the request: a draft after 0.24 s of quiet, the end after 0.64 s | `voice-assistant/src/vad.rs` | 0.24 or 0.64 s |
 | 5. Parakeet TDT 0.6B (int8, sherpa-onnx) transcribes the draft while the pause goes on | `parakeet.rs` | about 70 ms on an M4 Pro |
-| 6. The rules parse it into an intent; a complete command acts on the draft at once | `intent.rs`, `assistant.rs` `complete_at_once` | under 1 ms |
-| 7. The skill runs and words the answer; Home Assistant writes go to a queue | `assistant.rs`, `ha.rs`, skill modules | 0-50 ms for most |
+| 6. The rules parse it into an intent; a complete command acts on the draft at once | `intent.rs`, `assistant/quick.rs` `complete_at_once` | under 1 ms |
+| 7. The skill runs and words the answer; Home Assistant writes go to a queue | `assistant/`, `ha.rs`, skill modules | 0-50 ms for most |
 | 8. The persona styles it ("Very good, sir.", or "ma'am" for a female voice with `honorific-female`) | `persona.rs`, `voice_gender.rs` | |
 | 9. Each sentence comes from the speech cache, or from Kokoro | `speech_cache.rs`, `kokoro.rs` | 0 ms cached, 1-3 s on the cluster otherwise |
 | 10. Home Assistant announces the answer's URL on the Sonos, which streams it as it grows | `satellite.rs` | about 0.4 s until it sounds |

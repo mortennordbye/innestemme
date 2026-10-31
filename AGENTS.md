@@ -71,7 +71,7 @@ wording such as "AI-generated", and code, docs and PR bodies, are only guarded b
   skill's own answers. Openers it rewrites: "Okay, ...", "Sorry, ...". New remarks go in its `QUIPS` table.
 - Speech is pre-rendered where possible (`speech_cache.rs`): keep fixed wording in sentences of their own and put
   live data (numbers) in its own sentence, so only that sentence is synthesized. A new slow skill gets a lead-in
-  in `assistant.rs` (`LEADS_*`).
+  in `assistant/leads.rs` (`LEADS_*`).
 - Focus is English for now; Norwegian comes later.
 - Personal values (addresses, Home Assistant URL and token, names) belong in `config.local.yaml` or `.env`, both
   git-ignored, never in code, tests or docs.
