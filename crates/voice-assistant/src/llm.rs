@@ -13,7 +13,7 @@ use crate::intent::{self, Day, Focus, Intent, LightLevel, MusicCommand};
 use crate::lang::Lang;
 use crate::power::{PowerQuery, When};
 use crate::shopping::ListCommand;
-use crate::timer::{TimerCommand, Which};
+use crate::timer::{self, TimerCommand, Which};
 use crate::transit::{Mode, TransitQuery};
 use crate::tv::{Screen, TvCommand};
 
@@ -266,6 +266,8 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 |key: &str| args[key].as_f64().or_else(|| text(key).and_then(|s| s.parse().ok())).unwrap_or(0.0);
             let seconds = (number("hours") * 3600.0 + number("minutes") * 60.0 + number("seconds")).round() as u32;
             let seconds = (seconds > 0).then_some(seconds);
+            // A time of day ("17:30") for a reminder or an alarm, else the duration.
+            let when = text("at").and_then(|at| timer::when(&format!("at {at}"))).or(seconds.map(timer::When::In));
             let which = Which {
                 name: text("name").filter(|n| n != "all"),
                 all: args["all"].as_bool().unwrap_or(false) || text("name").as_deref() == Some("all"),
@@ -277,7 +279,9 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 "resume" => TimerCommand::Resume(which),
                 "add" => TimerCommand::Add { seconds: seconds.unwrap_or(60), which },
                 "remaining" | "status" => TimerCommand::Remaining(which),
-                "remind" => TimerCommand::Remind { seconds, message: text("message") },
+                "remind" => TimerCommand::Remind { when, message: text("message") },
+                "alarm" => TimerCommand::Alarm { when },
+                "snooze" => TimerCommand::Snooze,
                 _ => TimerCommand::Start { seconds, name: which.name },
             };
             Decision::Act(Intent::Timer(command))
@@ -429,9 +433,10 @@ pub fn tools() -> Value {
         ),
         tool(
             "timer",
-            "Timers and reminders: start, remind, cancel, pause, resume, add time, or time remaining.",
+            "Timers, reminders and wake-up alarms: start, remind, alarm, snooze, cancel, pause, resume, add, remaining.",
             json!({ "type": "object", "required": ["action"], "properties": {
-            "action": { "type": "string", "enum": ["start", "remind", "cancel", "pause", "resume", "add", "remaining"] },
+            "action": { "type": "string", "enum": ["start", "remind", "alarm", "snooze", "cancel", "pause", "resume", "add", "remaining"] },
+            "at": { "type": "string", "description": "Time of day, HH:MM" },
             "hours": { "type": "number" },
             "minutes": { "type": "number" },
             "seconds": { "type": "number" },
@@ -572,13 +577,25 @@ mod tests {
             parse_reply(&call("timer", r#"{"action":"remind","minutes":20,"message":"take the laundry out"}"#))
                 .unwrap(),
             Decision::Act(Intent::Timer(TimerCommand::Remind {
-                seconds: Some(1200),
+                when: Some(timer::When::In(1200)),
                 message: Some("take the laundry out".into())
             }))
         );
         assert_eq!(
             parse_reply(&call("timer", r#"{"action":"start","minutes":"7","name":"eggs"}"#)).unwrap(),
             Decision::Act(Intent::Timer(TimerCommand::Start { seconds: Some(420), name: Some("eggs".into()) }))
+        );
+        let at = |hour, minute| Some(timer::When::At(timer::Clock { hour, minute, pm: None, tomorrow: false }));
+        assert_eq!(
+            parse_reply(&call("timer", r#"{"action":"alarm","at":"06:30"}"#)).unwrap(),
+            Decision::Act(Intent::Timer(TimerCommand::Alarm { when: at(6, 30) }))
+        );
+        assert_eq!(
+            parse_reply(&call("timer", r#"{"action":"remind","at":"17:00","message":"call the dentist"}"#)).unwrap(),
+            Decision::Act(Intent::Timer(TimerCommand::Remind {
+                when: at(17, 0),
+                message: Some("call the dentist".into())
+            }))
         );
         assert_eq!(
             parse_reply(&call("shopping_list", r#"{"action":"add","items":["coffee","oat milk"]}"#)).unwrap(),

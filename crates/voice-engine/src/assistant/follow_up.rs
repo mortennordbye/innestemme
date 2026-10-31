@@ -45,6 +45,8 @@ const REQUEST_OPENINGS: &[&str] = &[
     "next",
     "previous",
     "remind",
+    "wake",
+    "snooze",
     "find",
     "ring",
     "call",

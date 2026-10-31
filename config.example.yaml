@@ -125,5 +125,8 @@ whisper-size: base
 # satellite-wake-words: [Okay Nabu, Hey Jarvis]
 
 # --- Runtime -----------------------------------------------------------------------------------
+# Timers, reminders and wake-up alarms are kept in this file and survive a restart. Default: timers.json
+# next to unhandled-log; with neither they live in memory only.
+# timers-file: /models/timers.json
 # Compute threads: set to the CPU limit in a container (defaults to every core of the host).
 # threads: 3

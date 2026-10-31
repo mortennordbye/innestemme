@@ -153,6 +153,10 @@ struct Args {
     /// `learned.json`.
     #[arg(long, env = "VOICE_UNHANDLED_LOG")]
     unhandled_log: Option<PathBuf>,
+    /// Keep timers, reminders and wake-up alarms in this JSON file, so they survive a restart.
+    /// Default: `timers.json` next to `unhandled-log`; without either they live in memory only.
+    #[arg(long, env = "VOICE_TIMERS_FILE")]
+    timers_file: Option<PathBuf>,
     /// Whisper size: base (290 MB) or small (970 MB, more accurate).
     #[arg(long, env = "VOICE_WHISPER_SIZE", default_value = "base")]
     whisper_size: String,
@@ -554,6 +558,10 @@ fn main() -> Result<()> {
                     dump_utterances: args.dump_utterances.clone(),
                     unhandled: unhandled.clone(),
                     learned: Some(learned.clone()),
+                    timers_file: args
+                        .timers_file
+                        .clone()
+                        .or_else(|| args.unhandled_log.as_ref().map(|path| path.with_file_name("timers.json"))),
                     speaker: args.speaker.clone(),
                     room: args.room.clone(),
                     honorific: args.honorific.clone(),

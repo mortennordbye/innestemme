@@ -133,6 +133,8 @@ fn complete_command(intent: &Intent) -> bool {
                     | TimerCommand::Pause(_)
                     | TimerCommand::Resume(_)
                     | TimerCommand::Remaining(_)
+                    | TimerCommand::Snooze
+                    | TimerCommand::StopAlarm
             )
     )
 }

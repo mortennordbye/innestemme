@@ -111,7 +111,7 @@ impl Worker {
             .map(|t| {
                 serde_json::json!({
                     "id": format!("timer-{}", t.id),
-                    "name": t.name.clone().or_else(|| t.reminder.clone()).unwrap_or_default(),
+                    "name": t.name.clone().or_else(|| t.reminder.clone()).or_else(|| t.at.clone()).unwrap_or_default(),
                     "left": t.left(now).as_secs_f32().ceil() as u32,
                     "total": t.total.as_secs(),
                     "active": t.is_running(),

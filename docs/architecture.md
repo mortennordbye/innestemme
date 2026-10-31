@@ -107,6 +107,14 @@ does, so the engine takes the device's microphone in place of Assist. Answers ar
 (`/speech/<id>.wav`), streamed while they are synthesized; with `answer-player` Home Assistant announces them on
 another media player. Timers count down on the Voice PE's LED ring through the ESPHome timer events.
 
+**Timers, reminders and alarms.** `timer.rs` parses durations and times of day ("at 5", "at 17:30", "half past
+six", "tomorrow at 8", "klokka 7"); an hour without am or pm is the next of the two within 12 hours, and for a
+wake-up alarm the morning. A wake-up alarm is a timer that rings, and "snooze" sets it again for 9 minutes. They are
+kept in `timers-file` (default `timers.json` next to `unhandled-log`) with wall-clock end times, so a restart (every
+deploy) keeps them. Those that ended while the engine was down are dealt with when a satellite connects, or a minute
+after the start: a reminder is still told ("It was due at 14:30."), a timer up to 10 minutes late is told that it
+ended, an alarm up to 30 minutes late rings; anything later is dropped.
+
 **Screens.** `web: true` serves on the metrics port. `/` is the dashboard: Home (an overview: the face, the
 clock and forecast, every room's lights and climate, buttons for the whole apartment (all on, all off, one colour
 everywhere, party mode, the lockdown), each room's temperature, quick switches, the house's status, what plays, the

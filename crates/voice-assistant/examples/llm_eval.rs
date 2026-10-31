@@ -47,6 +47,8 @@ fn main() -> anyhow::Result<()> {
         ("tell me when the eggs are done in 7 minutes", &[], "Timer+420"),
         ("don't let me forget the laundry in half an hour", &[], "Timer+1800"),
         ("give the pizza another five minutes", &[], "Timer+300"),
+        ("get me up at half six tomorrow", &[], "Alarm+hour: 6"),
+        ("ping me about the dentist at 3 pm", &[], "Remind+dentist+hour: 15 or Remind+dentist+some(true)"),
         ("we're out of coffee and oat milk", &[], "ShoppingList+coffee"),
         ("do we need anything from the store?", &[], "ShoppingList+read"),
         ("make it cosy in here", &[], "Scene+relax or LightLevel+warm"),

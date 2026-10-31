@@ -53,6 +53,9 @@ can hold a device: stop a laptop instance before the cluster's starts, or the tw
 - **Timers.** The Voice PE's LED ring gets the ESPHome timer events and counts down and rings itself; it stops
   on "stop", the wake word or the button (15 minutes at most), and the engine cannot stop it, since the device
   does not stream while ringing. Reminders, and timers on devices without a display, are announced instead.
+  A wake-up alarm ("wake me up at 7") rings the same way; after the wake word has stopped it, "snooze" sets it
+  again for 9 minutes. When the engine connects it sends the device the timers that are running, so the ring
+  shows them again after a restart.
 - **The device's own wake words.** `satellite-wake-words: [Hey Jarvis]` turns on those of the device's wake
   words each time the engine connects; Home Assistant's selects for them go through the disabled satellite
   entity and no longer reach it.

@@ -140,6 +140,9 @@ pub struct AssistantConfig {
     pub unhandled: Option<Arc<UnhandledLog>>,
     /// Corrections learned from requests said again after a miss.
     pub learned: Option<Arc<Learned>>,
+    /// Where timers, reminders and alarms are kept, so they survive a restart; in memory only
+    /// without it.
+    pub timers_file: Option<std::path::PathBuf>,
     /// The TV's media player entity; default: the media player that is a TV.
     pub tv: Option<String>,
     /// The Plex server for "play <title> on Plex".
@@ -423,7 +426,12 @@ impl Worker {
                 Job::CheckName(audio, reply) => {
                     let _ = reply.send(self.name_in(&audio));
                 }
-                Job::Satellite(names) => self.satellite(&names),
+                Job::Satellite(names) => {
+                    // After a restart the device needs the timers again, and those that ended meanwhile are told.
+                    let notices = self.timers.connected(Instant::now());
+                    self.notify(notices);
+                    self.satellite(&names);
+                }
                 Job::Voice(gender) => self.address(gender),
                 Job::Preview(text, reply) => {
                     let _ = reply.send(self.preview(&text));
@@ -970,7 +978,13 @@ impl Worker {
                 self.chat_turn = self.chat_turn.wrapping_add(1);
                 answers[self.chat_turn % answers.len()].clone()
             }
-            Intent::Cancel => return None,
+            Intent::Cancel => {
+                // "Stop" while the alarm rings: it is stopped, quietly.
+                if self.timers.alarm_ringing(Instant::now()) {
+                    self.timers.run(timer::TimerCommand::StopAlarm, lang, Instant::now());
+                }
+                return None;
+            }
             // Not a list of skills: it keeps growing, and the web page shows it.
             Intent::Unknown if no => "Beklager, det kan jeg ikke hjelpe med ennå.".into(),
             Intent::Unknown => "Sorry, I can't help with that yet.".into(),
@@ -1058,14 +1072,16 @@ impl Worker {
         }
     }
 
-    /// Rings for timers that ran out and speaks what they were for.
+    /// Rings for timers that ran out and speaks what they were for. One that ended while the
+    /// engine was down is told instead; an alarm rings even then.
     fn ring_due_timers(&mut self) {
-        for (timer, notice) in self.timers.due(Instant::now()) {
+        for (timer, notices) in self.timers.due(Instant::now()) {
             let text = timer::finished_text(&timer);
-            info!(text, "timer done");
-            self.emit(AssistantEvent::Timer(notice));
+            info!(text, alarm = timer.is_alarm, late = timer.late, "timer done");
+            self.notify(notices);
             let chime = if timer.is_reminder { tts::reminder_chime() } else { tts::alarm_chime() };
-            self.announce(&text, chime, timer.lang, !timer.is_reminder);
+            let ring = timer.is_alarm || (!timer.is_reminder && timer.late.is_none());
+            self.announce(&text, chime, timer.lang, ring);
         }
     }
 
