@@ -3,8 +3,7 @@
 //! `music_assistant.search` / `get_library` to find what was asked for, `music_assistant.play_media`
 //! to start it, and the usual `media_player.*` services on the Music Assistant player for the rest.
 
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -64,20 +63,6 @@ pub struct Player {
     /// See [`Player::paused_for_request`].
     held: bool,
     late_failure: Option<Arc<dyn Fn(String) + Send + Sync>>,
-}
-
-/// How long an answer waits for Music Assistant to take a play call. It refuses a bad one at
-/// once; a good one returns only once the speaker plays.
-const PLAY_WAIT: Duration = Duration::from_millis(300);
-
-/// A play call, seen from the answer waiting for it and the thread making it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Outcome {
-    Waiting,
-    /// Made within [`PLAY_WAIT`]: whether it worked.
-    Done(bool),
-    /// The answer went out before the call returned.
-    Answered,
 }
 
 /// The library changes rarely.
@@ -264,11 +249,11 @@ impl Player {
         self.play(ha, &entity, &found, media_type, answer, no)
     }
 
-    /// Starts `found` and answers once Music Assistant has taken the call, or after [`PLAY_WAIT`]
-    /// with the answer as if it had: it answers only once the speaker plays, over a second later.
-    /// A call that fails after that is told through [`Player::on_late_failure`].
+    /// Starts `found` on a thread of its own and answers at once: Music Assistant answers the
+    /// call only once the speaker plays, over a second later, and the music starting is the answer.
+    /// A call that fails is told afterwards through [`Player::on_late_failure`].
     fn play(
-        &mut self,
+        &self,
         ha: &HomeAssistant,
         entity: &str,
         found: &Found,
@@ -283,8 +268,7 @@ impl Player {
         let failed = if no { "Beklager, jeg fikk ikke spilt det." } else { "Sorry, I couldn't play that." };
         let (ha, entity, uri, media_type) =
             (ha.detached(), entity.to_owned(), found.uri.clone(), media_type.to_owned());
-        let outcome = Arc::new((Mutex::new(Outcome::Waiting), Condvar::new()));
-        let (told, late) = (outcome.clone(), self.late_failure.clone());
+        let late = self.late_failure.clone();
         std::thread::spawn(move || {
             // Before the start, so the queue is shuffled as it loads, first song included.
             let shuffle = !matches!(media_type.as_str(), "track" | "album");
@@ -294,41 +278,14 @@ impl Player {
                 warn!(%error, "could not set shuffle");
             }
             let play = json!({ "entity_id": entity, "media_id": uri, "media_type": media_type, "enqueue": "replace" });
-            let started = ha.service("music_assistant", "play_media", play);
-            if let Err(error) = &started {
+            if let Err(error) = ha.service("music_assistant", "play_media", play) {
                 warn!(error = format!("{error:#}"), "could not start the music");
-            }
-            let (state, done) = &*told;
-            let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
-            match *state {
-                Outcome::Waiting => {
-                    *state = Outcome::Done(started.is_ok());
-                    done.notify_one();
+                if let Some(late) = late {
+                    late(failed.to_owned());
                 }
-                Outcome::Answered if started.is_err() => {
-                    if let Some(late) = late {
-                        late(failed.to_owned());
-                    }
-                }
-                _ => {}
             }
         });
-        let (state, done) = &*outcome;
-        let state = state.lock().unwrap_or_else(|e| e.into_inner());
-        let (mut state, _) =
-            done.wait_timeout_while(state, PLAY_WAIT, |s| *s == Outcome::Waiting).unwrap_or_else(|e| e.into_inner());
-        match *state {
-            Outcome::Done(false) => {
-                // Look Music Assistant up again next time: the add-on may have restarted.
-                self.resolved = None;
-                Ok(failed.into())
-            }
-            Outcome::Done(true) => Ok(answer),
-            _ => {
-                *state = Outcome::Answered;
-                Ok(answer)
-            }
-        }
+        Ok(answer)
     }
 
     /// `failed` hears the answer to speak when music that was already announced did not start.

@@ -68,8 +68,8 @@ does, its data source, the calls it makes and example phrases, which the tests p
 rest. Writes that the answer does not depend on (lights, scenes, the lockdown, routines, ringing a phone, pausing
 and resuming music) go to a queue on a thread of their own and run in order, because Home Assistant answers a
 Hue call only once the lights have switched (0.5-0.7 s). A failed queued call is said afterwards. Starting music
-waits up to 0.3 s for Music Assistant, which refuses a bad request at once but answers a good one only once the
-speaker plays: a refusal is the answer ("Sorry, I couldn't play that."), a later failure is said afterwards.
+answers at once, since Music Assistant answers a play call only once the speaker plays; a call that fails is
+said afterwards ("Sorry, I couldn't play that.").
 A light level change keeps a snapshot scene (`scene.lights_undo`) first, so "undo" puts the brightness and
 colour back.
 
