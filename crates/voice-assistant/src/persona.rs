@@ -89,8 +89,10 @@ const QUIPS: &[(&[&str], &[&str])] = &[
 ];
 
 pub struct Persona {
-    /// How the user is addressed: "sir".
+    /// How the speaker is addressed now: "sir", or empty for no honorific.
     honorific: String,
+    /// Every way it addresses someone, for rendering ahead of time.
+    honorifics: Vec<String>,
     rng: StdRng,
     last_quip: Option<&'static str>,
     last_opener: Option<&'static str>,
@@ -106,11 +108,46 @@ impl Persona {
     pub fn with_seed(honorific: &str, seed: u64) -> Self {
         Self {
             honorific: honorific.trim().to_owned(),
+            honorifics: vec![honorific.trim().to_owned()],
             rng: StdRng::seed_from_u64(seed),
             last_quip: None,
             last_opener: None,
             last_spoke: None,
         }
+    }
+
+    /// Also addresses people these ways ("ma'am", or "" for no honorific), after [`Persona::address`].
+    pub fn with_others(mut self, others: &[&str]) -> Self {
+        for other in others.iter().map(|o| o.trim().to_owned()) {
+            if !self.honorifics.contains(&other) {
+                self.honorifics.push(other);
+            }
+        }
+        self
+    }
+
+    /// Who the next answers are for: one of the honorifics it was made with.
+    pub fn address(&mut self, honorific: &str) {
+        debug_assert!(self.honorifics.iter().any(|h| h == honorific.trim()), "{honorific}");
+        self.honorific = honorific.trim().to_owned();
+    }
+
+    pub fn honorific(&self) -> &str {
+        &self.honorific
+    }
+
+    pub fn honorifics(&self) -> &[String] {
+        &self.honorifics
+    }
+
+    /// ", sir", or nothing when no one is addressed.
+    fn comma(&self) -> String {
+        comma(&self.honorific)
+    }
+
+    /// Whether the answer addresses someone already.
+    fn addresses(&self, answer: &str) -> bool {
+        self.honorifics.iter().any(|h| !h.is_empty() && has_word(answer, h))
     }
 
     /// The answer in the persona's words; `hour` is the local hour, for greetings. Answers that
@@ -119,7 +156,7 @@ impl Persona {
         let answer = answer.trim();
         let long_quiet = self.last_spoke.is_none_or(|at| at.elapsed() > GREETING_GAP);
         self.last_spoke = Some(Instant::now());
-        if answer.is_empty() || has_word(answer, &self.honorific) {
+        if answer.is_empty() || self.addresses(answer) {
             return answer.to_owned();
         }
         let greeting = match hour {
@@ -134,7 +171,7 @@ impl Persona {
             Some(greeting)
                 if long_quiet && !greets && !answer.ends_with('?') && self.rng.random_bool(GREETING_CHANCE) =>
             {
-                format!("{greeting}, {}. {}", self.honorific, plain(answer))
+                format!("{greeting}{}. {}", self.comma(), plain(answer))
             }
             _ => self.addressed(answer),
         };
@@ -152,14 +189,15 @@ impl Persona {
     /// The answer with the honorific worked in once.
     fn addressed(&mut self, answer: &str) -> String {
         let h = self.honorific.clone();
+        let c = self.comma();
         if answer == "You're welcome." {
-            return format!("{}, {h}.", self.pick(WELCOME));
+            return format!("{}{c}.", self.pick(WELCOME));
         }
         if answer == "Sorry, I didn't catch that." {
-            return self.pick(MISSED).replace("{h}", &h);
+            return self.pick(MISSED).replace(", {h}", &c);
         }
         if answer == "Okay." {
-            return format!("{}, {h}.", self.opener());
+            return format!("{}{c}.", self.opener());
         }
         if let Some(rest) = answer.strip_prefix("Okay, ") {
             let (first, tail) = split_first(rest);
@@ -167,14 +205,14 @@ impl Persona {
             if words <= SHORT_WORDS && first.ends_with('.') {
                 return format!("{}{tail}", with_honorific(&capitalize(first), &h));
             }
-            return format!("{}, {h}. {}", self.opener(), capitalize(rest));
+            return format!("{}{c}. {}", self.opener(), capitalize(rest));
         }
         if let Some(rest) = answer.strip_prefix("Sorry, ") {
             let (first, tail) = split_first(rest);
             return if self.rng.random_bool(0.5) {
                 format!("I'm afraid {}{tail}", with_honorific(first, &h))
             } else {
-                format!("My apologies, {h}. {}", capitalize(rest))
+                format!("My apologies{c}. {}", capitalize(rest))
             };
         }
         let (first, tail) = split_first(answer);
@@ -199,11 +237,13 @@ impl Persona {
     /// Every fixed sentence the persona says, to render ahead of time. Answers are spoken a
     /// sentence at a time, so these are whole sentences as they are spoken.
     pub fn phrases(&self) -> Vec<String> {
-        let h = &self.honorific;
-        let mut phrases: Vec<String> = OPENERS.iter().chain(WELCOME).map(|o| format!("{o}, {h}.")).collect();
-        phrases.extend(["Good morning", "Good afternoon", "Good evening"].map(|g| format!("{g}, {h}.")));
-        phrases.extend(MISSED.iter().map(|m| m.replace("{h}", h)));
-        phrases.push(format!("My apologies, {h}."));
+        let mut phrases = Vec::new();
+        for c in self.honorifics.iter().map(|h| comma(h)) {
+            phrases.extend(OPENERS.iter().chain(WELCOME).map(|o| format!("{o}{c}.")));
+            phrases.extend(["Good morning", "Good afternoon", "Good evening"].map(|g| format!("{g}{c}.")));
+            phrases.extend(MISSED.iter().map(|m| m.replace(", {h}", &c)));
+            phrases.push(format!("My apologies{c}."));
+        }
         phrases.extend(QUIPS.iter().flat_map(|(_, quips)| quips.iter().map(|q| q.to_string())));
         phrases.extend(LATE.iter().map(|q| q.to_string()));
         phrases
@@ -213,14 +253,17 @@ impl Persona {
     /// are in [`Persona::phrases`]), for rendering ahead of time.
     pub fn forms(&self, answer: &str) -> Vec<String> {
         let answer = answer.trim();
-        if has_word(answer, &self.honorific) {
+        if self.addresses(answer) {
             return vec![answer.to_owned()];
         }
         // Only these are worded at random; the rest have one form, and the time alone is 1440 answers.
         let varies = answer.starts_with("Okay") || answer.starts_with("Sorry, ") || answer == "You're welcome.";
         let seeds = if varies { 256 } else { 1 };
-        let mut forms: Vec<String> =
-            (0..seeds).map(|seed| Persona::with_seed(&self.honorific, seed).addressed(answer)).collect();
+        let mut forms: Vec<String> = self
+            .honorifics
+            .iter()
+            .flat_map(|h| (0..seeds).map(|seed| Persona::with_seed(h, seed).addressed(answer)))
+            .collect();
         // After a greeting or a lead-in, which already addressed the user.
         forms.push(plain(answer));
         forms.sort();
@@ -281,8 +324,19 @@ fn split_first(text: &str) -> (&str, &str) {
     text.split_at(end)
 }
 
+fn comma(honorific: &str) -> String {
+    if honorific.is_empty() {
+        String::new()
+    } else {
+        format!(", {honorific}")
+    }
+}
+
 /// "Paused." -> "Paused, sir."
 fn with_honorific(sentence: &str, honorific: &str) -> String {
+    if honorific.is_empty() {
+        return sentence.to_owned();
+    }
     match sentence.char_indices().last() {
         Some((i, c)) if matches!(c, '.' | '?' | '!') => format!("{}, {honorific}{c}", &sentence[..i]),
         _ => format!("{sentence}, {honorific}."),
@@ -416,6 +470,44 @@ mod tests {
         let mut p = Persona::with_seed("sir", 3);
         p.style("Okay.", 20);
         assert!(!p.style("Okay.", 20).starts_with("Good evening"));
+    }
+
+    #[test]
+    fn addresses_whoever_is_speaking() {
+        let mut p = Persona::with_seed("sir", 4).with_others(&["ma'am", ""]);
+        p.address("ma'am");
+        assert_eq!(p.style("Which room?", NIGHT), "Which room, ma'am?");
+        assert!(p.style("Okay, paused.", NIGHT).starts_with("Paused, ma'am."));
+        p.address("");
+        for _ in 0..30 {
+            let styled = p.style("Okay, the hall lights are on.", NIGHT);
+            assert!(!styled.contains(" ,") && !styled.contains(",.") && !styled.contains("sir"), "{styled}");
+            assert!(OPENERS.iter().any(|o| styled.starts_with(&format!("{o}. The hall lights are on."))), "{styled}");
+            let missed = p.style("Sorry, I didn't catch that.", NIGHT);
+            assert!(MISSED.iter().any(|m| m.replace(", {h}", "") == missed), "{missed}");
+            assert!(p.style("You're welcome.", NIGHT).ends_with('.'));
+        }
+        assert_eq!(p.style("Which room?", NIGHT), "Which room?");
+        // An answer that already says "sir" is left alone for her too.
+        p.address("ma'am");
+        assert_eq!(p.style("Very well, sir.", NIGHT), "Very well, sir.");
+    }
+
+    #[test]
+    fn forms_cover_every_honorific() {
+        let p = Persona::with_seed("sir", 1).with_others(&["ma'am", ""]);
+        assert_eq!(p.forms("Okay, paused."), ["Paused, ma'am.", "Paused, sir.", "Paused."]);
+        for h in ["sir", "ma'am", ""] {
+            for seed in 0..20 {
+                let mut q = Persona::with_seed("sir", seed).with_others(&["ma'am", ""]);
+                q.address(h);
+                let styled = q.addressed("Okay, the TV is off.");
+                assert!(p.forms("Okay, the TV is off.").contains(&styled), "{styled}");
+                let first = styled.split_inclusive('.').next().unwrap().trim().to_owned();
+                assert!(p.phrases().contains(&first), "{first}");
+            }
+        }
+        assert!(p.phrases().contains(&"Good evening.".to_owned()));
     }
 
     #[test]

@@ -17,7 +17,7 @@ As deployed: a Home Assistant Voice PE in the living room, answers on a Sonos.
 | 5. Parakeet TDT 0.6B (int8, sherpa-onnx) transcribes the draft while the pause goes on | `parakeet.rs` | about 70 ms on an M4 Pro |
 | 6. The rules parse it into an intent; a complete command acts on the draft at once | `intent.rs`, `assistant.rs` `complete_at_once` | under 1 ms |
 | 7. The skill runs and words the answer; Home Assistant writes go to a queue | `assistant.rs`, `ha.rs`, skill modules | 0-50 ms for most |
-| 8. The persona styles it ("Very good, sir.") | `persona.rs` | |
+| 8. The persona styles it ("Very good, sir.", or "ma'am" for a female voice with `honorific-female`) | `persona.rs`, `voice_gender.rs` | |
 | 9. Each sentence comes from the speech cache, or from Kokoro | `speech_cache.rs`, `kokoro.rs` | 0 ms cached, 1-3 s on the cluster otherwise |
 | 10. Home Assistant announces the answer's URL on the Sonos, which streams it as it grows | `satellite.rs` | about 0.4 s until it sounds |
 
@@ -37,6 +37,14 @@ weather?"), with known misspellings (`dialog.rs`).
 unrecognised request after a wake gets "Sorry, I didn't catch that." only when Parakeet hears the name in the wake
 word itself, so a false wake by the TV stays silent. That check runs as soon as the device wakes, while the
 request is still being said, so the reply does not wait for it.
+
+**Sir or ma'am.** With `honorific-female` set, the end of the audio before each wake word (1.5 s) goes to a
+speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how
+female the voice sounds. It runs on a thread of its own as the device wakes, about 20 ms on an M4 Pro, and is
+done long before the answer is worded, so it adds no time. Below 0.85 either way the answer has no honorific.
+Follow-ups keep the wake word's verdict; the device's own wake word, which sends no audio, gets none. The
+classifier is trained on LibriSpeech by `examples/voice_gender_train.rs`, and `examples/voice_gender.rs` scores
+recordings.
 
 **Learning from repeats.** A request that is not understood and said again within 20 s in words that are
 ("Code rent." then "Code red.", at least half the words shared) pairs the two. Once the same pair has come up

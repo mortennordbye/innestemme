@@ -38,6 +38,7 @@ use voice_assistant::transit::Transit;
 use voice_assistant::tts::{self, Tts};
 use voice_assistant::tv::{self, Tv, TvCommand};
 use voice_assistant::vad::{self, Vad};
+use voice_assistant::voice_gender::{self, Gender, VoiceGender};
 use voice_assistant::weather::Weather;
 use voice_assistant::whisper::{Transcribe, Transcript};
 use voice_proto::{FRAME_SAMPLES, SAMPLE_RATE};
@@ -134,6 +135,9 @@ const LIST_DONE: &[&str] = &[
 /// Where a sentence's speech starts (about -38 dBFS, above Kokoro's noise floor), and how much before
 /// that is kept (10 ms).
 const SPEECH_ONSET: u16 = 400;
+/// The end of the audio before the wake word fired that holds the wake word: 1.5 s at 16 kHz. More
+/// takes in what was said before it, the TV or someone else.
+const VOICE_AUDIO: usize = 24_000;
 const ONSET_LEAD: usize = SAMPLE_RATE as usize / 100;
 
 pub struct AssistantConfig {
@@ -162,6 +166,11 @@ pub struct AssistantConfig {
     pub room: Option<String>,
     /// English answers in a butler's words, addressing the user this way ("sir").
     pub honorific: Option<String>,
+    /// Female voices are addressed this way ("ma'am") and `honorific` is for male ones; a voice the
+    /// classifier is not sure of gets neither. Needs `voice_gender`.
+    pub honorific_female: Option<String>,
+    /// Tells male and female voices apart in the wake word.
+    pub voice_gender: Option<Arc<VoiceGender>>,
     /// Speech is kept once rendered: fixed sentences are rendered ahead of time by this voice, on a
     /// thread of its own, and slow answers open with a lead-in.
     pub renderer: Option<Box<dyn Tts>>,
@@ -270,9 +279,33 @@ pub struct AssistantHandle {
     pub screen: Arc<Screen>,
     pub party: Party,
     pub activity: Arc<Activity>,
+    voice_gender: Option<Arc<VoiceGender>>,
 }
 
 impl AssistantHandle {
+    /// The wake word's audio (16 kHz), to address the speaker by how their voice sounds. Runs on a
+    /// thread of its own while the request is still being said; the worker has the result long
+    /// before the answer.
+    pub fn voice_of(&self, wake: &[i16]) {
+        let Some(model) = self.voice_gender.clone() else { return };
+        let audio = wake[wake.len().saturating_sub(VOICE_AUDIO)..].to_vec();
+        let jobs = self.jobs.clone();
+        let spawned = std::thread::Builder::new().name("voice-gender".into()).spawn(move || {
+            let start = Instant::now();
+            match model.female(&audio) {
+                Ok(female) => {
+                    let gender = voice_gender::sure(female);
+                    info!(?gender, female = format!("{female:.2}"), took = ?start.elapsed(), "voice");
+                    let _ = jobs.send(Job::Voice(gender));
+                }
+                Err(error) => warn!(error = format!("{error:#}"), "could not tell the voice"),
+            }
+        });
+        if let Err(error) = spawned {
+            warn!(%error, "could not start the voice thread");
+        }
+    }
+
     /// The device heard its own wake word, or listens again after a question: the next utterance
     /// is the request. The device has finished playing, so there is no echo to wait out.
     pub fn woke(&self) {
@@ -385,6 +418,8 @@ enum Job {
     Draft(Vec<i16>),
     /// A satellite connected, by its names.
     Satellite(Vec<String>),
+    /// How the wake word's voice sounded: male, female, or not sure.
+    Voice(Option<Gender>),
     /// The web page's "hear the answer".
     Preview(String, tokio::sync::oneshot::Sender<Preview>),
     /// The hub's "what would it do": the lights a request changes, as JSON.
@@ -412,6 +447,7 @@ pub struct AssistantProcessor {
     screen: Arc<Screen>,
     party: Party,
     activity: Arc<Activity>,
+    voice_gender: Option<Arc<VoiceGender>>,
     was_busy: bool,
     frame: u64,
     deaf_until: u64,
@@ -428,6 +464,7 @@ impl AssistantProcessor {
         let screen = Arc::new(Screen::default());
         let party = config.party.clone();
         let activity = config.activity.clone();
+        let voice_gender = config.voice_gender.clone().filter(|_| config.honorific_female.is_some());
         let speaker = config.speaker.clone();
         let tv = Tv::new(config.tv.clone()).with_plex(config.plex.clone());
         let (events, _) = broadcast::channel(256);
@@ -532,7 +569,10 @@ impl AssistantProcessor {
             refreshed: None,
         };
         worker.room = worker.config.room.clone();
-        worker.persona = worker.config.honorific.as_deref().map(Persona::new);
+        worker.persona = worker.config.honorific.as_deref().map(|h| match &worker.config.honorific_female {
+            Some(female) if worker.config.voice_gender.is_some() => Persona::new(h).with_others(&[female, ""]),
+            _ => Persona::new(h),
+        });
         if let Some(renderer) = worker.config.renderer.take() {
             let render = RenderAhead::spawn(renderer)?;
             let (soon, idle) = worker.fixed_sentences();
@@ -612,6 +652,7 @@ impl AssistantProcessor {
             screen,
             party,
             activity,
+            voice_gender,
             was_busy: false,
             frame: 0,
             deaf_until: 0,
@@ -628,6 +669,7 @@ impl AssistantProcessor {
             screen: self.screen.clone(),
             party: self.party.clone(),
             activity: self.activity.clone(),
+            voice_gender: self.voice_gender.clone(),
         }
     }
 }
@@ -743,8 +785,8 @@ fn capitalize(text: &str) -> String {
 
 fn lead_sentence(lead: &str, honorific: Option<&str>) -> String {
     match honorific {
-        Some(h) => format!("{lead}, {h}."),
-        None => format!("{lead}."),
+        Some(h) if !h.is_empty() => format!("{lead}, {h}."),
+        _ => format!("{lead}."),
     }
 }
 
@@ -964,6 +1006,8 @@ impl Worker {
                 Job::Woken(at, wake) => {
                     info!("device wake word");
                     self.woken_at = Some(at);
+                    // Until the wake word's voice is told (`Job::Voice`), which follows at once.
+                    self.address(None);
                     self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
                     self.emit(AssistantEvent::Listening);
                     self.hush();
@@ -979,6 +1023,7 @@ impl Worker {
                     let _ = reply.send(self.name_in(&audio));
                 }
                 Job::Satellite(names) => self.satellite(&names),
+                Job::Voice(gender) => self.address(gender),
                 Job::Preview(text, reply) => {
                     let _ = reply.send(self.preview(&text));
                 }
@@ -1635,7 +1680,7 @@ impl Worker {
             _ => return None,
         };
         self.lead_turn = self.lead_turn.wrapping_add(1);
-        Some(lead_sentence(leads[self.lead_turn % leads.len()], self.config.honorific.as_deref()))
+        Some(lead_sentence(leads[self.lead_turn % leads.len()], self.persona.as_ref().map(Persona::honorific)))
     }
 
     /// Whether a weather or electricity price request is answered from data fetched ahead.
@@ -1654,9 +1699,15 @@ impl Worker {
     /// Every fixed English sentence the assistant says, as spoken (a sentence at a time): what is
     /// said most, then the long tail.
     fn fixed_sentences(&self) -> (Vec<String>, Vec<String>) {
-        let honorific = self.config.honorific.as_deref();
-        let mut texts: Vec<String> =
-            LEADS.iter().flat_map(|leads| leads.iter().map(|l| lead_sentence(l, honorific))).collect();
+        let honorifics: Vec<Option<&str>> = match &self.persona {
+            Some(persona) => persona.honorifics().iter().map(|h| Some(h.as_str())).collect(),
+            None => vec![None],
+        };
+        let mut texts: Vec<String> = LEADS
+            .iter()
+            .flat_map(|leads| leads.iter())
+            .flat_map(|l| honorifics.iter().map(|h| lead_sentence(l, *h)))
+            .collect();
         texts.extend(self.persona.as_ref().map(Persona::phrases).unwrap_or_default());
         let questions =
             [HouseCommand::Camera(Switch::Off), HouseCommand::Camera(Switch::On), HouseCommand::Alarm(Switch::On)]
@@ -3021,6 +3072,20 @@ impl Worker {
 
     /// A satellite connected: unless the `room` setting says otherwise, its room is its area in
     /// Home Assistant.
+    /// Whom the next answers address, by how the wake word's voice sounded. Follow-ups keep it.
+    fn address(&mut self, gender: Option<Gender>) {
+        let (Some(persona), Some(female)) = (&mut self.persona, &self.config.honorific_female) else { return };
+        if self.config.voice_gender.is_none() {
+            return;
+        }
+        let male = self.config.honorific.as_deref().unwrap_or_default();
+        persona.address(match gender {
+            Some(Gender::Male) => male,
+            Some(Gender::Female) => female,
+            None => "",
+        });
+    }
+
     fn satellite(&mut self, names: &[String]) {
         if self.config.room.is_some() {
             return;

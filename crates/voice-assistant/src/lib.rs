@@ -35,6 +35,7 @@ pub mod transit;
 pub mod tts;
 pub mod tv;
 pub mod vad;
+pub mod voice_gender;
 pub mod wakeword;
 pub mod weather;
 pub mod whisper;

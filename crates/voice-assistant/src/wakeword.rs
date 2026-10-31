@@ -152,23 +152,28 @@ fn plan(path: &Path, shape: &[usize]) -> Result<Plan> {
     Ok(plan)
 }
 
-fn cache_dir() -> PathBuf {
+pub(crate) fn cache_dir() -> PathBuf {
     match std::env::var_os("HF_HOME") {
         Some(dir) => PathBuf::from(dir),
         None => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/huggingface"),
     }
 }
 
-/// The file from the release, downloaded once and checked against its hash.
-fn fetch(dir: &Path, (file, sha256): (&str, &str)) -> Result<PathBuf> {
+fn fetch(dir: &Path, file: (&str, &str)) -> Result<PathBuf> {
+    fetch_from(dir, RELEASE, file)
+}
+
+/// The file from the release at `release`, downloaded once and checked against its hash.
+pub(crate) fn fetch_from(dir: &Path, release: &str, (file, sha256): (&str, &str)) -> Result<PathBuf> {
     let path = dir.join(file);
     if path.exists() {
         return Ok(path);
     }
-    let url = format!("{RELEASE}/{file}");
+    let url = format!("{release}/{file}");
     let bytes = ureq::get(&url)
         .call()
-        .and_then(|mut response| response.body_mut().read_to_vec())
+        // ureq stops at 10 MB unless told otherwise; the speaker model is 30 MB.
+        .and_then(|mut response| response.body_mut().with_config().limit(200 << 20).read_to_vec())
         .with_context(|| format!("downloading {url}"))?;
     let digest: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
     if digest != sha256 {
