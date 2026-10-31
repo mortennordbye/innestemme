@@ -102,13 +102,96 @@ pub fn parse(text: &str) -> Option<ListCommand> {
     None
 }
 
+/// Said before a reply's verb or items: "*actually* remove the milk", "*oh*, and bread".
+const REPLY_LEAD: &[&str] =
+    &["actually", "oh", "um", "uh", "er", "well", "then", "wait", "sorry", "faktisk", "forresten"];
+/// Said before "that's all", or as all of it, to "Anything else?": "*no*, that's it", "nope".
+const DONE_LEAD: &[&str] = &["no", "nope", "nah", "nei", "ok", "okay", "and", "og", "i", "think", "guess"];
+/// Said after "that's all": "that's all *for now*", "that's it, *thanks*".
+const DONE_TAIL: &[&str] = &["for now", "for today", "thanks", "thank you", "then", "for nå", "takk", "da"];
+/// Replies that close the list while it is open.
+const DONE: &[&str] = &[
+    "that's all",
+    "that's it",
+    "that is all",
+    "that is it",
+    "that's everything",
+    "that'll be all",
+    "that'll do",
+    "that's enough",
+    "done",
+    "i'm done",
+    "we're done",
+    "all done",
+    "nothing",
+    "nothing else",
+    "nothing more",
+    "no more",
+    "finished",
+    "det var alt",
+    "det er alt",
+    "det holder",
+    "ferdig",
+    "ingenting",
+    "ikke noe mer",
+    "ikke mer",
+];
+
+/// Whether a reply while the list is open closes it: "that's all", "no, that's it", "nope",
+/// "that's all for now".
+pub fn closes_list(text: &str) -> bool {
+    let mut said = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let mut trimmed = false;
+    loop {
+        let before = said.len();
+        for tail in DONE_TAIL {
+            if said == *tail {
+                said.clear();
+            } else if let Some(rest) = said.strip_suffix(&format!(" {tail}")) {
+                said = rest.to_owned();
+            }
+        }
+        if let Some((first, rest)) = said.split_once(' ') {
+            if DONE_LEAD.contains(&first) || REPLY_LEAD.contains(&first) {
+                said = rest.to_owned();
+            }
+        } else if DONE_LEAD.contains(&said.as_str()) {
+            said.clear();
+        }
+        if said.len() == before {
+            break;
+        }
+        trimmed = true;
+    }
+    DONE.contains(&said.as_str()) || (trimmed && said.is_empty())
+}
+
+/// A change said while the list is open, without naming the list: "remove milk", "actually take
+/// the milk off", "add bread". `None` for a reply that is only items, or something else.
+pub fn open_list_command(text: &str) -> Option<ListCommand> {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<String> = tokens.iter().map(|t| normalize(t)).collect();
+    let verb_at = words.iter().position(|w| {
+        !w.is_empty() && !POLITE.contains(&w.as_str()) && !REPLY_LEAD.contains(&w.as_str()) && w != "and" && w != "og"
+    })?;
+    let verb = words[verb_at].as_str();
+    let found = items(&tokens[verb_at + 1..]);
+    if found.is_empty() {
+        return None;
+    }
+    if REMOVE_VERBS.contains(&verb) {
+        return Some(ListCommand::Remove(found));
+    }
+    ADD_VERBS.contains(&verb).then_some(ListCommand::Add(found))
+}
+
 /// The items in a reply that is only items ("milk and eggs", "og brunost"), as to "what should I
 /// add?".
 pub fn items_of(text: &str) -> Vec<String> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let skip = tokens.iter().take_while(|t| {
         let w = normalize(t);
-        ADD_VERBS.contains(&w.as_str()) || POLITE.contains(&w.as_str())
+        ADD_VERBS.contains(&w.as_str()) || POLITE.contains(&w.as_str()) || REPLY_LEAD.contains(&w.as_str())
     });
     items(&tokens[skip.count()..])
 }
@@ -223,20 +306,13 @@ impl ShoppingList {
                         }
                     }
                 }
-                let answer = match (no, added.is_empty()) {
-                    (false, false) if self.brief => format!("Added {}.", join(&lower(&added), lang)),
-                    (true, false) if self.brief => format!("La til {}.", join(&lower(&added), lang)),
-                    (false, false) => format!("Added {} to the shopping list.", join(&lower(&added), lang)),
-                    (true, false) => format!("La til {} på handlelista.", join(&lower(&added), lang)),
-                    (false, true) => format!("{} is already on the list.", capitalize(&join(&lower(&already), lang))),
-                    (true, true) => format!("{} står allerede på lista.", capitalize(&join(&lower(&already), lang))),
-                };
+                let answer = added_answer(&added, &already, self.brief, lang);
                 (answer, (!added.is_empty()).then_some(Change::Added(added)))
             }
             ListCommand::Remove(names) => {
                 let open: Vec<&Item> = items.iter().filter(|i| i.open()).collect();
                 let known = crate::names::Names::new(open.iter().map(|i| i.summary.as_str()));
-                let mut removed = Vec::new();
+                let (mut removed, mut missing) = (Vec::new(), Vec::new());
                 for name in names {
                     let exact = open.iter().find(|i| i.summary.to_lowercase() == name.to_lowercase());
                     // The transcriber's spelling of an item the list already has.
@@ -251,14 +327,11 @@ impl ShoppingList {
                             json!({ "entity_id": entity, "item": item.uid, "status": "completed" }),
                         )?;
                         removed.push(item.summary.clone());
+                    } else {
+                        missing.push(name.clone());
                     }
                 }
-                let answer = match (no, removed.is_empty()) {
-                    (false, false) => format!("Okay, {} is off the list.", join(&lower(&removed), lang)),
-                    (true, false) => format!("Ok, {} er krysset av.", join(&lower(&removed), lang)),
-                    (false, true) => format!("{} isn't on the list.", capitalize(&join(&lower(names), lang))),
-                    (true, true) => format!("{} står ikke på lista.", capitalize(&join(&lower(names), lang))),
-                };
+                let answer = removed_answer(&removed, &missing, lang);
                 (answer, (!removed.is_empty()).then_some(Change::Removed(removed)))
             }
             ListCommand::Read => {
@@ -343,6 +416,48 @@ fn get_items(ha: &HomeAssistant, entity: &str) -> Result<Vec<Item>> {
     serde_json::from_value(response[entity]["items"].take()).context("parsing the shopping list items")
 }
 
+/// "Added bread. Milk is already on the list.": what was added, then what was there already.
+fn added_answer(added: &[String], already: &[String], brief: bool, lang: Lang) -> String {
+    let no = lang == Lang::Norwegian;
+    let mut parts = Vec::new();
+    if !added.is_empty() {
+        let list = join(&lower(added), lang);
+        parts.push(match (no, brief) {
+            (false, true) => format!("Added {list}."),
+            (true, true) => format!("La til {list}."),
+            (false, false) => format!("Added {list} to the shopping list."),
+            (true, false) => format!("La til {list} på handlelista."),
+        });
+    }
+    if !already.is_empty() {
+        let list = capitalize(&join(&lower(already), lang));
+        let is = if already.len() > 1 { "are" } else { "is" };
+        parts.push(if no {
+            format!("{list} står allerede på lista.")
+        } else {
+            format!("{list} {is} already on the list.")
+        });
+    }
+    parts.join(" ")
+}
+
+/// "Okay, milk is off the list. Eggs isn't on the list.": what was ticked off, then what was not there.
+fn removed_answer(removed: &[String], missing: &[String], lang: Lang) -> String {
+    let no = lang == Lang::Norwegian;
+    let mut parts = Vec::new();
+    if !removed.is_empty() {
+        let list = join(&lower(removed), lang);
+        let is = if removed.len() > 1 { "are" } else { "is" };
+        parts.push(if no { format!("Ok, {list} er krysset av.") } else { format!("Okay, {list} {is} off the list.") });
+    }
+    if !missing.is_empty() {
+        let list = capitalize(&join(&lower(missing), lang));
+        let isnt = if missing.len() > 1 { "aren't" } else { "isn't" };
+        parts.push(if no { format!("{list} står ikke på lista.") } else { format!("{list} {isnt} on the list.") });
+    }
+    parts.join(" ")
+}
+
 fn lower(items: &[String]) -> Vec<String> {
     items.iter().map(|i| i.to_lowercase()).collect()
 }
@@ -398,6 +513,63 @@ mod tests {
         assert_eq!(parse("add five minutes to the timer"), None);
         assert_eq!(parse("what's the weather"), None);
         assert_eq!(parse("play my shopping playlist"), None);
+    }
+
+    #[test]
+    fn replies_that_close_the_open_list() {
+        for done in [
+            "That's all.",
+            "that's all for now",
+            "No, that's it.",
+            "no that's it thanks",
+            "No.",
+            "Nope.",
+            "No thanks.",
+            "Nothing else.",
+            "Okay, I think that's everything.",
+            "Nei takk.",
+            "Det var alt for nå.",
+        ] {
+            assert!(closes_list(done), "{done}");
+        }
+        for items in ["milk", "no milk", "eggs and bread", "remove milk", "brunost", "nothing bundt cake"] {
+            assert!(!closes_list(items), "{items}");
+        }
+    }
+
+    #[test]
+    fn changes_said_while_the_list_is_open() {
+        let remove = |v: &[&str]| Some(ListCommand::Remove(v.iter().map(|s| s.to_string()).collect()));
+        assert_eq!(open_list_command("remove milk"), remove(&["Milk"]));
+        assert_eq!(open_list_command("Actually, remove the milk."), remove(&["Milk"]));
+        assert_eq!(open_list_command("take the eggs off"), remove(&["Eggs"]));
+        assert_eq!(open_list_command("fjern melk"), remove(&["Melk"]));
+        assert_eq!(open_list_command("add milk"), add(&["Milk"]));
+        assert_eq!(open_list_command("oh, and add bread"), add(&["Bread"]));
+        assert_eq!(open_list_command("milk and eggs"), None);
+        assert_eq!(open_list_command("remove"), None);
+        assert_eq!(items_of("actually bread"), ["Bread"]);
+    }
+
+    #[test]
+    fn mixed_answers_name_both_kinds() {
+        let items = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let en = Lang::English;
+        assert_eq!(added_answer(&items(&["Bread"]), &[], true, en), "Added bread.");
+        assert_eq!(
+            added_answer(&items(&["Bread"]), &items(&["Milk"]), false, en),
+            "Added bread to the shopping list. Milk is already on the list."
+        );
+        assert_eq!(added_answer(&[], &items(&["Milk", "Eggs"]), true, en), "Milk and eggs are already on the list.");
+        assert_eq!(removed_answer(&items(&["Milk"]), &[], en), "Okay, milk is off the list.");
+        assert_eq!(
+            removed_answer(&items(&["Milk"]), &items(&["Caviar"]), en),
+            "Okay, milk is off the list. Caviar isn't on the list."
+        );
+        assert_eq!(
+            removed_answer(&items(&["Melk"]), &items(&["Kaviar"]), Lang::Norwegian),
+            "Ok, melk er krysset av. Kaviar står ikke på lista."
+        );
     }
 
     #[test]

@@ -3,6 +3,8 @@
 //! `music_assistant.search` / `get_library` to find what was asked for, `music_assistant.play_media`
 //! to start it, and the usual `media_player.*` services on the Music Assistant player for the rest.
 
+use std::sync::Arc;
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use tracing::{info, warn};
@@ -41,7 +43,9 @@ pub const ENGLISH_ANSWERS: &[&str] = &[
     "Okay, repeat is on.",
     "Okay, repeat is off.",
     "Nothing is playing.",
+    "The music is paused.",
     "Shuffling your liked songs.",
+    "Sorry, I couldn't play that.",
 ];
 
 pub struct Player {
@@ -56,6 +60,9 @@ pub struct Player {
     liked: Option<Found>,
     /// Find what to play but do not start it (testing against a real library).
     dry_run: bool,
+    /// See [`Player::paused_for_request`].
+    held: bool,
+    late_failure: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 /// The library changes rarely.
@@ -63,7 +70,7 @@ const LIBRARY_REFRESH: std::time::Duration = std::time::Duration::from_secs(600)
 
 impl Player {
     pub fn new(speaker: Option<String>) -> Self {
-        Self { speaker, resolved: None, artists: None, liked: None, dry_run: false }
+        Self { speaker, resolved: None, artists: None, liked: None, dry_run: false, held: false, late_failure: None }
     }
 
     pub fn dry_run(mut self) -> Self {
@@ -156,7 +163,7 @@ impl Player {
                     info!(heard = request, artist = artist.name, score = m.score, "artist matched");
                     let answer =
                         if no { format!("Spiller {}.", artist.name) } else { format!("Playing {}.", artist.name) };
-                    return self.play(ha, &entity, &artist, "artist", answer);
+                    return self.play(ha, &entity, &artist, "artist", answer, no);
                 }
                 // Part of it is ("play hello by the neighborhood"): search with the right spelling.
                 let corrected = names.best(request).map(|m| {
@@ -239,9 +246,12 @@ impl Player {
                 (list, "playlist", answer.to_owned())
             }
         };
-        self.play(ha, &entity, &found, media_type, answer)
+        self.play(ha, &entity, &found, media_type, answer, no)
     }
 
+    /// Starts `found` on a thread of its own and answers at once: Music Assistant answers the
+    /// call only once the speaker plays, over a second later, and the music starting is the answer.
+    /// A call that fails is told afterwards through [`Player::on_late_failure`].
     fn play(
         &self,
         ha: &HomeAssistant,
@@ -249,15 +259,16 @@ impl Player {
         found: &Found,
         media_type: &str,
         answer: String,
+        no: bool,
     ) -> Result<String> {
         info!(uri = found.uri, name = found.name, artist = found.artist, entity, dry_run = self.dry_run, "playing");
         if self.dry_run {
             return Ok(answer);
         }
-        // Starting answers only once the speaker plays, over a second later; the music starting is
-        // the answer, so nothing waits for it.
+        let failed = if no { "Beklager, jeg fikk ikke spilt det." } else { "Sorry, I couldn't play that." };
         let (ha, entity, uri, media_type) =
             (ha.detached(), entity.to_owned(), found.uri.clone(), media_type.to_owned());
+        let late = self.late_failure.clone();
         std::thread::spawn(move || {
             // Before the start, so the queue is shuffled as it loads, first song included.
             let shuffle = !matches!(media_type.as_str(), "track" | "album");
@@ -269,9 +280,17 @@ impl Player {
             let play = json!({ "entity_id": entity, "media_id": uri, "media_type": media_type, "enqueue": "replace" });
             if let Err(error) = ha.service("music_assistant", "play_media", play) {
                 warn!(error = format!("{error:#}"), "could not start the music");
+                if let Some(late) = late {
+                    late(failed.to_owned());
+                }
             }
         });
         Ok(answer)
+    }
+
+    /// `failed` hears the answer to speak when music that was already announced did not start.
+    pub fn on_late_failure(&mut self, failed: impl Fn(String) + Send + Sync + 'static) {
+        self.late_failure = Some(Arc::new(failed));
     }
 
     fn library_artists(&mut self, ha: &HomeAssistant, entry: &str) -> Result<Vec<Found>> {
@@ -368,19 +387,41 @@ impl Player {
     fn now_playing(&mut self, ha: &HomeAssistant, no: bool) -> Result<String> {
         let (_, entity) = self.resolve(ha)?;
         let state = ha.state(&entity)?;
-        let text = |key: &str| state["attributes"][key].as_str().unwrap_or_default().to_owned();
-        let (title, artist) = (text("media_title"), text("media_artist"));
-        // Paused for this very question, the player can say idle while it still holds the song.
-        info!(state = state["state"].as_str(), title, artist, "now playing");
-        if title.is_empty() || matches!(state["state"].as_str(), Some("off" | "unavailable" | "unknown")) {
-            return Ok(if no { "Ingenting spilles." } else { "Nothing is playing." }.into());
-        }
-        Ok(match (artist.is_empty(), no) {
-            (true, false) => format!("This is {title}."),
-            (false, false) => format!("This is {title} by {artist}."),
-            (true, true) => format!("Dette er {title}."),
-            (false, true) => format!("Dette er {title} av {artist}."),
-        })
+        info!(
+            state = state["state"].as_str(),
+            title = state["attributes"]["media_title"].as_str(),
+            held = self.held,
+            "now playing"
+        );
+        Ok(now_playing_answer(&state, self.held, no))
+    }
+
+    /// The music was paused for the request being answered, so a paused or idle player still
+    /// counts as playing for "what's playing".
+    pub fn paused_for_request(&mut self, held: bool) {
+        self.held = held;
+    }
+}
+
+fn now_playing_answer(state: &Value, held: bool, no: bool) -> String {
+    let text = |key: &str| state["attributes"][key].as_str().unwrap_or_default().to_owned();
+    let (title, artist) = (text("media_title"), text("media_artist"));
+    let nothing = if no { "Ingenting spilles." } else { "Nothing is playing." };
+    // Paused for this very question, the player can say idle while it still holds the song.
+    let state = state["state"].as_str().unwrap_or_default();
+    if title.is_empty() || matches!(state, "off" | "unavailable" | "unknown" | "") || (state == "idle" && !held) {
+        return nothing.into();
+    }
+    let song = match (artist.is_empty(), no) {
+        (true, _) => format!("{title}."),
+        (false, false) => format!("{title} by {artist}."),
+        (false, true) => format!("{title} av {artist}."),
+    };
+    match (state == "paused" && !held, no) {
+        (true, false) => format!("The music is paused. It's {song}"),
+        (true, true) => format!("Musikken står på pause. Det er {song}"),
+        (false, false) => format!("This is {song}"),
+        (false, true) => format!("Dette er {song}"),
     }
 }
 
@@ -473,4 +514,25 @@ fn found(item: &Value) -> Option<Found> {
 
 fn normalize_phrase(text: &str) -> String {
     text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn player(state: &str) -> Value {
+        json!({ "state": state, "attributes": { "media_title": "Hello", "media_artist": "Adele" } })
+    }
+
+    #[test]
+    fn now_playing_tells_a_paused_player_from_one_paused_for_the_question() {
+        assert_eq!(now_playing_answer(&player("playing"), false, false), "This is Hello by Adele.");
+        assert_eq!(now_playing_answer(&player("paused"), true, false), "This is Hello by Adele.");
+        assert_eq!(now_playing_answer(&player("idle"), true, false), "This is Hello by Adele.");
+        assert_eq!(now_playing_answer(&player("paused"), false, false), "The music is paused. It's Hello by Adele.");
+        assert_eq!(now_playing_answer(&player("idle"), false, false), "Nothing is playing.");
+        assert_eq!(now_playing_answer(&player("off"), true, false), "Nothing is playing.");
+        let untitled = json!({ "state": "playing", "attributes": {} });
+        assert_eq!(now_playing_answer(&untitled, false, false), "Nothing is playing.");
+    }
 }

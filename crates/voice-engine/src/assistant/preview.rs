@@ -10,6 +10,7 @@ use voice_assistant::shopping::ListCommand;
 use voice_assistant::{plan, tv};
 
 use super::home::{bedtime_dimmed, home_target, in_bedroom};
+use super::lights::LightChange;
 use super::{Preview, Worker};
 
 /// Whether any lamp of `ids` is on, a group through its own state.
@@ -123,12 +124,13 @@ impl Worker {
                 let found = target(self, request)?;
                 plan.set(lamps, &found.ids, |l| plan::Effect::level(level, l.on));
             }
-            Intent::Undo => {
-                let Some((found, on)) = self.recent_lights() else {
-                    return Err("There's nothing to undo.".into());
-                };
-                plan.set(lamps, &found.ids, |_| plan::Effect::switch(!on));
-            }
+            Intent::Undo => match self.recent_lights() {
+                Some((found, LightChange::Switched(on))) => plan.set(lamps, &found.ids, |_| plan::Effect::switch(!on)),
+                Some((found, LightChange::Level)) => {
+                    plan.set(lamps, &found.ids, |_| plan::Effect::new("scene", "as before"))
+                }
+                None => return Err("There's nothing to undo.".into()),
+            },
             Intent::Scene(request) => {
                 let ha = self.home_assistant.as_mut().ok_or("Home Assistant isn't connected yet.")?;
                 let scenes = ha.scenes().map_err(failed)?.to_vec();

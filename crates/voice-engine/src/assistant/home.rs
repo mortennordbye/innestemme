@@ -10,6 +10,7 @@ use voice_assistant::house::{self, HouseCommand, Routine, Switch};
 use voice_assistant::intent::MusicCommand;
 use voice_assistant::lang::Lang;
 
+use super::lights::LightChange;
 use super::screen::SCREEN_MOMENT;
 use super::{unreachable, AssistantConfig, Job, Worker};
 
@@ -56,7 +57,7 @@ fn house_answer(
     Ok(match command {
         HouseCommand::Status => {
             let alerts = alerts::active(ha)?;
-            let lights: Vec<Light> = ha.lights_on()?.into_iter().filter(|l| !l.name.ends_with(" LED")).collect();
+            let lights: Vec<Light> = ha.lights_on()?.into_iter().filter(|l| !l.status_led()).collect();
             house::status_answer(&alerts, &lights, &house::snapshot(ha)?, lang)
         }
         HouseCommand::Sun(event) => house::sun_answer(&ha.state("sun.sun")?, *event, lang)?,
@@ -343,7 +344,7 @@ impl Worker {
         let mut answer = match routine_answer(ha, routine, here.as_deref(), &self.config, lang) {
             Ok((answer, switched)) => {
                 if let Some((target, on)) = switched {
-                    self.last_lights = Some((target, on, Instant::now()));
+                    self.last_lights = Some((target, LightChange::Switched(on), Instant::now()));
                 }
                 answer
             }

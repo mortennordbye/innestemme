@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()> {
         }
         Intent::House(HouseCommand::Status) => {
             let alerts = voice_assistant::alerts::active(&ha)?;
-            let lights: Vec<ha::Light> = ha.lights_on()?.into_iter().filter(|l| !l.name.ends_with(" LED")).collect();
+            let lights: Vec<ha::Light> = ha.lights_on()?.into_iter().filter(|l| !l.status_led()).collect();
             println!("{}", house::status_answer(&alerts, &lights, &house::snapshot(&ha)?, lang));
         }
         Intent::House(HouseCommand::Sun(event)) => {

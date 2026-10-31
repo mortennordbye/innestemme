@@ -67,7 +67,11 @@ does, its data source, the calls it makes and example phrases, which the tests p
 **Home Assistant.** REST only (`ha.rs`): one template call lists every light with its area, service calls do the
 rest. Writes that the answer does not depend on (lights, scenes, the lockdown, routines, ringing a phone, pausing
 and resuming music) go to a queue on a thread of their own and run in order, because Home Assistant answers a
-Hue call only once the lights have switched (0.5-0.7 s). A failed queued call is said afterwards.
+Hue call only once the lights have switched (0.5-0.7 s). A failed queued call is said afterwards. Starting music
+answers at once, since Music Assistant answers a play call only once the speaker plays; a call that fails is
+said afterwards ("Sorry, I couldn't play that.").
+A light level change keeps a snapshot scene (`scene.lights_undo`) first, so "undo" puts the brightness and
+colour back.
 
 **Speech.** English through Kokoro, voice `am_onyx`: from a Kokoro-FastAPI server (`english-tts: kokoro`, a
 Python sidecar in the cluster) or inside the engine through sherpa-onnx (`english-tts: kokoro-onnx`, the f32

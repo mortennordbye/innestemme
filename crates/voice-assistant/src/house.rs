@@ -1278,9 +1278,11 @@ pub fn stand_down(ha: &HomeAssistant) -> Result<bool> {
 /// The scene the lights are kept in while party mode streams to them.
 pub const PARTY_SCENE: &str = "party_restore";
 
-/// Keeps the lights as they are, for after party mode; a second start keeps the first snapshot.
-pub fn party_snapshot(ha: &HomeAssistant) -> Result<()> {
-    if ha.state(&format!("scene.{PARTY_SCENE}")).is_ok() {
+/// Keeps the lights as they are, for after party mode. `keep`: a snapshot already there is still
+/// the one to go back to (a second start, a lockdown since); otherwise one left over from a
+/// restore whose delete failed is replaced.
+pub fn party_snapshot(ha: &HomeAssistant, keep: bool) -> Result<()> {
+    if keep && ha.state(&format!("scene.{PARTY_SCENE}")).is_ok() {
         return Ok(());
     }
     let (colour, plain) = lockdown_lights(ha)?;
@@ -1295,8 +1297,9 @@ pub fn party_restore(ha: &HomeAssistant) -> Result<bool> {
     if ha.state(&scene).is_err() {
         return Ok(false);
     }
-    ha.service("scene", "turn_on", json!({ "entity_id": scene }))?;
-    ha.service("scene", "delete", json!({ "entity_id": scene }))?;
+    // Queued behind the calls before it when the client writes behind (standing down).
+    ha.send("scene", "turn_on", json!({ "entity_id": scene }))?;
+    ha.send("scene", "delete", json!({ "entity_id": scene }))?;
     Ok(true)
 }
 

@@ -65,7 +65,9 @@ impl Worker {
     pub(super) fn lockdown(&mut self, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         // Its red lights and the party's stream would fight over the same lights.
-        self.party_off();
+        if self.party_off_for_lockdown() {
+            info!("party mode ended for the lockdown");
+        }
         let Some(ha) = &self.home_assistant else {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
@@ -181,6 +183,13 @@ impl Worker {
             Ok(restored) => restored,
             Err(error) => return unreachable(&error, no),
         };
+        // After the lockdown's snapshot, which holds the party's colours: the lights from before both.
+        let party = std::mem::take(&mut self.party_under_lockdown)
+            && house::party_restore(ha).unwrap_or_else(|error| {
+                warn!(error = format!("{error:#}"), "could not put the lights back from before the party");
+                false
+            });
+        let restored = restored || party;
         let volume = self.lockdown_volume.take();
         if !restored && volume.is_none() {
             return if no { "Det er ingen nedstengning å avslutte." } else { "There is no lockdown to end." }.into();

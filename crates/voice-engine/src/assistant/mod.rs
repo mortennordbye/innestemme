@@ -69,10 +69,11 @@ use follow_up::room_talk;
 use home::{confirm_question, confirmation};
 use hush::{Hushed, HUSH_CAP, HUSH_QUIET};
 use leads::capitalize;
+use lights::LightChange;
 use lockdown::Alarm;
 use quick::{bare_stop, complete_at_once, heard_by_itself, music_by_sound};
 use screen::SCREEN_MOMENT;
-use shopping::{LIST_DONE, LIST_OPEN, LIST_REPLY_WORDS};
+use shopping::{LIST_OPEN, LIST_REPLY_WORDS};
 use speech::Spoken;
 use wake::WakeName;
 
@@ -278,7 +279,7 @@ struct Worker {
     /// Recent exchanges, oldest first, for the language model.
     history: VecDeque<(Instant, Turn)>,
     /// The lights switched last, how, and when, for "turn them back on" and "reverse that".
-    last_lights: Option<(Target, bool, Instant)>,
+    last_lights: Option<(Target, LightChange, Instant)>,
     /// "Turn off the lights" named no room and there was nothing to refer back to: the next
     /// answer is the room.
     pending_lights: Option<bool>,
@@ -312,6 +313,9 @@ struct Worker {
     warmed_prompt: String,
     /// The music's volume before a lockdown raised it, for standing down.
     lockdown_volume: Option<f64>,
+    /// A lockdown ended party mode: the party's snapshot holds the lights from before both, for
+    /// standing down.
+    party_under_lockdown: bool,
     /// The TV a lockdown put its screen on, and what the TV showed before, for standing down.
     lockdown_tv: Option<(String, Option<String>)>,
     /// Which threat the next lockdown ends on.
@@ -718,17 +722,21 @@ impl Worker {
                 return Some(self.lights(text, on, lang));
             }
         }
-        // "Milk and eggs", "og brunost", "add bacon too": more items while the list is open.
+        // "Milk and eggs", "og brunost", "add bacon too": more items while the list is open;
+        // "actually remove the milk" takes one off, "no, that's it" closes it.
         if self.list_open.take().is_some_and(|at| at.elapsed() < LIST_OPEN) {
-            let said: Vec<String> =
-                text.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
-            let said = said.join(" ");
-            if LIST_DONE.contains(&said.as_str()) {
+            if voice_assistant::shopping::closes_list(text) {
                 return Some(
                     if lang == Lang::Norwegian { "Ok, det var alt." } else { "Okay, that's everything." }.into(),
                 );
             }
             if intent == Intent::Unknown && text.split_whitespace().count() <= LIST_REPLY_WORDS {
+                if let Some(remove @ ListCommand::Remove(_)) = voice_assistant::shopping::open_list_command(text) {
+                    let answer = self.shopping_list(remove, lang, true);
+                    // Still open: more items may follow the correction.
+                    self.list_open = Some(Instant::now());
+                    return Some(answer);
+                }
                 let items = self.items_heard(text);
                 if !items.is_empty() {
                     return Some(self.shopping_list(ListCommand::Add(items), lang, true));
@@ -888,6 +896,7 @@ impl Worker {
                 if command == MusicCommand::Stop {
                     self.party_off();
                 }
+                self.player.paused_for_request(self.hushed.is_some());
                 self.player.run(self.home_assistant.as_ref(), &command, lang)
             }
             Intent::Timer(command) => {
