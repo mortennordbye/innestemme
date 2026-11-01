@@ -219,11 +219,12 @@ fn clock_time(raw: &[&str], i: usize) -> bool {
     let after = lower(i + 1);
     let before = if i > 0 { lower(i - 1) } else { String::new() };
     // Norwegian says a time with "klokka": after "på" a bare number is a level ("skru på lyset på
-    // 10"), and "i" after it is a room ("på 10 i stua"), not "in the evening".
+    // 10"), and "i" after it is a room ("på 10 i stua") unless a time of day follows ("på 11 i kveld").
     let pa = before == "på";
+    let day_part = ["kveld", "morgen", "morra", "natt", "ettermiddag"].contains(&lower(i + 2).as_str());
     let said_as_time = ["am", "pm", "a.m", "p.m", "o'clock", "oclock", "tonight", "tomorrow"]
         .contains(&after.trim_end_matches('.'))
-        || (!pa && ["i", "in"].contains(&after.as_str()));
+        || (["i", "in"].contains(&after.as_str()) && (!pa || day_part));
     let clock = ["klokka", "klokken", "kl"].contains(&before.trim_end_matches('.'));
     let switching = raw.iter().any(|t| ["turn", "switch", "skru", "slå"].contains(&t.to_lowercase().as_str()));
     said_as_time && number <= 24 || clock || (switching && !pa && (1..=12).contains(&number))
@@ -1519,6 +1520,7 @@ mod tests {
             parse("skru på lyset på 10 i stua"),
             Intent::LightLevel { level: LightLevel::Percent(10), .. }
         ));
+        assert!(matches!(parse("skru av lyset på 10"), Intent::Lights { on: false, .. }));
         // A time of day cannot be scheduled yet: nothing switches now.
         for phrase in [
             "Turn the lights off at 11",
@@ -1529,6 +1531,9 @@ mod tests {
             "skru av lyset klokka 23",
             "skru på lyset klokka 7",
             "skru på lyset kl. 7",
+            "skru på lyset på 7 i kveld",
+            "skru av lyset på 11 i kveld",
+            "skru på lyset på 7 i morgen",
         ] {
             assert_eq!(parse(phrase), Intent::Unknown, "{phrase}");
         }

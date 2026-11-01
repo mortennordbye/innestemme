@@ -179,6 +179,8 @@ impl AssistantProcessor {
             lockdown_volume: None,
             party_under_lockdown: false,
             party_restore: None,
+            locked_down: false,
+            light_undo_gone: None,
             lockdown_tv: None,
             threat_turn: 0,
             music_under_answer: false,

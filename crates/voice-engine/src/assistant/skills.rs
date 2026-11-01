@@ -27,7 +27,8 @@ enum SnapshotPlan {
     /// A lockdown is on: its snapshot (and a party's from before it) is the look to go back to,
     /// not the red lights now.
     Skip,
-    /// Party mode is already on: the snapshot from its start still holds the lights from before.
+    /// Party mode is already on, or ended a moment ago with its restore called off: the snapshot
+    /// from its start still holds the lights from before.
     KeepExisting,
     /// A new snapshot, replacing one left over from a restore whose delete failed.
     Fresh,
@@ -126,15 +127,17 @@ impl Worker {
             }
             .into();
         }
-        // A restore still waiting would land on the party's first frames.
-        if let Some(pending) = self.party_restore.take() {
-            pending.cancel();
-        }
+        // A restore still waiting would land on the party's first frames. Called off in time, the
+        // last party's snapshot is still the look from before it.
+        let restore_called_off = self.party_restore.take().is_some_and(PendingRestore::cancel);
         if let Some(ha) = &self.home_assistant {
-            let locked_down = house::locked_down(ha);
-            // Left set by a lockdown that was never stood down here, or one Home Assistant forgot.
+            // The worker's own state first: the lockdown's scene is written behind and may not be
+            // there yet. Home Assistant's scene counts after an engine restart.
+            let locked_down = self.locked_down || house::locked_down(ha);
+            // Left set by a lockdown that was stood down elsewhere, or one Home Assistant forgot.
             self.party_under_lockdown &= locked_down;
-            let snapshot = match snapshot_plan(self.config.party.mode().is_some(), locked_down) {
+            let party_on = self.config.party.mode().is_some() || restore_called_off;
+            let snapshot = match snapshot_plan(party_on, locked_down) {
                 SnapshotPlan::Skip => Ok(()),
                 SnapshotPlan::KeepExisting => house::party_snapshot(ha, true),
                 SnapshotPlan::Fresh => house::party_snapshot(ha, false),
@@ -158,7 +161,7 @@ impl Worker {
             .into();
         }
         // The stream changes the lights: undo has no look from before it to go back to.
-        self.last_lights = None;
+        self.forget_light_undo();
         match (pace, no) {
             (Pace::Relaxed, false) => "Okay, relaxed party mode is on.",
             (Pace::Normal, false) => "Okay, party mode is on.",
@@ -176,12 +179,13 @@ impl Worker {
             return false;
         }
         self.config.party.stop();
-        self.last_lights = None;
+        self.forget_light_undo();
+        let locked_here = self.locked_down;
         if let Some((url, token)) = self.config.home_assistant.clone() {
             // On a thread of its own: the bridge lets go of the lights after the stream's last frame.
             let restore = PendingRestore::spawn(PARTY_RELEASE, move || {
                 let ha = HomeAssistant::new(&url, &token);
-                let put_back = match after_party(house::locked_down(&ha)) {
+                let put_back = match after_party(locked_here || house::locked_down(&ha)) {
                     // Red again; the party's snapshot stays for standing down.
                     AfterParty::LockdownRed => house::lockdown(&ha).map(|_| true),
                     AfterParty::PartyScene => house::party_restore(&ha),
@@ -430,7 +434,7 @@ impl Worker {
         }
         info!(scene = scene.id, request, "scene activated");
         // Undo would otherwise jump back past the scene, to the look before an earlier dimming.
-        self.last_lights = None;
+        self.forget_light_undo();
         self.show("scene", serde_json::json!({ "name": scene.name }), Some(SCREEN_MOMENT));
         let name = scene.name.to_lowercase();
         if no {
@@ -487,6 +491,7 @@ mod tests {
     fn a_party_during_a_lockdown_keeps_no_snapshot_of_the_red_lights() {
         assert_eq!(snapshot_plan(false, true), SnapshotPlan::Skip);
         assert_eq!(snapshot_plan(true, true), SnapshotPlan::Skip);
+        // Party on, or a party stopped a moment ago whose restore was called off by this start.
         assert_eq!(snapshot_plan(true, false), SnapshotPlan::KeepExisting);
         // No lockdown on: a snapshot left from one never stood down is replaced.
         assert_eq!(snapshot_plan(false, false), SnapshotPlan::Fresh);

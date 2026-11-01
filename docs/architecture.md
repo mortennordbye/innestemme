@@ -86,10 +86,10 @@ answers at once, since Music Assistant answers a play call only once the speaker
 said afterwards ("Sorry, I couldn't play that.").
 A light level change keeps a snapshot scene (`scene.lights_undo`) of each lamp first (a room group is expanded
 to its members), so "undo" puts every lamp's brightness and colour back and leaves the ones that were off off. A
-scene, party mode or a lockdown since then leaves nothing to undo. Party mode keeps `scene.party_restore` from
+scene, party mode or a lockdown since then leaves nothing to undo, though "them" still means those lights. Party mode keeps `scene.party_restore` from
 before it and puts it back a second after the stream stops; a lockdown in that second takes the snapshot over
 for standing down. A party started during a lockdown keeps no snapshot of the red lights: ending it turns them
-red again, and standing down ends it first.
+red again, and standing down ends it first. "Stand down" with no lockdown leaves a party alone.
 
 **Speech.** English through Kokoro, voice `am_onyx`: from a Kokoro-FastAPI server (`english-tts: kokoro`, a
 Python sidecar in the cluster) or inside the engine through sherpa-onnx (`english-tts: kokoro-onnx`, the f32

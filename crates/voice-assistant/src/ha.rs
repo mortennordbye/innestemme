@@ -167,15 +167,21 @@ pub struct Light {
 /// The lights behind `ids`, each group replaced by its members, for a snapshot: a scene made of
 /// a room group alone holds one brightness for the room, so putting it back sets every lamp to
 /// it and turns on the ones that were off.
+/// A zone of rooms is a group of groups: each is expanded in turn, once.
 pub fn each_lamp(lights: &[Light], ids: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for id in ids {
-        let members = lights.iter().find(|l| &l.id == id && l.group && !l.members.is_empty());
-        for lamp in members.map_or_else(|| std::slice::from_ref(id), |g| g.members.as_slice()) {
-            if !out.contains(lamp) {
-                out.push(lamp.clone());
-            }
+    fn add(lights: &[Light], id: &String, seen: &mut Vec<String>, out: &mut Vec<String>) {
+        if seen.contains(id) {
+            return;
         }
+        seen.push(id.clone());
+        match lights.iter().find(|l| &l.id == id && l.group && !l.members.is_empty()) {
+            Some(group) => group.members.iter().for_each(|m| add(lights, m, seen, out)),
+            None => out.push(id.clone()),
+        }
+    }
+    let (mut seen, mut out) = (Vec::new(), Vec::new());
+    for id in ids {
+        add(lights, id, &mut seen, &mut out);
     }
     out
 }
@@ -822,6 +828,24 @@ mod tests {
             each_lamp(&lights, &ids(&["light.spot_1", "light.kitchen", "light.gone"])),
             ids(&["light.spot_1", "light.spot_2", "light.gone"])
         );
+        // A zone of rooms, and groups that name each other, come out as lamps, each once.
+        let group = |id: &str, members: &[&str]| {
+            let mut g = light(id, id, "");
+            g.group = true;
+            g.members = ids(members);
+            g
+        };
+        let nested = vec![
+            group("light.downstairs", &["light.kitchen", "light.hall"]),
+            group("light.kitchen", &["light.spot_1", "light.spot_2"]),
+            group("light.loop_a", &["light.loop_b", "light.lamp"]),
+            group("light.loop_b", &["light.loop_a"]),
+        ];
+        assert_eq!(
+            each_lamp(&nested, &ids(&["light.downstairs"])),
+            ids(&["light.spot_1", "light.spot_2", "light.hall"])
+        );
+        assert_eq!(each_lamp(&nested, &ids(&["light.loop_a"])), ids(&["light.lamp"]));
         // The light list as the template renders it: members of a group, none for a lamp.
         let parsed: Vec<Light> = serde_json::from_str(
             r#"[{"id": "light.kitchen", "name": "Kitchen", "area": "Kitchen", "group": true, "members": ["light.spot_1"]},

@@ -28,6 +28,12 @@ pub(super) enum LightChange {
     Level,
 }
 
+/// Whether a light change made at `at` can still be undone: not when a scene, party mode or a
+/// lockdown has changed the lights since (`gone`).
+fn undoable(at: Instant, gone: Option<Instant>) -> bool {
+    gone.is_none_or(|gone| at > gone)
+}
+
 /// "In here", "this room", "her inne", "dette rommet".
 fn mentions_this_room(request: &str) -> bool {
     let text = format!(" {} ", request.to_lowercase().replace(|c: char| !c.is_alphanumeric() && c != ' ', " "));
@@ -142,7 +148,12 @@ impl Worker {
     /// "Undo": whichever changed last, the lights or the shopping list.
     pub(super) fn undo(&mut self, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
-        let lights_at = self.last_lights.as_ref().filter(|(.., at)| at.elapsed() < MEMORY).map(|(.., at)| *at);
+        let gone = self.light_undo_gone;
+        let lights_at = self
+            .last_lights
+            .as_ref()
+            .filter(|(.., at)| at.elapsed() < MEMORY && undoable(*at, gone))
+            .map(|(.., at)| *at);
         let list_at = self.last_list.as_ref().filter(|(_, at)| at.elapsed() < MEMORY).map(|(_, at)| *at);
         if list_at.is_some() && (lights_at.is_none() || list_at > lights_at) {
             let (changes, _) = self.last_list.take().expect("checked above");
@@ -170,7 +181,7 @@ impl Worker {
             }
             return answers.join(" ");
         }
-        match self.recent_lights() {
+        match self.recent_lights().filter(|_| lights_at.is_some()) {
             Some((target, LightChange::Switched(on))) => self.switch(&target, !on, lang, true),
             Some((target, LightChange::Level)) => self.restore_level(&target, lang),
             None if no => "Det er ingenting å angre.".into(),
@@ -235,6 +246,12 @@ impl Worker {
             (false, false) => format!("Lights are on in the {list}."),
             (true, false) => format!("Lyset er på i {list}."),
         }
+    }
+
+    /// A scene, party mode or a lockdown changed the lights: "undo" has nothing to go back to,
+    /// though "them" still means the lights last named.
+    pub(super) fn forget_light_undo(&mut self) {
+        self.light_undo_gone = Some(Instant::now());
     }
 
     pub(super) fn recent_lights(&self) -> Option<(Target, LightChange)> {
@@ -302,6 +319,16 @@ mod tests {
         assert!(refers_back("turn them off"));
         assert!(refers_back("skru dem på igjen"));
         assert!(!refers_back("turn off the lights"));
+    }
+
+    #[test]
+    fn a_scene_since_a_change_leaves_nothing_to_undo() {
+        let dimmed = Instant::now();
+        assert!(undoable(dimmed, None));
+        let scene = dimmed + Duration::from_millis(5);
+        assert!(!undoable(dimmed, Some(scene)));
+        // A change after the scene can be undone again.
+        assert!(undoable(scene + Duration::from_millis(5), Some(scene)));
     }
 
     #[test]
