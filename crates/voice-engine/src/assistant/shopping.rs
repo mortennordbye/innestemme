@@ -29,7 +29,7 @@ impl Worker {
                 info!(?command, ?change, "shopping list");
                 let added = matches!(change, Some(Change::Added(_)));
                 if let Some(change) = change {
-                    self.last_list = Some((change, Instant::now()));
+                    self.last_list = Some((vec![change], Instant::now()));
                 }
                 // The first item of a few: say that more may follow without "add".
                 match (added && !brief, no) {
@@ -40,6 +40,39 @@ impl Worker {
             }
             Err(error) => unreachable(&error, no),
         }
+    }
+
+    /// Several changes said in one reply while the list is open ("remove milk and add bread"),
+    /// answered together. "Undo" takes them all back, and an unreachable Home Assistant is said once.
+    /// The list stays open for more.
+    pub(super) fn shopping_changes(&mut self, commands: Vec<ListCommand>, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        let Some(ha) = &self.home_assistant else {
+            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
+                .into();
+        };
+        self.shopping.brief = true;
+        let (mut answers, mut changes) = (Vec::new(), Vec::new());
+        let mut failed = None;
+        for command in &commands {
+            match self.shopping.run(ha, command, lang) {
+                Ok((answer, change)) => {
+                    info!(?command, ?change, "shopping list");
+                    answers.push(answer);
+                    changes.extend(change);
+                }
+                Err(error) => {
+                    failed = Some(unreachable(&error, no));
+                    break;
+                }
+            }
+        }
+        if !changes.is_empty() {
+            self.last_list = Some((changes, Instant::now()));
+        }
+        self.list_open = Some(Instant::now());
+        answers.extend(failed);
+        answers.join(" ")
     }
 
     /// The items in a reply while the list is open. Said alone, a Norwegian item is better heard by

@@ -288,7 +288,7 @@ struct Worker {
     pending_lights: Option<bool>,
     shopping: ShoppingList,
     /// The last change to the shopping list and when, for "undo".
-    last_list: Option<(Change, Instant)>,
+    last_list: Option<(Vec<Change>, Instant)>,
     /// "Add to the shopping list" named nothing: the next answer is the items.
     /// When an item was last added: the list takes more without "add" until `LIST_OPEN` later.
     list_open: Option<Instant>,
@@ -740,13 +740,11 @@ impl Worker {
             }
             if intent == Intent::Unknown && text.split_whitespace().count() <= LIST_REPLY_WORDS {
                 let changes = voice_assistant::shopping::open_list_commands(text);
-                if changes.iter().any(|c| matches!(c, ListCommand::Remove(_))) {
-                    // "Remove milk and add bread": each change in turn, answered together.
-                    let answers: Vec<String> =
-                        changes.into_iter().map(|change| self.shopping_list(change, lang, true)).collect();
-                    // Still open: more items may follow the correction.
-                    self.list_open = Some(Instant::now());
-                    return Some(answers.join(" "));
+                // "Remove milk and add bread", "add bread and put milk on", "check if we have eggs":
+                // each change in turn. A single "add X" goes the way of plain items, which may be
+                // heard again in Norwegian.
+                if changes.len() > 1 || changes.iter().any(|c| !matches!(c, ListCommand::Add(_))) {
+                    return Some(self.shopping_changes(changes, lang));
                 }
                 let items = self.items_heard(text);
                 if !items.is_empty() {

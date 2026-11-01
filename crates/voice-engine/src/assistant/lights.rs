@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tracing::info;
 use voice_assistant::ha::{self, Target};
 use voice_assistant::house;
-use voice_assistant::intent::LightLevel;
+use voice_assistant::intent::{says_off, LightLevel};
 use voice_assistant::lang::Lang;
 use voice_assistant::shopping::Change;
 
@@ -141,22 +141,30 @@ impl Worker {
         let lights_at = self.last_lights.as_ref().filter(|(.., at)| at.elapsed() < MEMORY).map(|(.., at)| *at);
         let list_at = self.last_list.as_ref().filter(|(_, at)| at.elapsed() < MEMORY).map(|(_, at)| *at);
         if list_at.is_some() && (lights_at.is_none() || list_at > lights_at) {
-            let (change, _) = self.last_list.take().expect("checked above");
+            let (changes, _) = self.last_list.take().expect("checked above");
             let Some(ha) = &self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
-            if let Err(error) = self.shopping.undo(ha, &change) {
-                return unreachable(&error, no);
+            // Latest first, so a reply that removed and then added comes back in order.
+            let mut answers = Vec::new();
+            for change in changes.into_iter().rev() {
+                if let Err(error) = self.shopping.undo(ha, &change) {
+                    answers.push(unreachable(&error, no));
+                    break;
+                }
+                info!(?change, "shopping list change undone");
+                answers.push(match (no, change) {
+                    (false, Change::Added(items)) => {
+                        format!("Okay, took {} off again.", items.join(", ").to_lowercase())
+                    }
+                    (true, Change::Added(items)) => format!("Ok, fjernet {} igjen.", items.join(", ").to_lowercase()),
+                    (false, Change::Removed(items)) => {
+                        format!("Okay, {} is back on the list.", items.join(", ").to_lowercase())
+                    }
+                    (true, Change::Removed(items)) => {
+                        format!("Ok, {} er tilbake på lista.", items.join(", ").to_lowercase())
+                    }
+                });
             }
-            info!(?change, "shopping list change undone");
-            return match (no, change) {
-                (false, Change::Added(items)) => format!("Okay, took {} off again.", items.join(", ").to_lowercase()),
-                (true, Change::Added(items)) => format!("Ok, fjernet {} igjen.", items.join(", ").to_lowercase()),
-                (false, Change::Removed(items)) => {
-                    format!("Okay, {} is back on the list.", items.join(", ").to_lowercase())
-                }
-                (true, Change::Removed(items)) => {
-                    format!("Ok, {} er tilbake på lista.", items.join(", ").to_lowercase())
-                }
-            };
+            return answers.join(" ");
         }
         match self.recent_lights() {
             Some((target, LightChange::Switched(on))) => self.switch(&target, !on, lang, true),
@@ -208,15 +216,8 @@ impl Worker {
         if ha::names_something(&question) && !mentions_this_room(request) {
             if let Ok(Some(target)) = ha.find(&question) {
                 let lit = on.iter().any(|l| target.ids.contains(&l.id));
-                let label = target.label.to_lowercase();
-                return match (no, lit, target.area) {
-                    (false, true, true) => format!("Yes, the {label} lights are on."),
-                    (false, false, true) => format!("No, the {label} lights are off."),
-                    (false, true, false) => format!("Yes, the {label} is on."),
-                    (false, false, false) => format!("No, the {label} is off."),
-                    (true, true, _) => format!("Ja, lyset i {label} er på."),
-                    (true, false, _) => format!("Nei, lyset i {label} er av."),
-                };
+                let words: Vec<String> = request.split_whitespace().map(voice_assistant::dialog::normalize).collect();
+                return named_light_answer(&target.label.to_lowercase(), target.area, lit, says_off(&words), no);
             }
         }
         // Network gear and the Voice PE report their status LEDs as lights; asked by name, they
@@ -267,6 +268,22 @@ impl Worker {
     }
 }
 
+/// "Is the kitchen light on?" or "...off?": yes when the light is as asked.
+fn named_light_answer(label: &str, area: bool, lit: bool, asked_off: bool, no: bool) -> String {
+    let yes = lit != asked_off;
+    let state = if lit { "on" } else { "off" };
+    if no {
+        let (word, state) = (if yes { "Ja" } else { "Nei" }, if lit { "på" } else { "av" });
+        return format!("{word}, lyset i {label} er {state}.");
+    }
+    let word = if yes { "Yes" } else { "No" };
+    if area {
+        format!("{word}, the {label} lights are {state}.")
+    } else {
+        format!("{word}, the {label} is {state}.")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +298,16 @@ mod tests {
         assert!(refers_back("turn them off"));
         assert!(refers_back("skru dem på igjen"));
         assert!(!refers_back("turn off the lights"));
+    }
+
+    #[test]
+    fn a_question_about_off_answers_yes_when_off() {
+        assert_eq!(named_light_answer("kitchen", true, false, true, false), "Yes, the kitchen lights are off.");
+        assert_eq!(named_light_answer("kitchen", true, true, true, false), "No, the kitchen lights are on.");
+        assert_eq!(named_light_answer("kitchen", true, true, false, false), "Yes, the kitchen lights are on.");
+        assert_eq!(named_light_answer("kitchen", true, false, false, false), "No, the kitchen lights are off.");
+        assert_eq!(named_light_answer("desk lamp", false, false, true, false), "Yes, the desk lamp is off.");
+        assert_eq!(named_light_answer("stua", true, false, true, true), "Ja, lyset i stua er av.");
+        assert_eq!(named_light_answer("stua", true, true, true, true), "Nei, lyset i stua er på.");
     }
 }

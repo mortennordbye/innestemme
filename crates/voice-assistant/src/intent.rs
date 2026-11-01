@@ -197,6 +197,53 @@ const LEVEL_FILLER: &[&str] = &[
     "switch",
 ];
 
+/// "Off" as the on/off word: "turn off", "skru av". Not "av" as the preposition in "noen av lysene"
+/// (some of the lights).
+pub fn says_off(words: &[String]) -> bool {
+    const OF: &[&str] =
+        &["noen", "alle", "en", "ett", "ei", "ingen", "hver", "begge", "flere", "mange", "resten", "del", "to", "tre"];
+    words.iter().enumerate().any(|(i, w)| w == "off" || (w == "av" && !(i > 0 && OF.contains(&words[i - 1].as_str()))))
+}
+
+const FLOOR_WORDS: &[&str] = &["etasje", "etasjen", "etg", "floor"];
+
+/// Whether the number at `raw[i]` is a time of day: "at 7 pm", "klokka 7", "at 7" in a switching
+/// request ("turn on the lights at 7"), or "7pm", "19:00" in one word.
+fn clock_time(raw: &[&str], i: usize) -> bool {
+    let lower = |j: usize| raw.get(j).map(|t| t.to_lowercase()).unwrap_or_default();
+    let Ok(number) = raw[i].parse::<u8>() else { return false };
+    let after = lower(i + 1);
+    let before = if i > 0 { lower(i - 1) } else { String::new() };
+    let said_as_time = ["am", "pm", "a.m", "p.m", "o'clock", "oclock", "tonight", "tomorrow", "i", "in"]
+        .contains(&after.trim_end_matches('.'));
+    let clock = ["klokka", "klokken", "kl"].contains(&before.trim_end_matches('.'));
+    let switching = raw.iter().any(|t| ["turn", "switch", "skru", "slå"].contains(&t.to_lowercase().as_str()));
+    said_as_time && number <= 24 || clock || (switching && (1..=12).contains(&number))
+}
+
+/// "Turn the lights off at 11", "turn on the lights at 7 pm": a switch at a time of day, which the
+/// assistant cannot schedule. Acting now would be wrong.
+fn scheduled_switch(words: &[String], text: &str) -> bool {
+    let raw: Vec<&str> = text.split_whitespace().map(|t| t.trim_matches(|c: char| ",.!?".contains(c))).collect();
+    let switching = words.iter().any(|w| ["turn", "switch", "skru", "slå"].contains(&w.as_str()));
+    let light = words.iter().any(|w| LIGHT_WORDS.contains(&w.as_str()));
+    let on_off = says_off(words) || words.iter().any(|w| w == "on" || w == "på");
+    let unit = raw.iter().any(|t| t.ends_with('%') || ["percent", "prosent"].contains(&t.to_lowercase().as_str()));
+    let at_time = raw.iter().enumerate().any(|(i, t)| {
+        let before = if i > 0 { raw[i - 1].to_lowercase() } else { String::new() };
+        let marker = ["at", "på", "klokka", "klokken", "kl"].contains(&before.as_str());
+        let one_word = {
+            let t = t.to_lowercase();
+            let digits = t.trim_end_matches("pm").trim_end_matches("am");
+            (digits.len() < t.len() && digits.parse::<u8>().is_ok_and(|n| (1..=12).contains(&n)))
+                || t.split_once(':').is_some_and(|(h, m)| h.parse::<u8>().is_ok() && m.parse::<u8>().is_ok())
+        };
+        let floor = raw.get(i + 1).is_some_and(|n| FLOOR_WORDS.contains(&n.to_lowercase().as_str()));
+        (marker && clock_time(&raw, i) && !floor) || (marker && one_word)
+    });
+    (switching || light) && light && on_off && !unit && at_time
+}
+
 /// A brightness or colour request, from the words and the raw text (for "30%").
 fn light_level(words: &[String], text: &str) -> Option<LightLevel> {
     let has = |w: &str| words.iter().any(|x| x == w);
@@ -208,10 +255,14 @@ fn light_level(words: &[String], text: &str) -> Option<LightLevel> {
         let number: u8 = t.trim_end_matches('%').parse().ok()?;
         let unit = t.ends_with('%')
             || raw.get(i + 1).is_some_and(|n| ["percent", "prosent", "%"].contains(&n.to_lowercase().as_str()));
-        // "Set the living room lights to 50": a level after "to" counts when the request is about light.
-        // Not after "at"/"på" ("turn on the lights at 7", "lyset på 2. etasje"), and never with "off":
-        // "turn the lights off at 11" is not a brightness.
-        let to = i > 0 && ["to", "til"].contains(&raw[i - 1].to_lowercase().as_str()) && !has("off") && !has("av");
+        // "Set the living room lights to 50", "sett lyset på 50": a level after "to"/"at" counts when the
+        // request is about light. Not a clock time ("turn on the lights at 7"), a floor ("lyset på 2.
+        // etasje"), or with "off": "turn the lights off at 11" is not a brightness.
+        let before = if i > 0 { raw[i - 1].to_lowercase() } else { String::new() };
+        let to = ["to", "til", "at", "på"].contains(&before.as_str())
+            && !says_off(words)
+            && !(["at", "på"].contains(&before.as_str()) && clock_time(&raw, i))
+            && !raw.get(i + 1).is_some_and(|n| FLOOR_WORDS.contains(&n.to_lowercase().as_str()));
         (unit || to).then_some((number.min(100), unit))
     });
     // "It's too bright in here", "det er for mørkt på kjøkkenet".
@@ -1041,8 +1092,20 @@ pub(crate) fn question_word(words: &[String]) -> &str {
     const LEAD: &[&str] = &["so", "oh", "okay", "ok", "hey", "well", "um", "uh", "and", "but", "just", "please", "så"];
     const ASK: &[&str] = &["tell", "check", "see", "know", "fortell", "sjekk", "vet"];
     const ME: &[&str] = &["me", "us", "meg", "oss"];
+    const ACTION: &[&str] = &["turn", "switch", "skru", "slå", "start", "stop", "stopp", "dim", "set", "sett"];
     let mut i = words.iter().take_while(|w| LEAD.contains(&w.as_str())).count();
     let at = |i: usize| words.get(i).map(String::as_str).unwrap_or_default();
+    // "If you could turn off the lights", "if the TV is on, turn it off", "any chance you could start
+    // party mode", "is it possible to dim the lights": requests behind a question's words.
+    let request = at(i) == "if"
+        || (at(i) == "see" && at(i + 1) == "if")
+        || (at(i) == "any" && at(i + 1) == "chance")
+        || (["is", "would"].contains(&at(i)) && at(i + 1) == "it" && words[i..].iter().any(|w| w == "possible"));
+    if request {
+        if let Some(verb) = words[i..].iter().find(|w| ACTION.contains(&w.as_str())) {
+            return verb;
+        }
+    }
     // "Can you tell me", "could you check", "do you know", "kan du sjekke".
     if ["can", "could", "would", "will", "do", "kan", "vil"].contains(&at(i))
         && ["you", "du"].contains(&at(i + 1))
@@ -1051,7 +1114,8 @@ pub(crate) fn question_word(words: &[String]) -> &str {
         i += 2;
     }
     if ASK.iter().any(|a| at(i).starts_with(a)) {
-        let after = i + 1 + usize::from(ME.contains(&at(i + 1)));
+        // "Tell me if", "vet du om".
+        let after = i + 1 + usize::from(ME.contains(&at(i + 1)) || ["you", "du"].contains(&at(i + 1)));
         if ["if", "whether", "which", "what", "om", "hvilke", "hva"].contains(&at(after)) {
             i = after;
         }
@@ -1242,6 +1306,9 @@ fn rules(text: &str) -> Intent {
     if let Some(intent) = where_is(&words) {
         return intent;
     }
+    if scheduled_switch(&words, text) {
+        return Intent::Unknown;
+    }
     if let Some(level) = light_level(&words, text) {
         return Intent::LightLevel { level, target: level_target(text) };
     }
@@ -1265,7 +1332,7 @@ fn rules(text: &str) -> Intent {
     let switching = ["turn", "switch", "skru", "slå"].iter().any(|w| has(w));
     let pronoun = ["them", "it", "those", "these", "they", "that", "dem", "den", "det", "de"].iter().any(|w| has(w));
     // "off"/"av" first: in Norwegian "på" is also the preposition ("av på kjøkkenet").
-    let on = if has("off") || has("av") {
+    let on = if says_off(&words) {
         Some(false)
     } else if has("on") || has("på") {
         Some(true)
@@ -1404,6 +1471,18 @@ mod tests {
             Intent::Party(crate::party::PartyCommand::On(crate::party::Pace::Normal))
         );
         assert_eq!(parse("Can you turn on the TV"), Intent::Tv(TvCommand::Power(true)));
+        assert_eq!(parse("Vet du om lyset er på"), status("Vet du om lyset er på"));
+        // Requests behind "if" and the like act.
+        assert_eq!(
+            parse("If you could turn off the lights"),
+            Intent::Lights { on: false, target: "If you could turn off the lights".into() }
+        );
+        assert_eq!(
+            parse("Is it possible to turn off the lights"),
+            Intent::Lights { on: false, target: "Is it possible to turn off the lights".into() }
+        );
+        assert_eq!(parse("If the TV is on, turn it off"), Intent::Tv(TvCommand::Power(false)));
+        assert_eq!(parse("If party mode is on turn it off"), Intent::Party(crate::party::PartyCommand::Off));
     }
 
     #[test]
@@ -1412,14 +1491,27 @@ mod tests {
         assert_eq!(parse("Set the living room lights to 50"), level(50, "the living room lights"));
         assert_eq!(parse("Set the brightness to 30"), level(30, "the"));
         assert_eq!(parse("Set the volume to 30"), Intent::Music(MusicCommand::VolumeTo(30)));
+        assert!(matches!(parse("Sett lyset i stua på 50"), Intent::LightLevel { level: LightLevel::Percent(50), .. }));
+        assert!(matches!(parse("Turn the lights to 10"), Intent::LightLevel { level: LightLevel::Percent(10), .. }));
+        assert!(matches!(parse("Set the lights at 50"), Intent::LightLevel { level: LightLevel::Percent(50), .. }));
+        assert!(matches!(parse("Turn on the lights at 70"), Intent::LightLevel { level: LightLevel::Percent(70), .. }));
+        // A time of day cannot be scheduled yet: nothing switches now.
+        for phrase in [
+            "Turn the lights off at 11",
+            "Turn on the lights at 7",
+            "Turn on the lights at 7 pm",
+            "turn on the lights at 7 o'clock",
+            "turn off the lights at 11pm",
+            "skru av lyset klokka 23",
+        ] {
+            assert_eq!(parse(phrase), Intent::Unknown, "{phrase}");
+        }
         assert_eq!(
-            parse("Turn the lights off at 11"),
-            Intent::Lights { on: false, target: "Turn the lights off at 11".into() }
+            parse("Skru på lyset på 2. etasje"),
+            Intent::Lights { on: true, target: "Skru på lyset på 2. etasje".into() }
         );
-        assert_eq!(
-            parse("Turn on the lights at 7"),
-            Intent::Lights { on: true, target: "Turn on the lights at 7".into() }
-        );
+        assert!(says_off(&["skru".into(), "av".into(), "lyset".into()]));
+        assert!(!says_off(&["noen".into(), "av".into(), "lysene".into()]));
         assert_eq!(
             parse("Set a timer for 10 minutes"),
             Intent::Timer(TimerCommand::Start { seconds: Some(600), name: None })

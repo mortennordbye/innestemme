@@ -164,14 +164,17 @@ pub struct Light {
 impl Light {
     /// A status LED (network gear, the Voice PE's ring) that reports itself as a light. Nobody means it
     /// by "all the lights" or a room; only by its name.
-    /// The name ends in "LED" or "LED ring": "Kitchen LED strip" is a real light.
+    /// The Voice PE's "LED Ring", a "status LED", and network gear named by model ("U6 LED",
+    /// "USW-Lite-8-PoE LED": a word with letters and digits before "LED"). "TV LED", "Desk LED" and
+    /// "Kitchen LED strip" are real lights.
     pub fn status_led(&self) -> bool {
         let words: Vec<String> = self.name.split_whitespace().map(str::to_lowercase).collect();
-        match words.as_slice() {
-            [.., last] if last == "led" => true,
-            [.., led, ring] => led == "led" && ring == "ring",
-            _ => false,
+        let led = |w: &String| w == "led" || w == "leds";
+        if words.windows(2).any(|p| led(&p[0]) && p[1] == "ring") || words.iter().any(|w| w == "status") {
+            return true;
         }
+        let model = |w: &String| w.chars().any(|c| c.is_ascii_digit()) && w.chars().any(|c| c.is_alphabetic());
+        words.last().is_some_and(led) && words[..words.len() - 1].iter().any(model)
     }
 }
 
@@ -838,6 +841,10 @@ mod tests {
         assert!(!light("light.sled", "Sled lamp", "").status_led());
         assert!(!light("light.strip", "Kitchen LED strip", "").status_led());
         assert!(!light("light.strip", "LED Strip", "").status_led());
+        assert!(!light("light.tv_led", "TV LED", "").status_led());
+        assert!(!light("light.desk_led", "Desk LED", "").status_led());
+        assert!(light("light.u6_led", "U6 LED", "").status_led());
+        assert!(light("light.nas", "NAS status LED", "").status_led());
     }
 
     #[test]
