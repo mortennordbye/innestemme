@@ -64,17 +64,28 @@ impl Worker {
     /// Every light red, the volume up and the lockdown music on. Just for fun: nothing is locked.
     pub(super) fn lockdown(&mut self, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
-        // Its red lights and the party's stream would fight over the same lights.
-        if self.party_off_for_lockdown() {
-            info!("party mode ended for the lockdown");
-        }
-        let Some(ha) = &self.home_assistant else {
+        // Checked first: without a client nothing is locked down, and a party restore still
+        // waiting should go ahead.
+        if self.home_assistant.is_none() {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
-        };
-        match house::lockdown(ha) {
+        }
+        // Its red lights and the party's stream would fight over the same lights.
+        let party = self.party_off_for_lockdown();
+        if party {
+            info!("party mode ended for the lockdown");
+        }
+        let locked = house::lockdown(self.home_assistant.as_ref().expect("checked above"));
+        if party {
+            self.party_kept_for_lockdown(locked.is_ok());
+        }
+        let ha = self.home_assistant.as_ref().expect("checked above");
+        match locked {
             Ok(red) => {
                 info!(red = red.len(), "lockdown");
+                self.locked_down = true;
+                // Undo would put a look from before the lockdown back over its red lights.
+                self.light_undo_gone = Some(Instant::now());
                 let blinking = self.alarm.as_ref().is_some_and(|a| !a.thread.is_finished());
                 if !blinking && !red.is_empty() {
                     match Alarm::start(ha.detached(), red) {
@@ -175,9 +186,20 @@ impl Worker {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
         };
+        // Only with a lockdown to end: "stand down" without one leaves a party and its restore be.
+        // Home Assistant's scene decides; what this engine knows only when it can't be asked.
+        let locked_down = house::lockdown_on(ha, self.locked_down);
+        if locked_down {
+            self.party_off_for_stand_down();
+        }
+        let ha = self.home_assistant.as_ref().expect("checked above");
         // Stopped first: a step after the lights are restored would turn them red again.
         if let Some(alarm) = self.alarm.take() {
             alarm.stop();
+        }
+        self.locked_down = false;
+        if locked_down {
+            self.light_undo_gone = Some(Instant::now());
         }
         let restored = match house::stand_down(ha) {
             Ok(restored) => restored,

@@ -18,10 +18,10 @@ const SERVICE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Lights and areas change rarely; refetch after this long.
 const REFRESH: Duration = Duration::from_secs(600);
 
-/// Every light as `{"id", "name", "area", "group"}`, rendered by Home Assistant itself.
+/// Every light as `{"id", "name", "area", "group", "members"}`, rendered by Home Assistant itself.
 // Unavailable lights are left out: switching one with the rest failed the whole call after
 // several seconds (an unplugged IKEA driver at good night).
-const LIGHTS_TEMPLATE: &str = r#"[{% for s in states.light if s.state != "unavailable" %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}, "area": {{ (area_name(s.entity_id) or "") | tojson }}, "group": {{ (s.attributes.entity_id is defined) | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
+const LIGHTS_TEMPLATE: &str = r#"[{% for s in states.light if s.state != "unavailable" %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}, "area": {{ (area_name(s.entity_id) or "") | tojson }}, "group": {{ (s.attributes.entity_id is defined) | tojson }}, "members": {{ (s.attributes.entity_id or []) | list | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
 
 /// Room names people say, in both languages, grouped by room. A request and an area match when
 /// they share a group, so "living room" finds an area called "Stue" and the other way round.
@@ -159,6 +159,31 @@ pub struct Light {
     /// A light group (a Hue room, a Home Assistant group): it is on while any member is.
     #[serde(default)]
     pub group: bool,
+    /// A group's lights.
+    #[serde(default)]
+    pub members: Vec<String>,
+}
+
+/// The lights behind `ids`, each group replaced by its members, for a snapshot: a scene made of
+/// a room group alone holds one brightness for the room, so putting it back sets every lamp to
+/// it and turns on the ones that were off.
+/// A zone of rooms is a group of groups: each is expanded in turn, once.
+pub fn each_lamp(lights: &[Light], ids: &[String]) -> Vec<String> {
+    fn add(lights: &[Light], id: &String, seen: &mut Vec<String>, out: &mut Vec<String>) {
+        if seen.contains(id) {
+            return;
+        }
+        seen.push(id.clone());
+        match lights.iter().find(|l| &l.id == id && l.group && !l.members.is_empty()) {
+            Some(group) => group.members.iter().for_each(|m| add(lights, m, seen, out)),
+            None => out.push(id.clone()),
+        }
+    }
+    let (mut seen, mut out) = (Vec::new(), Vec::new());
+    for id in ids {
+        add(lights, id, &mut seen, &mut out);
+    }
+    out
 }
 
 impl Light {
@@ -475,6 +500,23 @@ impl HomeAssistant {
         self.get(&format!("/api/states/{entity_id}"))
     }
 
+    /// Whether Home Assistant has the entity, after the calls queued so far: `Err` only when it
+    /// could not be asked, so a missing entity and an unreachable server are told apart.
+    pub fn exists(&self, entity_id: &str) -> Result<bool> {
+        self.flush();
+        let path = format!("/api/states/{entity_id}");
+        match self
+            .agent
+            .get(&format!("{}{path}", self.base))
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .call()
+        {
+            Ok(_) => Ok(true),
+            Err(ureq::Error::StatusCode(404)) => Ok(false),
+            Err(e) => Err(anyhow::anyhow!("Home Assistant request to {path} failed: {e}")),
+        }
+    }
+
     /// Media players that are playing: those in `area`, and any of `also` (a Music Assistant player
     /// has no area of its own).
     pub fn playing(&self, area: Option<&str>, also: &[String]) -> Result<Vec<Playing>> {
@@ -777,7 +819,7 @@ mod tests {
     use super::*;
 
     fn light(id: &str, name: &str, area: &str) -> Light {
-        Light { id: id.into(), name: name.into(), area: area.into(), group: false }
+        Light { id: id.into(), name: name.into(), area: area.into(), group: false, members: Vec::new() }
     }
 
     fn home() -> Vec<Light> {
@@ -787,6 +829,48 @@ mod tests {
             light("light.kitchen_spots", "Kitchen spots", "Kitchen"),
             light("light.desk", "Desk lamp", ""),
         ]
+    }
+
+    #[test]
+    fn a_snapshot_holds_each_lamp_of_a_room_group() {
+        let mut room = light("light.kitchen", "Kitchen", "Kitchen");
+        room.group = true;
+        room.members = vec!["light.spot_1".into(), "light.spot_2".into()];
+        let lights = vec![room, light("light.desk", "Desk lamp", "")];
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(each_lamp(&lights, &ids(&["light.kitchen"])), ids(&["light.spot_1", "light.spot_2"]));
+        assert_eq!(each_lamp(&lights, &ids(&["light.desk"])), ids(&["light.desk"]));
+        // A lamp also named on its own is kept once; an unknown id stays as it is.
+        assert_eq!(
+            each_lamp(&lights, &ids(&["light.spot_1", "light.kitchen", "light.gone"])),
+            ids(&["light.spot_1", "light.spot_2", "light.gone"])
+        );
+        // A zone of rooms, and groups that name each other, come out as lamps, each once.
+        let group = |id: &str, members: &[&str]| {
+            let mut g = light(id, id, "");
+            g.group = true;
+            g.members = ids(members);
+            g
+        };
+        let nested = vec![
+            group("light.downstairs", &["light.kitchen", "light.hall"]),
+            group("light.kitchen", &["light.spot_1", "light.spot_2"]),
+            group("light.loop_a", &["light.loop_b", "light.lamp"]),
+            group("light.loop_b", &["light.loop_a"]),
+        ];
+        assert_eq!(
+            each_lamp(&nested, &ids(&["light.downstairs"])),
+            ids(&["light.spot_1", "light.spot_2", "light.hall"])
+        );
+        assert_eq!(each_lamp(&nested, &ids(&["light.loop_a"])), ids(&["light.lamp"]));
+        // The light list as the template renders it: members of a group, none for a lamp.
+        let parsed: Vec<Light> = serde_json::from_str(
+            r#"[{"id": "light.kitchen", "name": "Kitchen", "area": "Kitchen", "group": true, "members": ["light.spot_1"]},
+                {"id": "light.desk", "name": "Desk", "area": "", "group": false, "members": []}]"#,
+        )
+        .unwrap();
+        assert_eq!(parsed[0].members, ids(&["light.spot_1"]));
+        assert!(parsed[1].members.is_empty());
     }
 
     #[test]

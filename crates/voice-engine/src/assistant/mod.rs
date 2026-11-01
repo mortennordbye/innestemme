@@ -319,6 +319,15 @@ struct Worker {
     /// A lockdown ended party mode: the party's snapshot holds the lights from before both, for
     /// standing down.
     party_under_lockdown: bool,
+    /// Party mode's lights put back after the bridge lets go, still waiting: a lockdown or a stand
+    /// down in that second takes it over.
+    party_restore: Option<skills::PendingRestore>,
+    /// A lockdown started here and not stood down. Its snapshot scene in Home Assistant is
+    /// written behind, so a check of it right after the lockdown can miss it.
+    locked_down: bool,
+    /// When a scene, party mode or a lockdown last changed the lights: light changes before it
+    /// cannot be undone.
+    light_undo_gone: Option<Instant>,
     /// The TV a lockdown put its screen on, and what the TV showed before, for standing down.
     lockdown_tv: Option<(String, Option<String>)>,
     /// Which threat the next lockdown ends on.

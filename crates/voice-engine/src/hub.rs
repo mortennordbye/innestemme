@@ -229,6 +229,7 @@ mod tests {
             name: name.into(),
             area: area.into(),
             group,
+            members: Vec::new(),
         }
     }
 
