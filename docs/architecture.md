@@ -71,9 +71,10 @@ from it, and a day past its end is said to be ("The forecast doesn't reach Wedne
 rain later", "do I need an umbrella" and "should I bring a jacket" are answered from the hourly steps: when rain
 starts or stops for the rest of the day (at least six hours ahead) or tonight. "How windy is it" says the wind in
 m/s, calm or not. A place is looked up in this order: the home by its name, a larger Norwegian town or a known
-mishearing of one ("us of" and "all slow" for Oslo), an exact match in Norway from Open-Meteo's geocoder, the
-home or a town the whole name sounds like (`names.rs`, "Bergan", "Tronheim"), then the geocoder's best match
-anywhere. Places found or not are kept in memory.
+mishearing of one ("us of" and "all slow" for Oslo), an exact match in Norway from Open-Meteo's geocoder, an
+exact match anywhere (so "Malta" is not Alta), the home or a town the whole name sounds like (`names.rs`, "Bergan",
+"Tronheim"), then the geocoder's best match anywhere. Places found or not are kept in memory. "Next Monday" asked
+on a Monday is a week ahead, and "tonight" asked after 04:00 is the coming evening.
 
 **Home Assistant.** REST only (`ha.rs`): one template call lists every light with its area, service calls do the
 rest. Writes that the answer does not depend on (lights, scenes, the lockdown, routines, ringing a phone, pausing

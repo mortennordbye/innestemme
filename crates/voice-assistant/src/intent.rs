@@ -22,6 +22,10 @@ pub enum Day {
     Weekday(jiff::civil::Weekday),
     /// The coming Saturday and Sunday, or what is left of them.
     Weekend,
+    /// "Next Monday": the next such day after today, a week ahead when today is one.
+    NextWeekday(jiff::civil::Weekday),
+    /// "Next weekend": the coming one, or the one after when it is the weekend now.
+    NextWeekend,
 }
 
 /// What a weather question is about: everything, or only rain or wind.
@@ -452,9 +456,15 @@ fn where_is(words: &[String]) -> Option<Intent> {
     let name: Vec<String> = w[1..at].iter().map(|w| (*w).to_owned()).collect();
     let zone: Vec<&str> = w[at + 1..].iter().copied().filter(|x| !["the", "her", "his", "sin"].contains(x)).collect();
     let home = ["home", "hjemme", "hjem"];
+    // "Is dinner at seven", "is Kiwi at Storo open": a time or a state, not a zone.
+    let not_a_zone = [
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "noon",
+        "midnight", "o'clock", "open", "closed", "åpen", "åpent", "stengt", "ett", "to", "tre", "fire", "fem", "seks",
+        "sju", "syv", "åtte", "ni", "ti", "elleve", "tolv",
+    ];
     if zone.is_empty()
         || zone.len() > 2
-        || zone.iter().any(|z| home.contains(z) || z.chars().any(|c| c.is_ascii_digit()))
+        || zone.iter().any(|z| home.contains(z) || not_a_zone.contains(z) || z.chars().any(|c| c.is_ascii_digit()))
     {
         return None;
     }
@@ -1012,11 +1022,13 @@ fn day_of(words: &[String]) -> Day {
     if pair("after", &["tomorrow"]) || has("overmorgen") || has("iovermorgen") {
         return Day::AfterTomorrow;
     }
-    if let Some((day, ..)) = WEEKDAYS.iter().find(|(_, en, no)| has(en) || has(no)) {
-        return Day::Weekday(*day);
+    let next = |day: &str| pair("next", &[day]) || pair("neste", &[day]);
+    if let Some((day, en, no)) = WEEKDAYS.iter().find(|(_, en, no)| has(en) || has(no)) {
+        return if next(en) || next(no) { Day::NextWeekday(*day) } else { Day::Weekday(*day) };
     }
-    if ["weekend", "helg", "helgen", "helga"].iter().any(|w| has(w)) {
-        return Day::Weekend;
+    let weekend = ["weekend", "helg", "helgen", "helga"];
+    if weekend.iter().any(|w| has(w)) {
+        return if weekend.iter().any(|w| next(w)) { Day::NextWeekend } else { Day::Weekend };
     }
     // Whisper sometimes writes "i morgen" (tomorrow) as "i morgenen".
     if has("tomorrow") || has("imorgen") || pair("i", &["morgen", "morgenen"]) {
@@ -1629,6 +1641,8 @@ mod tests {
         assert_eq!(day_named("day after tomorrow"), Day::AfterTomorrow);
         assert_eq!(day_named("Saturday"), Day::Weekday(Saturday));
         assert_eq!(day_named("weekend"), Day::Weekend);
+        assert_eq!(parse("what's the weather next Monday"), weather(None, Day::NextWeekday(Monday)));
+        assert_eq!(parse("what is the weather next weekend"), weather(None, Day::NextWeekend));
         assert_eq!(day_named("today"), Day::Today);
     }
 
@@ -1946,6 +1960,9 @@ mod tests {
             "where is the remote",
             "where are my keys",
             "is the dinner at 6",
+            "is dinner at seven",
+            "is the dinner at seven",
+            "is Kiwi at Storo open",
             "where do you live",
             "when is the next bus home",
         ] {

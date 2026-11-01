@@ -860,7 +860,18 @@ pub fn sun_answer(sun: &Value, event: SunEvent, lang: Lang) -> Result<String> {
                 (false, true, true) => "Ja, det er lyst.",
                 (false, false, true) => "Nei, det er fortsatt lyst.",
             };
-            let next = sun_answer(sun, if dark { SunEvent::Sunrise } else { SunEvent::Dark }, lang)?;
+            // The next change at the same -6 degree line: dawn when dark, dusk when light. A dusk
+            // after midnight is still tonight's, so never "already dark" here.
+            let (key, fallback) = if dark { ("next_dawn", "next_rising") } else { ("next_dusk", "next_dusk") };
+            let at = sun["attributes"][key].as_str().or_else(|| sun["attributes"][fallback].as_str());
+            let at: jiff::Timestamp = at.context("no sun times in Home Assistant")?.parse()?;
+            let time = at.to_zoned(jiff::tz::TimeZone::system()).strftime("%H:%M").to_string();
+            let next = match (dark, no) {
+                (true, false) => format!("It gets light at about {time}."),
+                (false, false) => format!("It gets dark at about {time}."),
+                (true, true) => format!("Det blir lyst rundt {time}."),
+                (false, true) => format!("Det blir mørkt rundt {time}."),
+            };
             return Ok(format!("{now} {next}"));
         }
     };
@@ -1565,10 +1576,21 @@ mod tests {
         let sun = |elevation: f64| json!({ "attributes": { "elevation": elevation, "next_rising": tomorrow, "next_dusk": tomorrow } });
         let answer =
             |elevation: f64, dark: bool| sun_answer(&sun(elevation), SunEvent::IsDark(dark), Lang::English).unwrap();
-        assert!(answer(-20.0, true).starts_with("Yes, it's dark. Sunrise is at "));
+        assert!(answer(-20.0, true).starts_with("Yes, it's dark. It gets light at about "));
         assert!(answer(-20.0, false).starts_with("No, it's still dark. "));
-        assert!(answer(15.0, true).starts_with("No, it's still light. "));
-        assert!(answer(-3.0, false).starts_with("Yes, it's light. "));
+        assert!(answer(15.0, true).starts_with("No, it's still light. It gets dark at about "));
+        // Light near midnight in June, with dusk after midnight: not "already dark".
+        assert!(answer(-3.0, false).starts_with("Yes, it's light. It gets dark at about "));
+        // Light comes at dawn, the -6 degree line, before sunrise.
+        let sun = json!({ "attributes": {
+            "elevation": -20.0, "next_rising": "2026-06-21T02:00:00Z", "next_dawn": "2026-06-21T01:00:00Z"
+        } });
+        let dawn: jiff::Timestamp = "2026-06-21T01:00:00Z".parse().unwrap();
+        let dawn = dawn.to_zoned(jiff::tz::TimeZone::system()).strftime("%H:%M").to_string();
+        assert_eq!(
+            sun_answer(&sun, SunEvent::IsDark(true), Lang::English).unwrap(),
+            format!("Yes, it's dark. It gets light at about {dawn}.")
+        );
     }
 
     #[test]

@@ -51,7 +51,10 @@ fn main() -> anyhow::Result<()> {
         Intent::WhosHome(name) => println!("{name:?}: {:?}", ha.people()?),
         Intent::WhereIs { name, zone, arriving } => {
             let people = ha.people()?;
-            println!("{}", voice_assistant::people::where_answer(&people, &name, zone.as_deref(), arriving, lang));
+            println!(
+                "{}",
+                voice_assistant::people::where_answer(&people, &name, zone.as_deref(), arriving, None, lang)
+            );
         }
         Intent::House(HouseCommand::Sensors(voice_assistant::sensors::SensorQuery::Battery(name))) => {
             let batteries = voice_assistant::sensors::batteries(&ha)?;

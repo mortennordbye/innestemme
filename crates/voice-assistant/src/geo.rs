@@ -156,10 +156,44 @@ fn sounds_like(name: &str, home: Option<&Location>) -> Option<Location> {
     (found.words == (0..name.split_whitespace().count())).then(|| known(found.name, home)).flatten()
 }
 
+/// Whether a name is a town known without a lookup, or sounds like one ("Bergan").
+pub fn is_known_place(name: &str) -> bool {
+    offline(name, None).is_some()
+}
+
+/// A place found without the network: the home, a town, or what either sounds like.
+pub fn offline(name: &str, home: Option<&Location>) -> Option<Location> {
+    known(name, home).or_else(|| sounds_like(name, home))
+}
+
+/// The Norwegian place, else the home or a town it sounds like, else the best place anywhere.
+/// A place abroad with exactly the name asked for beats a sound-alike: "Malta" is not Alta, nor
+/// "Lerwick" Larvik.
+fn pick(
+    name: &str,
+    norway: Vec<Place>,
+    world: impl FnOnce() -> Result<Vec<Place>>,
+    home: Option<&Location>,
+) -> Result<Option<Location>> {
+    let same = |p: &Place| p.name.to_lowercase() == name.trim().to_lowercase();
+    let location = |p: Place| Location { latitude: p.latitude, longitude: p.longitude, label: p.name };
+    if let Some(place) = norway.into_iter().find(same) {
+        return Ok(Some(location(place)));
+    }
+    let world = world()?;
+    if let Some(place) = world.iter().position(same) {
+        return Ok(Some(location(world.into_iter().nth(place).expect("found above"))));
+    }
+    if let Some(alike) = sounds_like(name, home) {
+        return Ok(Some(alike));
+    }
+    Ok(world.into_iter().next().map(location))
+}
+
 /// A place by name. The home, a larger town or a known mishearing of one needs no lookup. Then
 /// a Norwegian place with that exact name wins over a bigger one abroad, so a misheard "Verden"
-/// does not end up in Germany when Norway has none; then the home or a town it sounds like; then
-/// the best place anywhere.
+/// does not end up in Germany when Norway has none; then a place anywhere with that exact name;
+/// then the home or a town it sounds like; then the best place anywhere.
 pub fn place(agent: &ureq::Agent, name: &str, home: Option<&Location>) -> Result<Option<Location>> {
     if let Some(known) = known(name, home) {
         return Ok(Some(known));
@@ -176,16 +210,7 @@ pub fn place(agent: &ureq::Agent, name: &str, home: Option<&Location>) -> Result
         let geo: Geocoding = call.call().context("place lookup (Open-Meteo geocoder)")?.body_mut().read_json()?;
         Ok(geo.results)
     };
-    let same = |p: &Place| p.name.to_lowercase() == name.trim().to_lowercase();
-    let norway = search(Some("NO"))?;
-    let location = |p: Place| Location { latitude: p.latitude, longitude: p.longitude, label: p.name };
-    if let Some(place) = norway.into_iter().find(same) {
-        return Ok(Some(location(place)));
-    }
-    if let Some(alike) = sounds_like(name, home) {
-        return Ok(Some(alike));
-    }
-    Ok(search(None)?.into_iter().next().map(location))
+    pick(name, search(Some("NO"))?, || search(None), home)
 }
 
 #[cfg(test)]
@@ -226,5 +251,24 @@ mod tests {
         assert_eq!(sounds_like("new york", None), None);
         assert_eq!(sounds_like("london", None), None);
         assert_eq!(sounds_like("mossel bay", None), None);
+    }
+
+    fn found(name: &str, latitude: f64) -> Place {
+        Place { name: name.into(), latitude, longitude: 0.0 }
+    }
+
+    #[test]
+    fn a_place_abroad_by_its_own_name_beats_a_sound_alike() {
+        let pick =
+            |name: &str, norway: Vec<Place>, world: Vec<Place>| label(pick(name, norway, || Ok(world), None).unwrap());
+        assert_eq!(pick("Malta", vec![], vec![found("Malta", 35.9)]).as_deref(), Some("Malta"));
+        assert_eq!(pick("Lerwick", vec![], vec![found("Lerwick", 60.2)]).as_deref(), Some("Lerwick"));
+        // Misheard: nothing abroad by that name, so the town it sounds like.
+        assert_eq!(pick("Bergan", vec![], vec![found("Bergamo", 45.7)]).as_deref(), Some("Bergen"));
+        // A Norwegian place by the name still wins, without asking abroad.
+        let verden = super::pick("Verden", vec![found("Verden", 63.0)], || panic!("not asked"), None).unwrap();
+        assert_eq!(verden.map(|l| l.latitude), Some(63.0));
+        assert!(is_known_place("bergen"));
+        assert!(!is_known_place("kitchen"));
     }
 }
