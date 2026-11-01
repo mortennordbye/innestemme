@@ -70,7 +70,11 @@ whisper-size: base
 # --- Home Assistant ----------------------------------------------------------------------------
 # ha-url: http://homeassistant.local:8123
 # Music Assistant player for music, by name or entity id. Optional when there is only one player.
+# "Play jazz in the kitchen" finds the kitchen's player by its Home Assistant area.
 # speaker: Living Room
+# Home Assistant automations speak through POST /api/announce with this as a bearer token (needs web).
+# A secret: set VOICE_ANNOUNCE_TOKEN or VOICE_ANNOUNCE_TOKEN_FILE rather than writing it here.
+# announce-token:
 # The room the microphone is in, for "turn off the lights" without a room. A satellite's default is its
 # area in Home Assistant.
 # room: Living Room

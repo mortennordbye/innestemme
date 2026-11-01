@@ -13,7 +13,9 @@ use voice_assistant::dialog::WakeWord;
 use voice_assistant::intent;
 use voice_proto::SAMPLE_RATE;
 
-use crate::assistant::{AssistantHandle, Preview};
+use voice_assistant::lang::Lang;
+
+use crate::assistant::{Announcement, AssistantHandle, Preview};
 use crate::control::Control;
 use crate::hub::Hub;
 use crate::learned::Learned;
@@ -51,7 +53,18 @@ pub struct Web {
     control: Option<Arc<Control>>,
     /// Corrections learned from repeats, listed on the log view.
     learned: Option<Arc<Learned>>,
+    /// The bearer token Home Assistant sends with `/api/announce`; without one there is no such page.
+    announce_token: Option<String>,
+    /// When the last announcements were taken, for [`ANNOUNCE_RATE`].
+    announced: std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>,
 }
+
+/// Announcements taken per [`ANNOUNCE_WINDOW`]; more are refused, so an automation that loops
+/// cannot talk over everything.
+const ANNOUNCE_RATE: usize = 5;
+const ANNOUNCE_WINDOW: Duration = Duration::from_secs(60);
+/// The longest text spoken, about 20 seconds of speech: more is a mistake in the automation.
+const ANNOUNCE_MAX: usize = 300;
 
 /// Status, content type and body.
 pub type Response = (&'static str, &'static str, Vec<u8>);
@@ -64,7 +77,68 @@ impl Web {
         speech: Arc<SpeechClips>,
         unhandled: Option<Arc<UnhandledLog>>,
     ) -> Self {
-        Self { wake, about, assistant, speech, unhandled, hub: None, control: None, learned: None }
+        Self {
+            wake,
+            about,
+            assistant,
+            speech,
+            unhandled,
+            hub: None,
+            control: None,
+            learned: None,
+            announce_token: None,
+            announced: Default::default(),
+        }
+    }
+
+    /// Turns on `/api/announce` for requests that carry this token.
+    pub fn with_announce_token(mut self, token: Option<String>) -> Self {
+        self.announce_token = token.filter(|t| !t.trim().is_empty()).map(|t| t.trim().to_owned());
+        self
+    }
+
+    /// `POST /api/announce?text=...` with `Authorization: Bearer <announce-token>`: Home Assistant
+    /// automations speak through the assistant (a doorbell, a washing machine done). Optional
+    /// `room=kitchen` or `player=media_player.kitchen` for another speaker, `lang=no` for
+    /// Norwegian. `head` is the request's header block.
+    pub fn announce(&self, post: bool, target: &str, head: &str) -> Option<Response> {
+        let query = target.strip_prefix("/api/announce")?;
+        let query = if query.is_empty() { "" } else { query.strip_prefix('?')? };
+        let token = self.announce_token.as_deref()?;
+        let Some(assistant) = &self.assistant else {
+            return Some(bad_request("This engine has no assistant."));
+        };
+        if !post {
+            return Some(bad_request("POST"));
+        }
+        if !bearer(head).is_some_and(|given| same(given.as_bytes(), token.as_bytes())) {
+            let body = json!({ "reason": "Send Authorization: Bearer <announce-token>." }).to_string();
+            return Some(("401 Unauthorized", "application/json", body.into_bytes()));
+        }
+        let announcement = match announcement(query) {
+            Ok(announcement) => announcement,
+            Err(reason) => return Some(bad_request(reason)),
+        };
+        {
+            let mut taken = self.announced.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let now = std::time::Instant::now();
+            while taken.front().is_some_and(|at| now.duration_since(*at) > ANNOUNCE_WINDOW) {
+                taken.pop_front();
+            }
+            if taken.len() >= ANNOUNCE_RATE {
+                let body = json!({ "reason": format!("At most {ANNOUNCE_RATE} announcements a minute.") });
+                return Some(("429 Too Many Requests", "application/json", body.to_string().into_bytes()));
+            }
+            taken.push_back(now);
+        }
+        tracing::info!(
+            text = announcement.text,
+            room = announcement.room,
+            player = announcement.player,
+            "announcement taken"
+        );
+        assistant.announce(announcement);
+        Some(("202 Accepted", "application/json", json!({ "ok": true }).to_string().into_bytes()))
     }
 
     pub fn with_learned(mut self, learned: Arc<Learned>) -> Self {
@@ -345,6 +419,55 @@ fn bad_request(reason: &str) -> Response {
     ("400 Bad Request", "application/json", json!({ "reason": reason }).to_string().into_bytes())
 }
 
+/// The announcement a query asks for, or why it cannot be spoken.
+fn announcement(query: &str) -> Result<Announcement, &'static str> {
+    let value = |key: &str| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
+            .map(decode)
+            .map(|v| v.trim().to_owned())
+    };
+    let text = value("text").unwrap_or_default();
+    if text.is_empty() {
+        return Err("`text` is what to say.");
+    }
+    if text.chars().count() > ANNOUNCE_MAX {
+        return Err("`text` is over 300 characters.");
+    }
+    let player = value("player").filter(|p| !p.is_empty());
+    let valid = |p: &String| {
+        p.strip_prefix("media_player.").is_some_and(|id| {
+            !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+    };
+    if player.as_ref().is_some_and(|p| !valid(p)) {
+        return Err("`player` is a media player entity id, like media_player.kitchen.");
+    }
+    let lang = match value("lang").as_deref() {
+        Some("no" | "nb" | "nn" | "norwegian") => Lang::Norwegian,
+        None | Some("" | "en" | "english") => Lang::English,
+        Some(_) => return Err("`lang` is en or no."),
+    };
+    Ok(Announcement { text, lang, room: value("room").filter(|r| !r.is_empty()), player })
+}
+
+/// The bearer token in a request's header block.
+fn bearer(head: &str) -> Option<&str> {
+    head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        let value = value.trim();
+        let scheme = value.get(..7)?;
+        (name.trim().eq_ignore_ascii_case("authorization") && scheme.eq_ignore_ascii_case("bearer "))
+            .then(|| value[7..].trim())
+    })
+}
+
+/// Compares in time that does not depend on where the token differs.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
+}
+
 /// Percent-decoding for a query value; `+` is a space.
 pub(crate) fn decode(value: &str) -> String {
     let bytes = value.as_bytes();
@@ -374,6 +497,59 @@ mod tests {
 
     fn web() -> Web {
         Web::new(WakeWord::new("Jarvis"), json!({ "name": "Jarvis" }), None, Arc::default(), None)
+    }
+
+    #[test]
+    fn announces_only_with_the_token_and_a_short_text() {
+        let head =
+            |token: &str| format!("POST /api/announce HTTP/1.1\r\nHost: x\r\nauthorization: Bearer {token}\r\n\r\n");
+        let status = |response: Option<Response>| response.map(|r| r.0);
+        // Off without a token: no such page.
+        assert_eq!(status(web().announce(true, "/api/announce?text=hi", &head("secret"))), None);
+        let (handle, announced) = AssistantHandle::for_tests();
+        let web = Web::new(WakeWord::new("Jarvis"), json!({}), Some(handle), Arc::default(), None)
+            .with_announce_token(Some("secret".into()));
+        let call = |target: &str, head: &str| status(web.announce(true, target, head));
+        assert_eq!(call("/api/announce?text=hi", &head("wrong")), Some("401 Unauthorized"));
+        assert_eq!(call("/api/announce?text=hi", "POST / HTTP/1.1\r\n\r\n"), Some("401 Unauthorized"));
+        assert_eq!(status(web.announce(false, "/api/announce?text=hi", &head("secret"))), Some("400 Bad Request"));
+        assert_eq!(call("/api/announce?text=", &head("secret")), Some("400 Bad Request"));
+        let long = format!("/api/announce?text={}", "a".repeat(ANNOUNCE_MAX + 1));
+        assert_eq!(call(&long, &head("secret")), Some("400 Bad Request"));
+        assert_eq!(call("/api/announce?text=hi&player=light.kitchen", &head("secret")), Some("400 Bad Request"));
+        assert_eq!(call("/api/announcements?text=hi", &head("secret")), None);
+        assert!(announced().is_empty());
+
+        assert_eq!(
+            call("/api/announce?text=Someone+is+at+the+door.&room=kitchen", &head("secret")),
+            Some("202 Accepted")
+        );
+        assert_eq!(
+            call("/api/announce?text=Vaskemaskinen+er+ferdig.&lang=no&player=media_player.bad", &head("secret")),
+            Some("202 Accepted")
+        );
+        assert_eq!(
+            announced(),
+            [
+                Announcement {
+                    text: "Someone is at the door.".into(),
+                    lang: Lang::English,
+                    room: Some("kitchen".into()),
+                    player: None
+                },
+                Announcement {
+                    text: "Vaskemaskinen er ferdig.".into(),
+                    lang: Lang::Norwegian,
+                    room: None,
+                    player: Some("media_player.bad".into())
+                },
+            ]
+        );
+        // A looping automation is cut off.
+        for _ in 2..ANNOUNCE_RATE {
+            assert_eq!(call("/api/announce?text=hi", &head("secret")), Some("202 Accepted"));
+        }
+        assert_eq!(call("/api/announce?text=hi", &head("secret")), Some("429 Too Many Requests"));
     }
 
     #[test]

@@ -533,6 +533,16 @@ pub enum MusicCommand {
     Artist(String),
     /// "Play the album Rumours".
     Album(String),
+    /// "Play jazz in the kitchen", "pause the music in the bedroom": a command for the speaker in a
+    /// room, named as said ("kitchen", "badet").
+    InRoom(String, Box<MusicCommand>),
+    /// "Play Hello next" (true), "add Rumours to the queue" (false): a play request queued after the
+    /// song playing, or at the end, instead of replacing the music.
+    Queue(Box<MusicCommand>, bool),
+    /// "Move the music to the bedroom": the queue moves to that room's speaker.
+    MoveTo(String),
+    /// "What's next?": the song after this one in the queue.
+    UpNext,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -642,8 +652,125 @@ const TAIL: &[&str] = &[
 ];
 const GENERIC: &[&str] = &["music", "some", "musikk", "noe", "the", "litt", "something", "a", "song", "songs"];
 
+/// Words a room follows in a music request: "in the kitchen", "on the bedroom speaker", "på badet".
+const ROOM_MARKERS: &[&str] = &["in", "on", "i", "på"];
+/// Words a room is moved to: "move the music to the bedroom", "flytt musikken til soverommet".
+const MOVE_MARKERS: &[&str] = &["to", "into", "til", "in", "i", "på"];
+const SPEAKER_WORDS: &[&str] = &["speaker", "speakers", "sonos", "høyttaler", "høyttaleren"];
+/// The ends of "add Rumours to the queue", "legg Kygo i køen".
+const QUEUE_ENDS: &[&[&str]] = &[
+    &["to", "the", "queue"],
+    &["on", "the", "queue"],
+    &["in", "the", "queue"],
+    &["to", "my", "queue"],
+    &["to", "queue"],
+    &["i", "køen"],
+    &["til", "køen"],
+    &["på", "køen"],
+    &["i", "kø"],
+];
+
+/// A room after `at`, a marker word ("in the kitchen", "på badet"): the room as said and the index
+/// after it, a trailing "speaker" included.
+fn room_after(words: &[String], at: usize) -> Option<(String, usize)> {
+    let mut start = at + 1;
+    if words.get(start).is_some_and(|w| w == "the") {
+        start += 1;
+    }
+    [2, 1].into_iter().find_map(|len| {
+        let room = words.get(start..start + len)?.join(" ");
+        crate::ha::is_room_phrase(&room).then(|| {
+            let end = start + len;
+            (room, if words.get(end).is_some_and(|w| SPEAKER_WORDS.contains(&w.as_str())) { end + 1 } else { end })
+        })
+    })
+}
+
+/// A room said in a music request, and the words without it: "play jazz in the kitchen" is the
+/// kitchen and "play jazz". Only the rooms people name (`ha::ROOMS`), so "Dancing in the Dark"
+/// keeps its title.
+fn music_room(words: &[String]) -> Option<(String, Vec<String>)> {
+    (0..words.len()).rev().filter(|&at| ROOM_MARKERS.contains(&words[at].as_str())).find_map(|at| {
+        let (room, end) = room_after(words, at)?;
+        Some((room, [&words[..at], &words[end..]].concat()))
+    })
+}
+
+/// "Move the music to the bedroom", "flytt musikken til soverommet".
+fn move_music(words: &[String]) -> Option<MusicCommand> {
+    let verb = words.iter().position(|w| ["move", "transfer", "flytt", "send"].contains(&w.as_str()))?;
+    if !words[verb..].iter().any(|w| MUSIC_WORDS.contains(&w.as_str())) {
+        return None;
+    }
+    (verb + 1..words.len())
+        .filter(|&at| MOVE_MARKERS.contains(&words[at].as_str()))
+        .find_map(|at| room_after(words, at))
+        .map(|(room, _)| MusicCommand::MoveTo(room))
+}
+
+/// "Add Rumours to the queue", "queue up Hello by Adele", "legg til Kygo i køen".
+fn queued(words: &[String]) -> Option<MusicCommand> {
+    let start = words.iter().position(|w| !POLITE.contains(&w.as_str()))?;
+    let w: Vec<&str> = words[start..].iter().map(String::as_str).collect();
+    let ends_queue = |rest: &[&str]| -> Option<Vec<String>> {
+        let end = QUEUE_ENDS.iter().find(|e| rest.len() > e.len() && rest.ends_with(e))?;
+        Some(rest[..rest.len() - end.len()].iter().map(|w| (*w).to_owned()).collect())
+    };
+    let (play, item) = match w.as_slice() {
+        ["queue", "up", rest @ ..] | ["queue", rest @ ..] if !rest.is_empty() => {
+            ("play", rest.iter().map(|w| (*w).to_owned()).collect())
+        }
+        ["add" | "put", rest @ ..] => ("play", ends_queue(rest)?),
+        ["legg" | "sett", rest @ ..] => ("spill", ends_queue(rest.strip_prefix(&["til"]).unwrap_or(rest))?),
+        _ => return None,
+    };
+    let request: Vec<String> = std::iter::once(play.to_owned()).chain(item).collect();
+    playable(music(&request)?).map(|command| MusicCommand::Queue(Box::new(command), false))
+}
+
+/// A command that starts music, which can be queued.
+fn playable(command: MusicCommand) -> Option<MusicCommand> {
+    matches!(
+        command,
+        MusicCommand::Liked
+            | MusicCommand::Playlist(_)
+            | MusicCommand::Song(_)
+            | MusicCommand::Artist(_)
+            | MusicCommand::Album(_)
+    )
+    .then_some(command)
+}
+
+/// How many words at the end of a play request say "after this one": "play Hello next", "play
+/// Hello after this song", "spill Kygo etterpå". The word before "next" must not make it a title
+/// ("Who's Next").
+fn next_words(rest: &[&str]) -> Option<usize> {
+    let n = match rest {
+        [.., before, "next" | "neste"] if !["who's", "whos", "what's", "whats", "the", "den"].contains(before) => 1,
+        [.., "after", "this"] | [.., "etter", "denne"] => 2,
+        [.., "after", "this", "song" | "one" | "track"] | [.., "etter", "denne", "sangen" | "låten"] => 3,
+        [.., "etterpå"] => 1,
+        _ => return None,
+    };
+    (rest.len() > n).then_some(n)
+}
+
 fn music(words: &[String]) -> Option<MusicCommand> {
     let has = |w: &str| words.iter().any(|x| x == w);
+    if let Some(command) = move_music(words) {
+        return Some(command);
+    }
+    if let Some(command) = queued(words) {
+        return Some(command);
+    }
+    // Without the room it must still be music; otherwise the whole sentence is read as it was.
+    if let Some((room, command)) = music_room(words).and_then(|(room, rest)| Some((room, music(&rest)?))) {
+        // Said twice ("play jazz in the kitchen in the bedroom") is not a request for one speaker.
+        return match command {
+            MusicCommand::InRoom(..) | MusicCommand::MoveTo(_) => None,
+            command => Some(MusicCommand::InRoom(room, Box::new(command))),
+        };
+    }
     let start = words.iter().position(|w| !POLITE.contains(&w.as_str()))?;
     if PLAY_WORDS.contains(&words[start].as_str()) {
         let mut rest: Vec<&str> = words[start + 1..].iter().map(String::as_str).collect();
@@ -656,6 +783,14 @@ fn music(words: &[String]) -> Option<MusicCommand> {
         }
         if rest.is_empty() {
             return Some(MusicCommand::Resume);
+        }
+        if let Some(n) = next_words(&rest) {
+            let request: Vec<String> = std::iter::once(words[start].clone())
+                .chain(rest[..rest.len() - n].iter().map(|w| (*w).to_owned()))
+                .collect();
+            if let Some(command) = music(&request).and_then(playable) {
+                return Some(MusicCommand::Queue(Box::new(command), true));
+            }
         }
         if let Some(album) = after_any(&rest, &[&["the", "album"], &["album"], &["albumet"]]) {
             return Some(MusicCommand::Album(album));
@@ -704,6 +839,14 @@ fn music(words: &[String]) -> Option<MusicCommand> {
         return None;
     }
     let about_music = words.iter().any(|w| MUSIC_WORDS.contains(&w.as_str()));
+    // "What's next", "what song is next", "hva er neste sang": before "what song is this" below,
+    // and not "what's next week".
+    let asks = ["what", "what's", "whats", "which", "hva", "hvilken"].iter().any(|w| has(w));
+    let after = has("next") || has("neste") || has("etterpå");
+    let of_when = words.iter().any(|w| WHEN_WORDS.contains(&w.trim_end_matches("'s")));
+    if asks && after && !of_when && (about_music || has("playing") || has("kommer") || words.len() <= 3) {
+        return Some(MusicCommand::UpNext);
+    }
     let now_playing = (has("what") || has("what's") || has("whats") || has("who") || has("hva"))
         && (has("playing")
             || has("song")
@@ -1912,6 +2055,61 @@ mod tests {
         assert_eq!(music("turn up the lights"), None);
         assert_eq!(music("stop"), None);
         assert_eq!(music("what's the weather tomorrow"), None);
+    }
+
+    #[test]
+    fn music_in_rooms_and_queued() {
+        use MusicCommand::*;
+        let music = |text: &str| match parse(text) {
+            Intent::Music(command) => Some(command),
+            _ => None,
+        };
+        let room = |room: &str, command: MusicCommand| Some(InRoom(room.into(), Box::new(command)));
+        let song = |s: &str| Song(s.into());
+        assert_eq!(music("play jazz in the kitchen"), room("kitchen", song("jazz")));
+        assert_eq!(music("Play Hello by Adele in the living room."), room("living room", song("hello by adele")));
+        assert_eq!(music("play some music in the bedroom"), room("bedroom", Liked));
+        assert_eq!(music("play my liked songs on the kitchen speaker"), room("kitchen", Liked));
+        assert_eq!(music("spill musikk på badet"), room("badet", Liked));
+        assert_eq!(music("spill Kygo på kjøkkenet"), room("kjøkkenet", song("kygo")));
+        assert_eq!(music("pause the music in the kitchen"), room("kitchen", Pause));
+        assert_eq!(music("turn the music up in the bedroom"), room("bedroom", Louder));
+        assert_eq!(music("what's playing in the kitchen"), room("kitchen", NowPlaying));
+        // A title with "in the" keeps it.
+        assert_eq!(music("play Dancing in the Dark"), Some(song("dancing in the dark")));
+        assert_eq!(music("play Singing in the Rain"), Some(song("singing in the rain")));
+        assert_eq!(music("turn off the lights in the kitchen"), None);
+        // Other skills keep their rooms.
+        assert!(matches!(parse("what's the temperature in the kitchen"), Intent::House(_)));
+        assert!(matches!(parse("set a timer in the kitchen for 5 minutes"), Intent::Timer(_)));
+        assert!(matches!(parse("add milk to the shopping list"), Intent::ShoppingList(_)));
+        assert!(matches!(parse("what's next on the shopping list"), Intent::ShoppingList(_)));
+
+        assert_eq!(music("move the music to the bedroom"), Some(MoveTo("bedroom".into())));
+        assert_eq!(music("Can you move the music to the kitchen?"), Some(MoveTo("kitchen".into())));
+        assert_eq!(music("flytt musikken til soverommet"), Some(MoveTo("soverommet".into())));
+        assert_eq!(music("move the music"), None);
+
+        let next = |command: MusicCommand| Some(Queue(Box::new(command), true));
+        let last = |command: MusicCommand| Some(Queue(Box::new(command), false));
+        assert_eq!(music("play Hello by Adele next"), next(song("hello by adele")));
+        assert_eq!(music("play Careless Whisper after this song"), next(song("careless whisper")));
+        assert_eq!(music("spill Kygo etterpå"), next(song("kygo")));
+        assert_eq!(music("add Rumours to the queue"), last(song("rumours")));
+        assert_eq!(music("add the album Rumours to the queue"), last(Album("rumours".into())));
+        assert_eq!(music("queue up Hello by Adele"), last(song("hello by adele")));
+        assert_eq!(music("legg til Kygo i køen"), last(song("kygo")));
+        assert_eq!(music("play Hello next in the kitchen"), room("kitchen", Queue(Box::new(song("hello")), true)));
+        // Titles and other requests that end in "next".
+        assert_eq!(music("play Who's Next"), Some(song("who's next")));
+        assert_eq!(music("next song"), Some(Next));
+        assert_eq!(music("play next"), Some(song("next")));
+
+        assert_eq!(music("what's next?"), Some(UpNext));
+        assert_eq!(music("what song is next"), Some(UpNext));
+        assert_eq!(music("what's playing next"), Some(UpNext));
+        assert_eq!(music("hva er neste sang"), Some(UpNext));
+        assert_eq!(music("what's next week"), None);
     }
 
     #[test]

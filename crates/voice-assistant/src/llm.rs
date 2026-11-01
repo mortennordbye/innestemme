@@ -308,6 +308,13 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             Decision::Act(Intent::Timer(command))
         }
         "music" => {
+            let play = || match (text("kind").as_deref(), text("query")) {
+                (Some("liked"), _) | (_, None) => MusicCommand::Liked,
+                (Some("playlist"), Some(q)) => MusicCommand::Playlist(q),
+                (Some("artist"), Some(q)) => MusicCommand::Artist(q),
+                (Some("album"), Some(q)) => MusicCommand::Album(q),
+                (_, Some(q)) => MusicCommand::Song(q),
+            };
             let command = match text("action").as_deref().unwrap_or("play") {
                 "pause" => MusicCommand::Pause,
                 "stop" => MusicCommand::Stop,
@@ -319,15 +326,15 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 "previous" => MusicCommand::Previous,
                 "louder" => MusicCommand::Louder,
                 "quieter" => MusicCommand::Quieter,
-                _ => match (text("kind").as_deref(), text("query")) {
-                    (Some("liked"), _) | (_, None) => MusicCommand::Liked,
-                    (Some("playlist"), Some(q)) => MusicCommand::Playlist(q),
-                    (Some("artist"), Some(q)) => MusicCommand::Artist(q),
-                    (Some("album"), Some(q)) => MusicCommand::Album(q),
-                    (_, Some(q)) => MusicCommand::Song(q),
-                },
+                "queue" => MusicCommand::Queue(Box::new(play()), false),
+                _ => play(),
             };
-            Decision::Act(Intent::Music(command))
+            // "Here", "this room" or the device's own room is the speaker's own.
+            let room = text("room").map(|r| normalize_room(&r)).filter(|r| crate::ha::is_room_phrase(r));
+            Decision::Act(Intent::Music(match room {
+                Some(room) => MusicCommand::InRoom(room, Box::new(command)),
+                None => command,
+            }))
         }
         "tv" => {
             let volume = args["volume"].as_f64().or_else(|| text("volume").and_then(|s| s.parse().ok()));
@@ -413,6 +420,13 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
 }
 
 /// Removes `<think>...</think>` blocks some models emit, and markdown a speaker cannot say.
+/// A room as the model writes it ("the Kitchen"), as the parser has it ("kitchen").
+fn normalize_room(room: &str) -> String {
+    let words: Vec<String> =
+        room.split_whitespace().map(crate::dialog::normalize).filter(|w| !w.is_empty() && w != "the").collect();
+    words.join(" ")
+}
+
 fn strip_thinking(text: &str) -> String {
     let mut out = text.to_owned();
     while let (Some(start), Some(end)) = (out.find("<think>"), out.find("</think>")) {
@@ -469,9 +483,10 @@ pub fn tools() -> Value {
             "music",
             "Play music (song, artist, album, playlist, liked songs), control playback, or say what is playing.",
             json!({ "type": "object", "required": ["action"], "properties": {
-            "action": { "type": "string", "enum": ["play", "pause", "stop", "resume", "next", "previous", "louder", "quieter", "mute", "unmute", "playing"] },
+            "action": { "type": "string", "enum": ["play", "queue", "pause", "stop", "resume", "next", "previous", "louder", "quieter", "mute", "unmute", "playing"] },
             "kind": { "type": "string", "enum": ["song", "artist", "album", "playlist", "liked"] },
-            "query": { "type": "string" }
+            "query": { "type": "string" },
+            "room": { "type": "string", "description": "Omit for here" }
         } })
         ),
         tool(
@@ -647,6 +662,19 @@ mod tests {
         assert_eq!(
             parse_reply(&call("music", r#"{"action":"next"}"#)).unwrap(),
             Decision::Act(Intent::Music(MusicCommand::Next))
+        );
+        assert_eq!(
+            parse_reply(&call("music", r#"{"action":"play","kind":"artist","query":"Ghost","room":"the Kitchen"}"#))
+                .unwrap(),
+            Decision::Act(Intent::Music(MusicCommand::InRoom(
+                "kitchen".into(),
+                Box::new(MusicCommand::Artist("Ghost".into()))
+            )))
+        );
+        // A room it cannot name is here.
+        assert_eq!(
+            parse_reply(&call("music", r#"{"action":"queue","query":"Hey Jude","room":"here"}"#)).unwrap(),
+            Decision::Act(Intent::Music(MusicCommand::Queue(Box::new(MusicCommand::Song("Hey Jude".into())), false)))
         );
         assert_eq!(
             parse_reply(&call("timer", r#"{"action":"remind","minutes":20,"message":"take the laundry out"}"#))

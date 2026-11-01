@@ -98,6 +98,13 @@ and resuming music) go to a queue on a thread of their own and run in order, bec
 Hue call only once the lights have switched (0.5-0.7 s). A failed queued call is said afterwards. Starting music
 answers at once, since Music Assistant answers a play call only once the speaker plays; a call that fails is
 said afterwards ("Sorry, I couldn't play that.").
+A room said in a music request ("play jazz in the kitchen", "pause the music in the bedroom", "spill musikk på
+badet") picks that room's Music Assistant player: the one in that Home Assistant area, else one named after the
+room. Only the room words both languages share (`ha::ROOMS`) count, so "Dancing in the Dark" stays a title;
+without a room it is the `speaker`. A room with no player is answered with the rooms that have one. "Play Hello
+next" and "add Rumours to the queue" use Music Assistant's `enqueue` (`next`, `add`) and leave shuffle alone;
+"what's next?" reads `music_assistant.get_queue`; "move the music to the bedroom" calls
+`music_assistant.transfer_queue` from the player that has music (the speaker's first).
 A light level change keeps a snapshot scene (`scene.lights_undo`) of each lamp first (a room group is expanded
 to its members), so "undo" puts every lamp's brightness and colour back and leaves the ones that were off off. A
 scene, party mode or a lockdown since then leaves nothing to undo, though "them" still means those lights. Party mode keeps `scene.party_restore` from
@@ -126,7 +133,10 @@ still answers. A sentence heard before it was rendered is logged as `speech not 
 **Satellite bridge.** `voice-esphome` speaks the ESPHome native API (plaintext or Noise) the way Home Assistant
 does, so the engine takes the device's microphone in place of Assist. Answers are wavs on the engine's HTTP port
 (`/speech/<id>.wav`), streamed while they are synthesized; with `answer-player` Home Assistant announces them on
-another media player. Timers count down on the Voice PE's LED ring through the ESPHome timer events.
+another media player. Timers count down on the Voice PE's LED ring through the ESPHome timer events. Timers,
+reminders and safety warnings are announced on the device; what Home Assistant sends to `POST /api/announce`
+plays where answers play, or on the room's speaker (a media player in that area that can announce, its own
+before Music Assistant's), as an announcement over its music.
 
 **Timers, reminders and alarms.** `timer.rs` parses durations and times of day ("at 5", "at 17:30", "half past
 six", "tomorrow at 8", "klokka 7", "fem over halv åtte"); a number that counts things ("look at 2 houses") is not a

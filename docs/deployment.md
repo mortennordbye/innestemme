@@ -55,3 +55,43 @@ the personal ones.
 - **Home Assistant add-on:** add-on options arrive as `/data/options.json`, which is valid YAML, so
   `VOICE_CONFIG=/data/options.json` works as is. With no Home Assistant configured and `SUPERVISOR_TOKEN`
   present, the engine uses the Supervisor's proxy (`http://supervisor/core`) and that token.
+
+## Announcements from Home Assistant
+
+With `web: true` and an `announce-token` (`VOICE_ANNOUNCE_TOKEN`, or `VOICE_ANNOUNCE_TOKEN_FILE` for a mounted
+Secret), Home Assistant automations can have the assistant speak: the doorbell, the washing machine being done.
+Without a token the endpoint does not exist. `POST /api/announce` on the engine's HTTP port takes the text in the
+query and the token as a bearer header:
+
+| Query | |
+|---|---|
+| `text` | What to say, up to 300 characters. |
+| `room` | Optional: a room as people say it (`kitchen`, `stua`). Its speaker is a media player in that Home Assistant area that can announce, the speaker's own before Music Assistant's. A room without one falls back to where answers play. |
+| `player` | Optional: a media player entity id, which wins over `room`. |
+| `lang` | `en` (default) or `no`. |
+
+It answers `202` once the text is queued: it is spoken after whatever the assistant is saying, where answers play
+(`answer-player`, else the satellite), as an announcement over the music. `room` and `player` need
+`answer-player`, whose Home Assistant plays them. More than 5 announcements in a minute get `429`, so an
+automation that loops cannot talk over everything.
+
+In Home Assistant, a `rest_command` in `configuration.yaml`, with the token in `secrets.yaml`:
+
+```yaml
+rest_command:
+  innestemme_announce:
+    url: "http://<engine host>:9090/api/announce?text={{ text | urlencode }}&room={{ room | default('') | urlencode }}"
+    method: post
+    headers:
+      authorization: !secret innestemme_announce_bearer   # "Bearer <announce-token>"
+```
+
+and in an automation:
+
+```yaml
+actions:
+  - action: rest_command.innestemme_announce
+    data:
+      text: "Someone is at the door."
+      room: kitchen
+```

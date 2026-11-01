@@ -192,9 +192,32 @@ pub enum AssistantEvent {
     Timer(Notice),
     /// Speech outside a conversation (a timer ran out, a reminder), 24 kHz mono, chime included.
     /// `timer_ring`: a plain timer, which devices with their own timer display ring for instead.
-    Announcement { text: String, audio: Arc<[i16]>, timer_ring: bool },
+    Announcement { text: String, audio: Arc<[i16]>, timer_ring: bool, on: AnnounceOn },
     /// What the TV screen shows now (`Screen::show`'s message), or the face again.
     Show(Option<serde_json::Value>),
+}
+
+/// Where an announcement plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnnounceOn {
+    /// The satellite itself: timers, reminders, warnings.
+    Device,
+    /// The answer player, where answers play, else the satellite: what Home Assistant announces.
+    AnswerPlayer,
+    /// Another Home Assistant media player (a room's), through the answer player's Home Assistant;
+    /// the satellite without one.
+    Player(String),
+}
+
+/// Text Home Assistant asked to have spoken (`POST /api/announce`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Announcement {
+    pub text: String,
+    pub lang: Lang,
+    /// A room by name, for its speaker.
+    pub room: Option<String>,
+    /// A media player entity id, which wins over `room`.
+    pub player: Option<String>,
 }
 
 /// What the assistant would say to a phrase typed on the web page.
@@ -232,6 +255,8 @@ enum Job {
     Alert(String),
     /// A Home Assistant call the answer did not wait for failed: say so, in the request's language.
     Failed(String, Lang),
+    /// Home Assistant asked for this to be spoken.
+    Announce(Announcement),
     /// A button on the web page: a fixed request, acted on without a spoken answer. The answer's
     /// text comes back.
     Act(String, tokio::sync::oneshot::Sender<String>),
@@ -477,6 +502,7 @@ impl Worker {
                     self.announce(&text, tts::alarm_chime(), Lang::English, false);
                 }
                 Job::Failed(text, lang) => self.announce(&text, Vec::new(), lang, false),
+                Job::Announce(announcement) => self.announce_from_home(announcement),
                 Job::Act(text, reply) => {
                     let start = Instant::now();
                     // Typed on the web page: a question asked by voice ("Forget everything I
@@ -997,6 +1023,8 @@ impl Worker {
             Intent::Party(command) => self.party(command, lang),
             Intent::Music(command) => {
                 // New music replaces what was paused for the request, and "play" plays it itself.
+                // Music moved to another room is not resumed here. Queued music and another room's
+                // leave this room's music to play on after the answer.
                 if matches!(
                     command,
                     MusicCommand::Pause
@@ -1007,6 +1035,7 @@ impl Worker {
                         | MusicCommand::Song(_)
                         | MusicCommand::Artist(_)
                         | MusicCommand::Album(_)
+                        | MusicCommand::MoveTo(_)
                 ) {
                     self.hushed = None;
                 }

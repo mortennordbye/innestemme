@@ -733,6 +733,44 @@ pub fn is_room(name: &str, room: &str) -> bool {
     !name.is_empty() && (name == room || room_group(&room).is_some_and(|g| room_group(&name) == Some(g)))
 }
 
+/// Media players that can announce over what they play (`MEDIA_ANNOUNCE`, 1048576), with their
+/// rooms and whether Music Assistant runs them.
+const ANNOUNCERS_TEMPLATE: &str = r#"{% set ma = integration_entities("music_assistant") %}[{% for s in states.media_player if ((s.attributes.supported_features or 0) | int | bitwise_and(1048576)) > 0 %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}, "area": {{ (area_name(s.entity_id) or "") | tojson }}, "music_assistant": {{ (s.entity_id in ma) | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
+
+/// The media player to announce on in a room as said ("kitchen", "stua"); `None` when the room
+/// has none.
+pub fn announcer_in(ha: &HomeAssistant, room: &str) -> Result<Option<String>> {
+    let players: Vec<serde_json::Value> =
+        serde_json::from_str(&ha.template(ANNOUNCERS_TEMPLATE)?).context("parsing media players")?;
+    Ok(pick_announcer(&players, room))
+}
+
+/// A room's speaker, by area, else by name. The speaker's own player before Music Assistant's: its
+/// announcement lowers its music under it, as the answers do.
+fn pick_announcer(players: &[serde_json::Value], room: &str) -> Option<String> {
+    let text = |p: &serde_json::Value, key: &str| p[key].as_str().unwrap_or_default().to_owned();
+    let in_room = |p: &&serde_json::Value| {
+        let area = text(p, "area");
+        if area.is_empty() {
+            is_room(&text(p, "name"), room)
+        } else {
+            is_room(&area, room)
+        }
+    };
+    let found: Vec<&serde_json::Value> = players.iter().filter(in_room).collect();
+    found
+        .iter()
+        .find(|p| p["music_assistant"] != true)
+        .or_else(|| found.first())
+        .map(|p| text(p, "id"))
+        .filter(|id| !id.is_empty())
+}
+
+/// Whether a whole phrase is a room people name, in either language: "kitchen", "badet".
+pub fn is_room_phrase(phrase: &str) -> bool {
+    room_group(&normalize_phrase(phrase)).is_some()
+}
+
 /// The room group a phrase belongs to, if any.
 fn room_group(phrase: &str) -> Option<usize> {
     ROOMS.iter().position(|names| names.contains(&phrase))
@@ -793,6 +831,21 @@ fn normalize_phrase(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn announces_on_the_rooms_own_speaker() {
+        let players: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"id": "media_player.kitchen_2", "name": "Kitchen", "area": "Kitchen", "music_assistant": true},
+                {"id": "media_player.kitchen", "name": "Kitchen", "area": "Kitchen", "music_assistant": false},
+                {"id": "media_player.soverom", "name": "Soverom", "area": "", "music_assistant": true}]"#,
+        )
+        .unwrap();
+        assert_eq!(pick_announcer(&players, "kitchen").as_deref(), Some("media_player.kitchen"));
+        assert_eq!(pick_announcer(&players, "kjøkkenet").as_deref(), Some("media_player.kitchen"));
+        assert_eq!(pick_announcer(&players, "bedroom").as_deref(), Some("media_player.soverom"));
+        assert_eq!(pick_announcer(&players, "bathroom"), None);
+        assert!(is_room_phrase("living room") && is_room_phrase("Badet") && !is_room_phrase("rain"));
+    }
+
     #[test]
     fn power_cycled_lights_leave_the_off_call() {
         let cycle = vec!["light.plug".to_owned()];
