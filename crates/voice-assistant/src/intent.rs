@@ -738,7 +738,8 @@ fn music(words: &[String]) -> Option<MusicCommand> {
     if has("resume") || has("unpause") || (about_music && ["continue", "fortsett", "start"].iter().any(|w| has(w))) {
         return Some(MusicCommand::Resume);
     }
-    if has("skip") || has("neste") || (has("next") && (about_music || words.len() <= 3)) {
+    // "Neste" is also "neste helg", "neste buss": only music when said of music or on its own.
+    if has("skip") || ((has("next") || has("neste")) && (about_music || words.len() <= 3)) {
         return Some(MusicCommand::Next);
     }
     if has("previous") || has("forrige") {
@@ -1662,6 +1663,7 @@ mod tests {
         assert_eq!(day_named("weekend"), Day::Weekend);
         assert_eq!(parse("what's the weather next Monday"), weather(None, Day::NextWeekday(Monday)));
         assert_eq!(parse("what is the weather next weekend"), weather(None, Day::NextWeekend));
+        assert_eq!(parse("hva blir været neste helg"), weather(None, Day::NextWeekend));
         assert_eq!(day_named("next Monday's"), Day::NextWeekday(Monday));
         assert_eq!(day_named("today"), Day::Today);
     }
@@ -1872,6 +1874,8 @@ mod tests {
         assert_eq!(parse("pause"), Intent::Music(MusicCommand::Pause));
         assert!(matches!(parse("next bus"), Intent::Transit(_)));
         assert_eq!(parse("next song"), Intent::Music(MusicCommand::Next));
+        assert_eq!(parse("neste sang"), Intent::Music(MusicCommand::Next));
+        assert_eq!(parse("neste"), Intent::Music(MusicCommand::Next));
     }
 
     #[test]
