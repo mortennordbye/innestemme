@@ -1297,7 +1297,12 @@ impl Timers {
     /// True when `text` is for the question asked: anything after "For how long?", and only an
     /// answer ("the first one", "the pasta one") after "Which one?".
     pub fn takes_answer(&self, text: &str) -> bool {
-        self.pending.is_some() || self.choosing.is_some() && answer_of(text).is_some()
+        if self.pending.is_some() {
+            return true;
+        }
+        let Some(asked) = &self.choosing else { return false };
+        // It must name one of those listed too: "sorry", "okay" or "kitchen" is no answer.
+        answer_of(text).is_some_and(|answer| chosen(&answer, &asked.listed, Instant::now()).is_some())
     }
 
     /// Forgets a question that was not answered.
@@ -1604,14 +1609,17 @@ impl Timers {
             return None;
         }
         let answer = answer_of(text)?;
-        // In the order they were said; one that has ended since is gone, but keeps its place.
-        let timers: Vec<Option<&Timer>> = asked.ids.iter().map(|id| self.list.iter().find(|t| t.id == *id)).collect();
-        let picked = chosen(&answer, &timers, now)?;
-        let found: Vec<usize> = picked
-            .iter()
-            .filter_map(|&k| timers[k])
-            .filter_map(|t| self.list.iter().position(|l| l.id == t.id))
-            .collect();
+        // "Both" of three is no answer: ask again, rather than act on all of them.
+        if answer == Answer::Both && asked.listed.len() != 2 {
+            let count = asked.listed.len();
+            let text = if no { format!("Det er {count}. Hvilken?") } else { format!("There are {count}. Which one?") };
+            self.choosing = Some(Choosing { at: now, ..asked });
+            return Some((text, vec![]));
+        }
+        // In the order they were said, as they were then; one that has ended since is gone.
+        let picked = chosen(&answer, &asked.listed, now)?;
+        let found: Vec<usize> =
+            picked.iter().filter_map(|&k| self.list.iter().position(|l| l.id == asked.listed[k].id)).collect();
         if found.is_empty() {
             let text = if no { "Den er allerede ferdig." } else { "That one has already ended." };
             return Some((text.into(), vec![]));
@@ -1692,6 +1700,15 @@ impl Timers {
             (true, Change::Pause) => format!("{label} er satt på pause."),
             (false, Change::Resume) => format!("{label} is running again."),
             (true, Change::Resume) => format!("{label} går igjen."),
+            (false, Change::Add(seconds)) if count > 1 => {
+                let all = if count == 2 { format!("both {noun}") } else { format!("all {count} {noun}") };
+                format!("Added {} to {all}.", say_duration(seconds, lang))
+            }
+            (true, Change::Add(seconds)) if count > 1 => {
+                let noun = if alarm { "vekkerklokkene" } else { "timerne" };
+                let all = if count == 2 { format!("begge {noun}") } else { format!("alle {count} {noun}") };
+                format!("La til {} på {all}.", say_duration(seconds, lang))
+            }
             (false, Change::Add(seconds)) => {
                 format!("Added {}. {label} ends in {}.", say_duration(seconds, lang), left_of(&notices, lang))
             }
@@ -1716,13 +1733,14 @@ const CHOICE_WINDOW: Duration = Duration::from_secs(30);
 /// A "Which one?" asked: what for, the timers it listed in the order said, and when.
 struct Choosing {
     choice: Choice,
-    ids: Vec<u32>,
+    /// As they were when asked, so one that has ended since can still be named.
+    listed: Vec<Timer>,
     at: Instant,
 }
 
 impl Choosing {
     fn new(choice: Choice, listed: &[usize], list: &[Timer], at: Instant) -> Self {
-        Self { choice, ids: listed.iter().map(|&i| list[i].id).collect(), at }
+        Self { choice, listed: listed.iter().map(|&i| list[i].clone()).collect(), at }
     }
 }
 
@@ -1732,17 +1750,25 @@ enum Answer {
     /// "The first one": a place in the list as said, from 0.
     Nth(usize),
     Last,
-    /// "Both", "all of them", "begge".
+    /// "All of them", "alle".
     All,
-    /// "The pasta one", "pastatimeren": the words of a name.
+    /// "Both", "begge (to)": all of two.
+    Both,
+    /// "All three", "alle tre": all, when there are that many.
+    Count(usize),
+    /// "The pasta one", "pastatimeren", "the one about mom": the words of a name or message.
     Named(Vec<String>),
-    /// "The 7 o'clock one", "the 7 pm one".
+    /// "The 7 o'clock one", "the 7 pm one", "07:00".
     At(Clock),
-    /// "The 10 minute one".
+    /// "The morning one" (false), "the evening one" (true).
+    Half(bool),
+    /// "The 10 minute one", "the one for 10 minutes".
     Lasting(u32),
+    /// "The one with 5 minutes left".
+    Left(u32),
 }
 
-/// Words that only frame an answer: "the ... one", "den ...", "of them".
+/// Words that only frame an answer: "the ... one", "den ...", "of them", "thanks".
 const ANSWER_FILLER: &[&str] = &[
     "the",
     "one",
@@ -1750,6 +1776,9 @@ const ANSWER_FILLER: &[&str] = &[
     "of",
     "them",
     "please",
+    "thanks",
+    "thank",
+    "you",
     "den",
     "det",
     "de",
@@ -1763,7 +1792,15 @@ const ANSWER_FILLER: &[&str] = &[
     "reminder",
     "påminnelsen",
     "på",
+    "at",
+    "about",
+    "with",
+    "med",
+    "for",
 ];
+
+/// Words of a name that say nothing of their own: "the reminder to call mom" is "call mom".
+const NAME_FILLER: &[&str] = &["to", "a", "an", "my", "til", "å"];
 
 const ORDINALS: &[&[&str]] = &[
     &["first", "1st", "første", "forste"],
@@ -1776,20 +1813,36 @@ const ORDINALS: &[&[&str]] = &[
 /// answer or frame it, so a reply with a verb of its own ("pause the pasta one", "volume 7",
 /// "wait 5 minutes") is a new request, and "one" is never one o'clock.
 fn answer_of(text: &str) -> Option<Answer> {
+    // "-5 minutes" is no answer.
+    if text.trim_start().starts_with(['-', '−', '–']) {
+        return None;
+    }
     let words = tokens(text);
     let content: Vec<String> = words.iter().filter(|w| !ANSWER_FILLER.contains(&w.as_str())).cloned().collect();
     // A verb makes it a request of its own: "cancel the pasta timer" runs as said.
     const VERBS: &[&str] = &[
         "cancel", "stop", "pause", "resume", "delete", "remove", "move", "change", "add", "set", "turn", "switch",
         "play", "wait", "volume", "lights", "light", "avbryt", "stopp", "slett", "fjern", "flytt", "sett", "skru",
-        "slå", "spill", "vent", "lyset", "lys", "glem", "forget",
+        "slå", "spill", "vent", "lyset", "lys", "glem", "forget", "minus", "negative",
     ];
-    if content.is_empty() || words.len() > 6 || content.iter().any(|w| VERBS.contains(&w.as_str())) {
+    if content.is_empty() || words.len() > 7 || content.iter().any(|w| VERBS.contains(&w.as_str())) {
         return None;
     }
     let only = |list: &[&str]| content.iter().all(|w| list.contains(&w.as_str()));
-    if only(&["both", "all", "begge", "alle", "to", "two"]) && !only(&["to", "two"]) {
+    if only(&["both", "begge", "to", "two"]) && !only(&["to", "two"]) {
+        return Some(Answer::Both);
+    }
+    if only(&["all", "alle"]) {
         return Some(Answer::All);
+    }
+    // "All three", "alle tre", "all 3".
+    if let [all, n] = content.as_slice() {
+        if ["all", "alle"].contains(&all.as_str()) {
+            let n = number(&content, 1).map(|(n, _)| n).or_else(|| {
+                ["null", "en", "to", "tre", "fire", "fem", "seks"].iter().position(|w| w == n).map(|k| k as f64)
+            })?;
+            return (n.fract() == 0.0 && n >= 1.0).then_some(Answer::Count(n as usize));
+        }
     }
     if let [word] = content.as_slice() {
         if ["last", "siste"].contains(&word.as_str()) {
@@ -1799,35 +1852,89 @@ fn answer_of(text: &str) -> Option<Answer> {
             return Some(Answer::Nth(k));
         }
     }
-    // A time, with nothing else but "o'clock", am or pm, "in the evening".
-    if let Some((clock, used)) = clock_words(&content, &[], true) {
+    // "The morning one", "the one in the evening", "den om kvelden".
+    const MORNING: &[&str] = &["morning", "morgenen", "formiddagen"];
+    const EVENING: &[&str] = &["evening", "afternoon", "night", "kvelden", "kveld", "ettermiddagen", "natt"];
+    if only(&[
+        "in",
+        "i",
+        "om",
+        "this",
+        "morning",
+        "morgenen",
+        "formiddagen",
+        "evening",
+        "afternoon",
+        "night",
+        "kvelden",
+        "kveld",
+        "ettermiddagen",
+        "natt",
+    ]) {
+        let evening = content.iter().any(|w| EVENING.contains(&w.as_str()));
+        let morning = content.iter().any(|w| MORNING.contains(&w.as_str()));
+        if evening != morning {
+            return Some(Answer::Half(evening));
+        }
+    }
+    // A time, with nothing else but "o'clock", am or pm, "in the evening". A leading zero or two
+    // hour digits ("07:00", "klokka 07") is the 24-hour time.
+    if let Some((mut clock, used)) = clock_words(&content, &[], true) {
         let rest = |k: usize| used[k] || ["o'clock", "oclock", "klokka", "kl"].contains(&content[k].as_str());
         if (0..content.len()).all(rest) {
+            let exact = content.iter().any(|w| {
+                let hour: String = w.chars().take_while(char::is_ascii_digit).collect();
+                hour.len() == 2 && (hour.starts_with('0') || w[2..].starts_with([':', '.']))
+            });
+            if exact {
+                clock.pm = Some(clock.hour >= 12);
+            }
             return Some(Answer::At(clock));
         }
+    }
+    // "The one with 5 minutes left".
+    if let Some(at) = content.iter().position(|w| w == "left" || w == "igjen") {
+        let mut length = content.clone();
+        length.remove(at);
+        let (seconds, used) = duration_words(&length);
+        return seconds.filter(|_| used.iter().all(|&u| u)).map(Answer::Left);
     }
     let (seconds, used) = duration_words(&content);
     if let Some(seconds) = seconds.filter(|_| used.iter().all(|&u| u)) {
         return Some(Answer::Lasting(seconds));
     }
-    // A name: no digits, and few words ("the pasta one", "pasta-timeren", "pastatimeren").
-    let name: Vec<String> = content.iter().map(|w| compound_name(w).unwrap_or(w).to_owned()).collect();
-    (name.len() <= 2 && name.iter().all(|w| w.chars().all(char::is_alphabetic) && w.chars().count() > 2))
-        .then_some(Answer::Named(name))
+    // A name or a message: no digits, and few words ("the pasta one", "pastatimeren", "the one
+    // about mom", "the reminder to call mom").
+    let name: Vec<String> = content
+        .iter()
+        .filter(|w| !NAME_FILLER.contains(&w.as_str()))
+        .map(|w| compound_name(w).unwrap_or(w).to_owned())
+        .collect();
+    (!name.is_empty()
+        && name.len() <= 4
+        && name.iter().all(|w| w.chars().all(char::is_alphabetic) && w.chars().count() > 2))
+    .then_some(Answer::Named(name))
 }
 
-/// Which of `timers` (in the order they were listed; `None` for one that has ended) the answer
+/// Which of `listed` (as they were when "Which one?" was asked, in the order said) the answer
 /// names.
-fn chosen(answer: &Answer, timers: &[Option<&Timer>], now: Instant) -> Option<Vec<usize>> {
-    if timers.is_empty() {
+fn chosen(answer: &Answer, listed: &[Timer], now: Instant) -> Option<Vec<usize>> {
+    if listed.is_empty() {
         return None;
     }
-    let live = || (0..timers.len()).filter_map(|k| timers[k].map(|t| (k, t)));
+    let all = || (0..listed.len()).map(|k| (k, &listed[k]));
     let one = |found: Vec<usize>| (found.len() == 1).then_some(found);
+    let hour_of = |t: &Timer| {
+        t.at.as_deref()
+            .and_then(|at| at.split_once(':'))
+            .and_then(|(h, m)| Some((h.parse::<u8>().ok()?, m.parse::<u8>().ok()?)))
+    };
     match answer {
-        Answer::All => Some((0..timers.len()).collect()),
-        Answer::Last => Some(vec![timers.len() - 1]),
-        Answer::Nth(k) => (*k < timers.len()).then(|| vec![*k]),
+        Answer::All => Some((0..listed.len()).collect()),
+        Answer::Both => (listed.len() == 2).then(|| vec![0, 1]),
+        Answer::Count(n) => (*n == listed.len()).then(|| (0..listed.len()).collect()),
+        Answer::Last => Some(vec![listed.len() - 1]),
+        Answer::Nth(k) => (*k < listed.len()).then(|| vec![*k]),
         // Against the 24-hour time: "the 7 pm one" is 19:00; a bare 7 is whichever comes next.
         Answer::At(clock) => {
             let hours: Vec<u8> = match clock.pm {
@@ -1836,20 +1943,24 @@ fn chosen(answer: &Answer, timers: &[Option<&Timer>], now: Instant) -> Option<Ve
                 Some(false) => vec![clock.hour % 12],
                 None => vec![clock.hour % 12, clock.hour % 12 + 12],
             };
-            live()
-                .filter(|(_, t)| {
-                    t.at.as_deref().and_then(|at| at.split_once(':')).is_some_and(|(h, m)| {
-                        h.parse::<u8>().is_ok_and(|h| hours.contains(&h)) && m.parse::<u8>() == Ok(clock.minute)
-                    })
-                })
+            all()
+                .filter(|(_, t)| hour_of(t).is_some_and(|(h, m)| hours.contains(&h) && m == clock.minute))
                 .min_by_key(|(_, t)| t.left(now))
                 .map(|(k, _)| vec![k])
         }
-        Answer::Lasting(seconds) => {
-            one(live().filter(|(_, t)| t.total.as_secs() as u32 == *seconds).map(|(k, _)| k).collect())
+        Answer::Half(evening) => {
+            one(all().filter(|(_, t)| hour_of(t).is_some_and(|(h, _)| (h >= 12) == *evening)).map(|(k, _)| k).collect())
         }
+        Answer::Lasting(seconds) => {
+            one(all().filter(|(_, t)| t.total.as_secs() as u32 == *seconds).map(|(k, _)| k).collect())
+        }
+        // Within a minute of what is left: the device and the answer round it.
+        Answer::Left(seconds) => one(all()
+            .filter(|(_, t)| (t.left(now).as_secs() as i64 - i64::from(*seconds)).abs() < 60)
+            .map(|(k, _)| k)
+            .collect()),
         // By the words of its name or message, every word said.
-        Answer::Named(name) => one(live()
+        Answer::Named(name) => one(all()
             .filter(|(_, t)| {
                 let own: Vec<String> =
                     [t.name.as_deref(), t.reminder.as_deref()].iter().flatten().flat_map(|h| tokens(h)).collect();
@@ -2681,6 +2792,107 @@ mod tests {
         assert!(timers.list().is_empty());
         assert_eq!(std::fs::read_to_string(path.with_extension("bad")).unwrap(), "{ broken");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn which_one_takes_more_answers() {
+        let t0 = Instant::now();
+        let en = Lang::English;
+        let ask = |timers: &mut Timers, command: &str| {
+            let (text, _) = timers.run(parse(command).unwrap(), en, t0);
+            assert!(text.ends_with("Which one?"), "{text}");
+        };
+        let alarms = |hour: i8| {
+            let mut timers = timers_at(t0, hour, 0);
+            timers.run(parse("set an alarm for 7 pm").unwrap(), en, t0);
+            timers.run(parse("add an alarm for 7 am").unwrap(), en, t0);
+            ask(&mut timers, "cancel my alarm");
+            timers
+        };
+        // A zero-padded or 24-hour time is exact: 07:00 even when 19:00 comes first.
+        for answer in ["07:00", "the 07:00 alarm", "07.00", "klokka 07"] {
+            let mut timers = alarms(12);
+            assert_eq!(timers.answer_pending(answer, en, t0).unwrap().0, "The 07:00 alarm is cancelled.", "{answer}");
+        }
+        // At a time, by half of the day.
+        for (answer, cancelled) in [
+            ("the one at 7", "The 19:00 alarm is cancelled."),
+            ("at seven", "The 19:00 alarm is cancelled."),
+            ("the morning one", "The 07:00 alarm is cancelled."),
+            ("the one in the morning", "The 07:00 alarm is cancelled."),
+            ("the evening one", "The 19:00 alarm is cancelled."),
+            ("thanks, the morning one", "The 07:00 alarm is cancelled."),
+        ] {
+            let mut timers = alarms(12);
+            assert_eq!(timers.answer_pending(answer, en, t0).unwrap().0, cancelled, "{answer}");
+        }
+        for answer in ["seven thirty", "half past seven", "halv åtte"] {
+            let mut timers = timers_at(t0, 12, 0);
+            timers.run(parse("set an alarm for 7:30 pm").unwrap(), en, t0);
+            timers.run(parse("add an alarm for 6 am").unwrap(), en, t0);
+            ask(&mut timers, "cancel my alarm");
+            assert_eq!(timers.answer_pending(answer, en, t0).unwrap().0, "The 19:30 alarm is cancelled.", "{answer}");
+        }
+        // Three timers: "both" asks again, "all three" takes all, a wrong count is no answer.
+        let three = || {
+            let mut timers = timers_at(t0, 12, 0);
+            timers.run(parse("set a pasta timer for 10 minutes").unwrap(), en, t0);
+            timers.run(parse("set an egg timer for 5 minutes").unwrap(), en, t0);
+            timers.run(parse("set a rice timer for 20 minutes").unwrap(), en, t0);
+            ask(&mut timers, "cancel the timer");
+            timers
+        };
+        let mut timers = three();
+        assert_eq!(timers.answer_pending("both", en, t0).unwrap().0, "There are 3. Which one?");
+        assert_eq!(timers.list().len(), 3);
+        assert!(timers.choosing());
+        assert_eq!(timers.answer_pending("begge to", en, t0).unwrap().0, "There are 3. Which one?");
+        for answer in ["all three", "alle tre", "all 3"] {
+            let mut timers = three();
+            assert_eq!(timers.answer_pending(answer, en, t0).unwrap().0, "All 3 timers are cancelled.", "{answer}");
+        }
+        let mut timers = three();
+        assert!(timers.answer_pending("all two", en, t0).is_none());
+        assert_eq!(timers.list().len(), 3);
+        // By its message, length or time left.
+        for (answer, cancelled) in [
+            ("the one for 10 minutes", "The pasta timer is cancelled."),
+            ("the one with 5 minutes left", "The egg timer is cancelled."),
+            ("den med pasta", "The pasta timer is cancelled."),
+        ] {
+            let mut timers = three();
+            assert_eq!(timers.answer_pending(answer, en, t0).unwrap().0, cancelled, "{answer}");
+        }
+        for answer in ["the one about mom", "the reminder to call mom"] {
+            let mut timers = timers_at(t0, 12, 0);
+            timers.run(parse("remind me in 10 minutes to call mom").unwrap(), en, t0);
+            timers.run(parse("remind me in 20 minutes to feed the cat").unwrap(), en, t0);
+            ask(&mut timers, "cancel the reminder");
+            assert_eq!(
+                timers.answer_pending(answer, en, t0).unwrap().0,
+                "The reminder to call mom is cancelled.",
+                "{answer}"
+            );
+        }
+        // A named one that has ended since.
+        let mut timers = three();
+        timers.list.retain(|t| t.name.as_deref() != Some("pasta"));
+        assert_eq!(timers.answer_pending("the pasta one", en, t0).unwrap().0, "That one has already ended.");
+        // "Both" after add speaks of both, not one label with another's time.
+        let mut timers = timers_at(t0, 12, 0);
+        timers.run(parse("set a pasta timer for 10 minutes").unwrap(), en, t0);
+        timers.run(parse("set an egg timer for 5 minutes").unwrap(), en, t0);
+        ask(&mut timers, "add 5 minutes to the timer");
+        assert_eq!(timers.answer_pending("both", en, t0).unwrap().0, "Added 5 minutes to both timers.");
+        // A leading minus is no answer; neither is a word that names none of them.
+        for answer in ["-5 minutes", "sorry", "hello", "okay", "kitchen"] {
+            let mut timers = three();
+            assert!(!timers.takes_answer(answer), "{answer}");
+            assert!(timers.answer_pending(answer, en, t0).is_none(), "{answer}");
+            assert_eq!(timers.list().len(), 3, "{answer}");
+        }
+        let timers = three();
+        assert!(timers.takes_answer("the pasta one"));
     }
 
     #[test]
