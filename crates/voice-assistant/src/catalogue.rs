@@ -357,7 +357,7 @@ pub const SKILLS: &[Skill] = &[
         name: "Wake-up alarm",
         group: "Everyday",
         icon: "clock",
-        does: "Rings at a time of day, or in a while, like a timer: a Voice PE rings until \"stop\". An hour without am or pm is the morning. \"Snooze\" rings again in 9 minutes. Kept across restarts.",
+        does: "Rings at a time of day, or in a while, like a timer: a Voice PE rings until \"stop\". An hour without am or pm is the morning, and \"tomorrow\" said after midnight is the coming morning. \"Move my alarm\" changes the one that is set. \"Snooze\" rings again in 9 minutes. Kept across restarts.",
         source: "Kept by the assistant",
         calls: &[],
         examples: &[
@@ -365,11 +365,13 @@ pub const SKILLS: &[Skill] = &[
             "Set an alarm for 6:30",
             "Wake me up in 20 minutes",
             "When is my alarm?",
+            "Move my alarm to 7:30",
+            "Push my alarm back 10 minutes",
             "Snooze",
             "Turn off the alarm",
             "Cancel my alarm",
         ],
-        norwegian: &["Vekk meg klokka 7"],
+        norwegian: &["Vekk meg klokka 7", "Er vekkerklokka stilt?"],
     },
     Skill {
         id: "shopping",
@@ -561,6 +563,7 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
         Intent::Music(_) => "music",
         Intent::Timer(
             TimerCommand::Alarm { .. }
+            | TimerCommand::MoveAlarm(_)
             | TimerCommand::Snooze
             | TimerCommand::StopAlarm
             | TimerCommand::Cancel(Which { alarm: true, .. })
