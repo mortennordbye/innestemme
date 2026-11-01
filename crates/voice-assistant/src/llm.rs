@@ -326,11 +326,16 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 "previous" => MusicCommand::Previous,
                 "louder" => MusicCommand::Louder,
                 "quieter" => MusicCommand::Quieter,
-                "queue" => MusicCommand::Queue(Box::new(play()), false),
+                // Nothing to queue: a bare `Resume` inside, which the answer asks about.
+                "queue" if text("query").is_none() && text("kind").as_deref() != Some("liked") => {
+                    MusicCommand::Queue(Box::new(MusicCommand::Resume), args["next"] == true)
+                }
+                "queue" => MusicCommand::Queue(Box::new(play()), args["next"] == true),
                 _ => play(),
             };
-            // "Here", "this room" or the device's own room is the speaker's own.
-            let room = text("room").map(|r| normalize_room(&r)).filter(|r| crate::ha::is_room_phrase(r));
+            // Any room the model names: the player looks it up among Home Assistant's areas and
+            // players, and answers that it has no speaker there, rather than playing here.
+            let room = text("room").map(|r| normalize_room(&r)).filter(|r| !HERE.contains(&r.as_str()));
             Decision::Act(Intent::Music(match room {
                 Some(room) => MusicCommand::InRoom(room, Box::new(command)),
                 None => command,
@@ -419,6 +424,9 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
     })
 }
 
+/// Rooms the model writes for the speaker's own.
+const HERE: &[&str] = &["", "here", "this room", "this", "current room", "my room", "her", "rommet"];
+
 /// A room as the model writes it ("the Kitchen"), as the parser has it ("kitchen").
 fn normalize_room(room: &str) -> String {
     let words: Vec<String> =
@@ -486,6 +494,7 @@ pub fn tools() -> Value {
             "action": { "type": "string", "enum": ["play", "queue", "pause", "stop", "resume", "next", "previous", "louder", "quieter", "mute", "unmute", "playing"] },
             "kind": { "type": "string", "enum": ["song", "artist", "album", "playlist", "liked"] },
             "query": { "type": "string" },
+            "next": { "type": "boolean", "description": "Queue after this song" },
             "room": { "type": "string", "description": "Omit for here" }
         } })
         ),
@@ -671,10 +680,24 @@ mod tests {
                 Box::new(MusicCommand::Artist("Ghost".into()))
             )))
         );
-        // A room it cannot name is here.
+        // "Here" is the speaker's own.
         assert_eq!(
             parse_reply(&call("music", r#"{"action":"queue","query":"Hey Jude","room":"here"}"#)).unwrap(),
             Decision::Act(Intent::Music(MusicCommand::Queue(Box::new(MusicCommand::Song("Hey Jude".into())), false)))
+        );
+        assert_eq!(
+            parse_reply(&call("music", r#"{"action":"queue","query":"Hey Jude","next":true}"#)).unwrap(),
+            Decision::Act(Intent::Music(MusicCommand::Queue(Box::new(MusicCommand::Song("Hey Jude".into())), true)))
+        );
+        // Nothing named: the answer asks what.
+        assert_eq!(
+            parse_reply(&call("music", r#"{"action":"queue"}"#)).unwrap(),
+            Decision::Act(Intent::Music(MusicCommand::Queue(Box::new(MusicCommand::Resume), false)))
+        );
+        // A room outside the shared room words is looked up, not dropped: never played here instead.
+        assert_eq!(
+            parse_reply(&call("music", r#"{"action":"play","kind":"liked","room":"Garden"}"#)).unwrap(),
+            Decision::Act(Intent::Music(MusicCommand::InRoom("garden".into(), Box::new(MusicCommand::Liked))))
         );
         assert_eq!(
             parse_reply(&call("timer", r#"{"action":"remind","minutes":20,"message":"take the laundry out"}"#))

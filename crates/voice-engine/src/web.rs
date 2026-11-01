@@ -57,11 +57,18 @@ pub struct Web {
     announce_token: Option<String>,
     /// When the last announcements were taken, for [`ANNOUNCE_RATE`].
     announced: Recent,
-    /// When the last wrong or missing tokens came, for [`REFUSED_RATE`].
-    refused: Recent,
+    /// When the last wrong or missing tokens came, by address, for [`REFUSED_RATE`]: one caller
+    /// guessing does not lock Home Assistant out.
+    refused:
+        std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, std::collections::VecDeque<std::time::Instant>>>,
 }
 
 type Recent = std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>;
+
+/// The shortest announce token taken: a short one is guessed too easily.
+const TOKEN_MIN: usize = 16;
+/// Addresses whose wrong tokens are remembered at once; older ones are forgotten first.
+const REFUSED_ADDRESSES: usize = 256;
 
 /// Announcements taken per [`ANNOUNCE_WINDOW`]; more are refused, so an automation that loops
 /// cannot talk over everything.
@@ -91,11 +98,30 @@ fn take(recent: &Recent, max: usize) -> bool {
     room
 }
 
-/// Whether as many as `max` are in the window already.
-fn full(recent: &Recent, max: usize) -> bool {
-    let recent = recent.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let now = std::time::Instant::now();
-    recent.iter().filter(|at| now.duration_since(**at) <= ANNOUNCE_WINDOW).count() >= max
+impl Web {
+    /// Whether this address sent [`REFUSED_RATE`] wrong tokens within the window.
+    fn locked_out(&self, peer: std::net::IpAddr) -> bool {
+        let refused = self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        refused.get(&peer).is_some_and(|times| {
+            times.iter().filter(|at| now.duration_since(**at) <= ANNOUNCE_WINDOW).count() >= REFUSED_RATE
+        })
+    }
+
+    fn refuse(&self, peer: std::net::IpAddr) {
+        let mut refused = self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        refused.retain(|_, times| times.back().is_some_and(|at| now.duration_since(*at) <= ANNOUNCE_WINDOW));
+        if refused.len() >= REFUSED_ADDRESSES && !refused.contains_key(&peer) {
+            let oldest = refused.iter().min_by_key(|(_, times)| times.back().copied()).map(|(ip, _)| *ip);
+            oldest.map(|ip| refused.remove(&ip));
+        }
+        let times = refused.entry(peer).or_default();
+        times.push_back(now);
+        while times.len() > REFUSED_RATE {
+            times.pop_front();
+        }
+    }
 }
 
 /// Text from outside on one log line.
@@ -135,7 +161,16 @@ impl Web {
 
     /// Turns on `/api/announce` for requests that carry this token.
     pub fn with_announce_token(mut self, token: Option<String>) -> Self {
-        self.announce_token = token.filter(|t| !t.trim().is_empty()).map(|t| t.trim().to_owned());
+        let token = token.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+        self.announce_token = match token {
+            Some(token) if token.chars().count() < TOKEN_MIN => {
+                tracing::warn!(
+                    "announce-token is shorter than {TOKEN_MIN} characters: announcements stay off (use a long random one)"
+                );
+                None
+            }
+            token => token,
+        };
         self
     }
 
@@ -143,16 +178,16 @@ impl Web {
     /// automations speak through the assistant (a doorbell, a washing machine done). Optional
     /// `room=kitchen` or `player=media_player.kitchen` for another speaker, `lang=no` for
     /// Norwegian. `head` is the request's header block.
-    pub fn announce(&self, post: bool, target: &str, head: &str) -> Option<Response> {
+    pub fn announce(&self, post: bool, target: &str, head: &str, peer: std::net::IpAddr) -> Option<Response> {
         let query = target.strip_prefix("/api/announce")?;
         let query = if query.is_empty() { "" } else { query.strip_prefix('?')? };
         let token = self.announce_token.as_deref()?;
         // The token first: nothing about the request is told to a caller without it.
-        if full(&self.refused, REFUSED_RATE) {
+        if self.locked_out(peer) {
             return Some(too_many("Too many wrong tokens; try again in a minute.".into()));
         }
         if !bearer(head).is_some_and(|given| same(given.as_bytes(), token.as_bytes())) {
-            take(&self.refused, REFUSED_RATE);
+            self.refuse(peer);
             let body = json!({ "reason": "Send Authorization: Bearer <announce-token>." }).to_string();
             return Some(("401 Unauthorized", "application/json", body.into_bytes()));
         }
@@ -543,33 +578,35 @@ mod tests {
         Web::new(WakeWord::new("Jarvis"), json!({ "name": "Jarvis" }), None, Arc::default(), None)
     }
 
+    const TOKEN: &str = "a-test-token-of-some-length";
+    const PEER: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
     #[test]
     fn announces_only_with_the_token_and_a_short_text() {
         let head =
             |token: &str| format!("POST /api/announce HTTP/1.1\r\nHost: x\r\nauthorization: Bearer {token}\r\n\r\n");
         let status = |response: Option<Response>| response.map(|r| r.0);
-        // Off without a token: no such page.
-        assert_eq!(status(web().announce(true, "/api/announce?text=hi", &head("secret"))), None);
+        // Off without a token, or with one too short to be safe: no such page.
+        assert_eq!(status(web().announce(true, "/api/announce?text=hi", &head(TOKEN), PEER)), None);
+        let short = web().with_announce_token(Some("secret".into()));
+        assert_eq!(status(short.announce(true, "/api/announce?text=hi", &head("secret"), PEER)), None);
         let (handle, announced) = AssistantHandle::for_tests();
         let web = Web::new(WakeWord::new("Jarvis"), json!({}), Some(handle), Arc::default(), None)
-            .with_announce_token(Some("secret".into()));
-        let call = |target: &str, head: &str| status(web.announce(true, target, head));
+            .with_announce_token(Some(TOKEN.into()));
+        let call = |target: &str, head: &str| status(web.announce(true, target, head, PEER));
         assert_eq!(call("/api/announce?text=hi", &head("wrong")), Some("401 Unauthorized"));
         assert_eq!(call("/api/announce?text=hi", "POST / HTTP/1.1\r\n\r\n"), Some("401 Unauthorized"));
-        assert_eq!(status(web.announce(false, "/api/announce?text=hi", &head("secret"))), Some("400 Bad Request"));
-        assert_eq!(call("/api/announce?text=", &head("secret")), Some("400 Bad Request"));
+        assert_eq!(status(web.announce(false, "/api/announce?text=hi", &head(TOKEN), PEER)), Some("400 Bad Request"));
+        assert_eq!(call("/api/announce?text=", &head(TOKEN)), Some("400 Bad Request"));
         let long = format!("/api/announce?text={}", "a".repeat(ANNOUNCE_MAX + 1));
-        assert_eq!(call(&long, &head("secret")), Some("400 Bad Request"));
-        assert_eq!(call("/api/announce?text=hi&player=light.kitchen", &head("secret")), Some("400 Bad Request"));
-        assert_eq!(call("/api/announcements?text=hi", &head("secret")), None);
+        assert_eq!(call(&long, &head(TOKEN)), Some("400 Bad Request"));
+        assert_eq!(call("/api/announce?text=hi&player=light.kitchen", &head(TOKEN)), Some("400 Bad Request"));
+        assert_eq!(call("/api/announcements?text=hi", &head(TOKEN)), None);
         assert!(announced().is_empty());
 
+        assert_eq!(call("/api/announce?text=Someone+is+at+the+door.&room=kitchen", &head(TOKEN)), Some("202 Accepted"));
         assert_eq!(
-            call("/api/announce?text=Someone+is+at+the+door.&room=kitchen", &head("secret")),
-            Some("202 Accepted")
-        );
-        assert_eq!(
-            call("/api/announce?text=Vaskemaskinen+er+ferdig.&lang=no&player=media_player.bad", &head("secret")),
+            call("/api/announce?text=Vaskemaskinen+er+ferdig.&lang=no&player=media_player.bad", &head(TOKEN)),
             Some("202 Accepted")
         );
         assert_eq!(
@@ -591,26 +628,28 @@ mod tests {
         );
         // A looping automation is cut off.
         for _ in 2..ANNOUNCE_RATE {
-            assert_eq!(call("/api/announce?text=hi", &head("secret")), Some("202 Accepted"));
+            assert_eq!(call("/api/announce?text=hi", &head(TOKEN)), Some("202 Accepted"));
         }
-        assert_eq!(call("/api/announce?text=hi", &head("secret")), Some("429 Too Many Requests"));
+        assert_eq!(call("/api/announce?text=hi", &head(TOKEN)), Some("429 Too Many Requests"));
     }
 
     #[test]
     fn announce_checks_the_token_first_and_slows_guessing() {
         let (handle, _announced) = AssistantHandle::for_tests();
         let web = Web::new(WakeWord::new("Jarvis"), json!({}), Some(handle), Arc::default(), None)
-            .with_announce_token(Some("secret".into()));
+            .with_announce_token(Some(TOKEN.into()));
         let head = |token: &str| format!("POST /api/announce HTTP/1.1\r\nAuthorization: bearer {token}\r\n\r\n");
-        let status = |post, target: &str, head: &str| web.announce(post, target, head).map(|r| r.0);
+        let status = |post, target: &str, head: &str, peer| web.announce(post, target, head, peer).map(|r| r.0);
         // Without the token, nothing about the request is told: a GET or a bad text is still 401.
-        assert_eq!(status(false, "/api/announce?text=hi", &head("nope")), Some("401 Unauthorized"));
-        assert_eq!(status(true, "/api/announce?text=", "POST / HTTP/1.1\r\n\r\n"), Some("401 Unauthorized"));
+        assert_eq!(status(false, "/api/announce?text=hi", &head("nope"), PEER), Some("401 Unauthorized"));
+        assert_eq!(status(true, "/api/announce?text=", "POST / HTTP/1.1\r\n\r\n", PEER), Some("401 Unauthorized"));
         for _ in 2..REFUSED_RATE {
-            assert_eq!(status(true, "/api/announce?text=hi", &head("guess")), Some("401 Unauthorized"));
+            assert_eq!(status(true, "/api/announce?text=hi", &head("guess"), PEER), Some("401 Unauthorized"));
         }
-        // Too many wrong tokens: even the right one waits out the minute.
-        assert_eq!(status(true, "/api/announce?text=hi", &head("secret")), Some("429 Too Many Requests"));
+        // Too many wrong tokens: even the right one waits out the minute, from that address only.
+        assert_eq!(status(true, "/api/announce?text=hi", &head(TOKEN), PEER), Some("429 Too Many Requests"));
+        let home_assistant = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 3));
+        assert_eq!(status(true, "/api/announce?text=hi", &head(TOKEN), home_assistant), Some("202 Accepted"));
         assert_eq!(one_line("Someone\nis at\r\nthe door"), "Someone is at  the door");
     }
 

@@ -158,6 +158,7 @@ impl AssistantProcessor {
             wake_named: None,
             said: VecDeque::new(),
             answered_draft: None,
+            draft_undo: None,
             hushed: None,
             speech_ended: None,
             history: VecDeque::new(),

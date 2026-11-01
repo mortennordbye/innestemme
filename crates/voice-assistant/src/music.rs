@@ -96,6 +96,8 @@ pub struct Player {
     dry_run: bool,
     /// See [`Player::paused_for_request`].
     held: bool,
+    /// The players paused for the request, a room's among them.
+    held_players: Vec<String>,
     late_failure: Option<Arc<dyn Fn(String, Lang) + Send + Sync>>,
 }
 
@@ -104,7 +106,16 @@ const LIBRARY_REFRESH: std::time::Duration = std::time::Duration::from_secs(600)
 
 impl Player {
     pub fn new(speaker: Option<String>) -> Self {
-        Self { speaker, resolved: None, artists: None, liked: None, dry_run: false, held: false, late_failure: None }
+        Self {
+            speaker,
+            resolved: None,
+            artists: None,
+            liked: None,
+            dry_run: false,
+            held: false,
+            held_players: Vec::new(),
+            late_failure: None,
+        }
     }
 
     pub fn dry_run(mut self) -> Self {
@@ -190,6 +201,11 @@ impl Player {
             MusicCommand::InRoom(room, inner) => {
                 let players = speakers(ha)?;
                 let Some(speaker) = in_room(&players, room) else {
+                    // "Dancing in the Kitchen" with no kitchen speaker is the title.
+                    if let Some(title) = title_with_room(inner, room, no) {
+                        info!(room, "no player in that room: a title");
+                        return self.dispatch(ha, &title, no, on);
+                    }
                     return Ok(no_speaker(room, &players, no));
                 };
                 info!(room, player = speaker.id, "music in a room");
@@ -207,6 +223,9 @@ impl Player {
             }
             MusicCommand::MoveTo(to, from) => self.move_to(ha, to, from.as_deref(), no),
             MusicCommand::UpNext => self.up_next(ha, on, no),
+            MusicCommand::Queue(inner, next) if **inner == MusicCommand::NowPlaying => {
+                self.queue_this(ha, no, on, if *next { Enqueue::Next } else { Enqueue::Add })
+            }
             MusicCommand::Queue(inner, _) if **inner == MusicCommand::Resume => Ok(if no {
                 "Si hva som skal i køen, for eksempel legg til Kygo i køen."
             } else {
@@ -481,7 +500,7 @@ impl Player {
         let (_, entity) = self.target(ha, on)?;
         let state = ha.state(&entity)?;
         // Only this room's music is paused for a request.
-        let held = self.held && on.is_none();
+        let held = self.held_on(ha, on);
         info!(
             state = state["state"].as_str(),
             title = state["attributes"]["media_title"].as_str(),
@@ -546,8 +565,45 @@ impl Player {
 
     /// The music was paused for the request being answered, so a paused or idle player still
     /// counts as playing for "what's playing".
-    pub fn paused_for_request(&mut self, held: bool) {
+    pub fn paused_for_request(&mut self, held: bool, players: &[String]) {
         self.held = held;
+        self.held_players = players.to_vec();
+    }
+
+    /// Whether a room's player is among those paused for the request: the speaker's, or one paused.
+    fn held_on(&mut self, ha: &HomeAssistant, on: Option<On>) -> bool {
+        let Some(on) = on else { return self.held };
+        let here = self.resolve(ha).ok().map(|(_, entity)| entity);
+        self.held && (here.as_deref() == Some(on.entity) || self.held_players.iter().any(|p| p == on.entity))
+    }
+
+    /// The speaker's volume in percent, to put back.
+    pub fn volume(&mut self, ha: &HomeAssistant) -> Option<u8> {
+        let (_, entity) = self.resolve(ha).ok()?;
+        let level = ha.state(&entity).ok()?["attributes"]["volume_level"].as_f64()?;
+        Some((level * 100.0).round().clamp(0.0, 100.0) as u8)
+    }
+
+    /// "Queue this song": the song playing, queued again.
+    fn queue_this(&mut self, ha: &HomeAssistant, no: bool, on: Option<On>, enqueue: Enqueue) -> Result<String> {
+        let (_, entity) = self.target(ha, on)?;
+        let state = ha.state(&entity)?;
+        let Some(found) = playing_track(&state) else {
+            return Ok(if no {
+                "Ingenting spilles. Si hva som skal i køen, for eksempel legg til Kygo i køen."
+            } else {
+                "Nothing is playing. Say what to queue, like queue up Hello by Adele."
+            }
+            .into());
+        };
+        let by = match (no, found.artist.is_empty()) {
+            (_, true) => found.name.clone(),
+            (false, false) => format!("{} by {}", found.name, found.artist),
+            (true, false) => format!("{} av {}", found.name, found.artist),
+        };
+        let pick = Pick { label: by, found, media_type: "track" };
+        let answer = play_answer(&pick, enqueue, on.map(|on| on.room), no);
+        self.play(ha, &entity, &pick.found, pick.media_type, enqueue, answer, no)
     }
 }
 
@@ -652,6 +708,30 @@ fn up_next_answer(queue: &Value, no: bool) -> String {
         (false, false, false) => format!("Next is {title} by {artist}."),
         (false, false, true) => format!("Neste er {title} av {artist}."),
     }
+}
+
+/// A song title that ends in a room ("Dancing in the Kitchen"), when that room has no speaker: the
+/// search again with the room put back. Only song searches: a playlist or an artist named "... in
+/// the kitchen" is rare.
+fn title_with_room(command: &MusicCommand, room: &str, no: bool) -> Option<MusicCommand> {
+    // Only the rooms the rules take from a title; one the language model names is meant as a room.
+    if !crate::ha::is_room_phrase(room) {
+        return None;
+    }
+    match command {
+        MusicCommand::Song(title) if no => Some(MusicCommand::Song(format!("{title} på {room}"))),
+        MusicCommand::Song(title) => Some(MusicCommand::Song(format!("{title} in the {room}"))),
+        _ => None,
+    }
+}
+
+/// The track a player plays, from its state: Music Assistant puts the track's URI in
+/// `media_content_id`.
+fn playing_track(state: &Value) -> Option<Found> {
+    let text = |key: &str| state["attributes"][key].as_str().unwrap_or_default().to_owned();
+    let uri = text("media_content_id");
+    let playing = matches!(state["state"].as_str(), Some("playing" | "paused"));
+    (playing && !uri.is_empty()).then(|| Found { uri, name: text("media_title"), artist: text("media_artist") })
 }
 
 fn now_playing_answer(state: &Value, held: bool, no: bool) -> String {
@@ -849,6 +929,32 @@ mod tests {
             play_answer(&liked, Enqueue::Replace, Some("bedroom"), false),
             "Shuffling your liked songs in the bedroom."
         );
+    }
+
+    #[test]
+    fn a_title_that_ends_in_a_room_without_a_speaker_is_a_title() {
+        let song = |s: &str| MusicCommand::Song(s.into());
+        assert_eq!(title_with_room(&song("dancing"), "kitchen", false), Some(song("dancing in the kitchen")));
+        assert_eq!(title_with_room(&song("ghost"), "hall", false), Some(song("ghost in the hall")));
+        assert_eq!(title_with_room(&song("dans"), "kjøkkenet", true), Some(song("dans på kjøkkenet")));
+        // Not a title: playing something else here would be wrong.
+        assert_eq!(title_with_room(&MusicCommand::Pause, "kitchen", false), None);
+        assert_eq!(title_with_room(&MusicCommand::Liked, "kitchen", false), None);
+        // A room the language model names is a room.
+        assert_eq!(title_with_room(&song("jazz"), "garden", false), None);
+    }
+
+    #[test]
+    fn queues_the_song_playing() {
+        let state = json!({ "state": "playing", "attributes": {
+            "media_content_id": "spotify://track/1", "media_title": "Hello", "media_artist": "Adele" } });
+        let track = playing_track(&state).unwrap();
+        assert_eq!(
+            (track.uri.as_str(), track.name.as_str(), track.artist.as_str()),
+            ("spotify://track/1", "Hello", "Adele")
+        );
+        assert_eq!(playing_track(&json!({ "state": "idle", "attributes": { "media_content_id": "x" } })), None);
+        assert_eq!(playing_track(&json!({ "state": "playing", "attributes": {} })), None);
     }
 
     #[test]

@@ -540,7 +540,7 @@ pub enum MusicCommand {
     InRooms(Vec<String>, Box<MusicCommand>),
     /// "Play Hello after this song" (true), "add Rumours to the queue" (false): a play request queued
     /// after the song playing, or at the end, instead of replacing the music. A bare `Resume` inside
-    /// is "queue up" with nothing named.
+    /// is "queue up" with nothing named; `NowPlaying` is "queue this song".
     Queue(Box<MusicCommand>, bool),
     /// "Move the music (in the kitchen) to the bedroom": the room it moves to, and the room it
     /// comes from when said.
@@ -716,17 +716,46 @@ fn room_after(words: &[String], at: usize) -> Option<(String, usize)> {
 /// kitchen and "play jazz"; "in the kitchen and the bedroom" names two. Only the rooms people name
 /// (`ha::ROOMS`), so "Dancing in the Dark" keeps its title.
 fn music_rooms(words: &[String]) -> Option<(Vec<String>, Vec<String>)> {
-    (0..words.len()).rev().filter(|&at| ROOM_MARKERS.contains(&words[at].as_str())).find_map(|at| {
+    // From the front, so "in the kitchen and in the bedroom" starts at the first room.
+    (0..words.len()).filter(|&at| ROOM_MARKERS.contains(&words[at].as_str())).find_map(|at| {
         let (room, mut end) = room_after(words, at)?;
         let mut rooms = vec![room];
         while words.get(end).is_some_and(|w| w == "and" || w == "og") {
-            let Some((more, after)) = room_after(words, end) else { break };
+            // "and the bedroom", "and in the bedroom", "og på soverommet".
+            let marker =
+                if words.get(end + 1).is_some_and(|w| ROOM_MARKERS.contains(&w.as_str())) { end + 1 } else { end };
+            let Some((more, after)) = room_after(words, marker) else { break };
             rooms.push(more);
             end = after;
+        }
+        // A word left alone after the room says nothing: "play music in the kitchen too".
+        if words[end..].iter().all(|w| LONE_AFTER_ROOM.contains(&w.as_str())) {
+            end = words.len();
         }
         Some((rooms, [&words[..at], &words[end..]].concat()))
     })
 }
+
+/// Words that, alone after a room, end the request: "... in the kitchen too", "... på kjøkkenet da".
+const LONE_AFTER_ROOM: &[&str] =
+    &["too", "then", "da", "and", "og", "next", "after", "to", "etter", "please", "takk", "now", "nå"];
+
+/// "Queue this song", "add it to the queue": the song playing.
+const THIS_SONG: &[&[&str]] = &[
+    &["it"],
+    &["this"],
+    &["that"],
+    &["this", "song"],
+    &["that", "song"],
+    &["this", "one"],
+    &["this", "track"],
+    &["the", "current", "song"],
+    &["den"],
+    &["denne"],
+    &["denne", "sangen"],
+    &["den", "sangen"],
+    &["denne", "låten"],
+];
 
 /// "Move the music to the bedroom", "move the music in the kitchen to the bedroom", "flytt
 /// musikken til soverommet": where it goes, and where it comes from when said.
@@ -762,6 +791,10 @@ fn queue_cue(words: &[String]) -> Option<(bool, Vec<String>)> {
         ends.iter().find(|e| rest.len() >= e.len() && rest.ends_with(e)).map(|e| rest.len() - e.len())
     };
     match w.as_slice() {
+        // "Queue Hello next": after the song playing.
+        ["queue", "up", rest @ .., "next"] | ["queue", rest @ .., "next"] if !rest.is_empty() => {
+            Some((true, request("play", rest)))
+        }
         ["queue", "up", rest @ ..] | ["queue", rest @ ..] => Some((false, request("play", rest))),
         ["add" | "put", rest @ ..] => without(rest, QUEUE_ENDS).map(|n| (false, request("play", &rest[..n]))),
         ["legg" | "sett", rest @ ..] => {
@@ -796,7 +829,11 @@ fn music(words: &[String]) -> Option<MusicCommand> {
     let (rooms, rest) = music_rooms(words).unwrap_or_else(|| (Vec::new(), words.to_vec()));
     let queue = queue_cue(&rest);
     let request = queue.as_ref().map_or(rest.as_slice(), |(_, request)| request.as_slice());
-    let command = music_core(request).and_then(|command| match &queue {
+    // "Queue this song": the song playing, again.
+    let this_song = queue.is_some() && request.len() > 1 && THIS_SONG.iter().any(|t| request[1..] == **t);
+    let command = if this_song { Some(MusicCommand::NowPlaying) } else { music_core(request) };
+    let command = command.and_then(|command| match &queue {
+        Some((next, _)) if command == MusicCommand::NowPlaying => Some(MusicCommand::Queue(Box::new(command), *next)),
         None => Some(command),
         Some((next, _)) if playable(&command) => Some(MusicCommand::Queue(Box::new(command), *next)),
         // "Queue up" with nothing to queue: the answer asks what.
@@ -2173,6 +2210,21 @@ mod tests {
         );
         // Nothing named: the answer asks what.
         assert_eq!(music("queue up"), last(Resume));
+        assert_eq!(music("queue Hello next"), next(song("hello")));
+        // The song playing, queued again.
+        for text in ["queue this song", "queue it", "add this song to the queue", "legg denne sangen i køen"] {
+            assert_eq!(music(text), last(NowPlaying), "{text}");
+        }
+
+        // A word left alone after the room says nothing.
+        assert_eq!(music("play music in the kitchen too"), room("kitchen", Liked));
+        assert_eq!(music("spill musikk på kjøkkenet da"), room("kjøkkenet", Liked));
+        assert_eq!(music("play Hello in the kitchen next"), room("kitchen", song("hello")));
+        // "And in the bedroom" as well as "and the bedroom".
+        assert_eq!(
+            music("play jazz in the kitchen and in the bedroom"),
+            Some(InRooms(vec!["kitchen".into(), "bedroom".into()], Box::new(song("jazz"))))
+        );
         // Titles that end in "next" or "after this".
         for title in ["thank u next", "coming up next", "you're next", "up next", "life after this", "who's next"] {
             assert_eq!(music(&format!("play {title}")), Some(song(title)), "{title}");
