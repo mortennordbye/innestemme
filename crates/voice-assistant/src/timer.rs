@@ -45,8 +45,8 @@ pub enum TimerCommand {
     Alarm {
         when: Option<When>,
     },
-    /// The alarm that is set, to a new time ("move my alarm to 7:30") or later by a while ("push my
-    /// alarm back 10 minutes").
+    /// The alarm that is set, to a new time ("move my alarm to 7:30") or later or earlier by a while
+    /// ("push my alarm back 10 minutes"). While one rings, later is a snooze that long.
     MoveAlarm(Move),
     /// The alarm that just went off, again in `SNOOZE`.
     Snooze,
@@ -67,7 +67,8 @@ pub enum TimerCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Move {
     To(When),
-    Later(u32),
+    /// Later (or, negative, earlier) by this many seconds.
+    By(i64),
 }
 
 /// When a reminder or an alarm goes off.
@@ -154,7 +155,7 @@ const HOUSE_ALARM: &[&str] = &[
 ];
 /// Words before a time of day: "at 5", "klokka 7"; an alarm also "for 6:30", "to 7", "på 7".
 const AT_WORDS: &[&str] = &["at", "klokka", "klokken", "kl"];
-const ALARM_AT_WORDS: &[&str] = &["at", "klokka", "klokken", "kl", "for", "to", "til", "på"];
+const ALARM_AT_WORDS: &[&str] = &["at", "klokka", "klokken", "kl", "for", "to", "til", "på", "until"];
 const CANCEL_WORDS: &[&str] =
     &["cancel", "stop", "delete", "remove", "clear", "off", "avbryt", "stopp", "slett", "fjern"];
 const PAUSE_WORDS: &[&str] = &["pause", "hold", "freeze"];
@@ -163,13 +164,28 @@ const ADD_WORDS: &[&str] = &["add", "extend", "extra", "more", "legg", "forleng"
 const START_WORDS: &[&str] = &["set", "start", "make", "create", "new", "put", "sett", "lag", "starte", "ny", "still"];
 /// Words before a request that say nothing about it.
 const FILLER: &[&str] = &["please", "hey", "okay", "ok", "so", "oh", "well", "um", "uh", "jarvis", "hei", "ja", "jo"];
-/// Moving the alarm that is set: "change my alarm to 7", "flytt vekkerklokka til 8".
-const MOVE_WORDS: &[&str] = &["change", "move", "reset", "update", "endre", "flytt", "flytte"];
-/// Moving it later: "push my alarm back 10 minutes", "delay my alarm by an hour".
-const LATER_WORDS: &[&str] = &["push", "delay", "postpone", "later", "utsett", "senere", "seinere"];
+/// Moving the alarm that is set: "change my alarm to 7", "push my alarm back 10 minutes", "add 10
+/// minutes to my alarm", "flytt vekkerklokka til 8".
+const MOVE_WORDS: &[&str] = &[
+    "change", "move", "reset", "update", "push", "delay", "postpone", "add", "extend", "endre", "flytt", "flytte",
+    "utsett", "legg", "forleng",
+];
+/// Which way a move by a while goes: "10 minutes later", "back 10 minutes"; "earlier", "forward".
+const LATER_WORDS: &[&str] =
+    &["later", "back", "delay", "postpone", "add", "extend", "senere", "seinere", "utsett", "legg", "forleng"];
+const EARLIER_WORDS: &[&str] = &["earlier", "forward", "sooner", "tidligere", "fram", "frem"];
+/// Before "alarm": the one that is set ("my alarm", "the alarm"), or a new one ("an extra alarm",
+/// "one more alarm", "a later alarm").
+const THE_ALARM: &[&str] = &["my", "the", "this", "that", "min", "mi", "mitt"];
+const NEW_ALARM: &[&str] =
+    &["a", "an", "one", "another", "extra", "more", "new", "second", "en", "ei", "et", "ny", "nytt"];
+/// Norwegian definite forms are the alarm that is set by themselves: "flytt vekkerklokka".
+const ALARM_DEFINITE: &[&str] = &["vekkerklokka", "vekkerklokken", "vekkingen"];
 const LEFT_WORDS: &[&str] = &["left", "remaining", "remain", "igjen", "gjenstår"];
-const QUESTION_WORDS: &[&str] =
-    &["is", "are", "when", "what", "what's", "whats", "do", "have", "har", "når", "er", "hva", "hvilken", "hvor"];
+const QUESTION_WORDS: &[&str] = &[
+    "is", "are", "when", "when's", "whens", "what", "what's", "whats", "how", "how's", "do", "have", "check", "har",
+    "når", "er", "hva", "hvilken", "hvor", "hvordan", "sjekk",
+];
 /// Words right before "timer" that are not its name.
 const NOT_NAMES: &[&str] = &[
     "a", "an", "the", "my", "this", "that", "one", "another", "new", "any", "all", "every", "of", "for", "on", "set",
@@ -299,27 +315,43 @@ fn alarm(words: &[String]) -> Option<TimerCommand> {
     }
     let (when, _) = when_words(words, ALARM_AT_WORDS);
     // "Push my alarm back 10 minutes", "change my alarm to 7": the one that is set, not a second one.
-    // "Add 10 minutes to my alarm" too, but "add an alarm for 7" is a new one.
-    if !wake && (any(LATER_WORDS) || any(ADD_WORDS)) {
-        if let Some(When::In(seconds)) = when {
-            return Some(TimerCommand::MoveAlarm(Move::Later(seconds)));
+    // "Add an extra alarm in 10 minutes" and "set the alarm for 7" are a new one.
+    if !wake && any(MOVE_WORDS) && the_alarm(words) {
+        let shift = |seconds: u32| {
+            if any(EARLIER_WORDS) {
+                Some(-i64::from(seconds))
+            } else {
+                any(LATER_WORDS).then_some(i64::from(seconds))
+            }
+        };
+        match when {
+            Some(When::At(clock)) => return Some(TimerCommand::MoveAlarm(Move::To(When::At(clock)))),
+            // "Change my alarm by 15 minutes": earlier or later is not said, and now plus 15 minutes
+            // is surely not meant.
+            Some(When::In(seconds)) => return shift(seconds).map(|by| TimerCommand::MoveAlarm(Move::By(by))),
+            None => {}
         }
-    }
-    if let Some(at) = when.filter(|_| !wake && any(LATER_WORDS)) {
-        return Some(TimerCommand::MoveAlarm(Move::To(at)));
-    }
-    if let Some(when) = when.filter(|_| !wake && any(MOVE_WORDS)) {
-        return Some(TimerCommand::MoveAlarm(Move::To(when)));
     }
     if wake || when.is_some() || any(START_WORDS) || any(&["need", "want", "trenger"]) {
         return Some(TimerCommand::Alarm { when });
     }
-    // "What alarms do I have" is a question above; "show my alarms" and "next alarm" ask too. A lone
-    // "alarm" is not a whole request yet: the rest of the sentence may still come.
-    if any(&["alarms", "vekkerklokkene", "show", "list", "next", "vis", "neste"]) {
+    // "What alarms do I have" is a question above; "show my alarms", "my alarm" and "alarm status"
+    // ask too. A lone "alarm" or "the alarm" is not a whole request yet: the rest may still come.
+    if any(&["alarms", "vekkerklokkene", "show", "list", "next", "status", "vis", "neste", "my", "min", "mi"]) {
         return Some(TimerCommand::Remaining(which));
     }
     None
+}
+
+/// The alarm that is set is meant ("my alarm", "the alarm", "vekkerklokka"), not a new one ("an
+/// extra alarm", "one more alarm", "a later alarm").
+fn the_alarm(words: &[String]) -> bool {
+    let Some(at) = words.iter().position(|w| ALARM_WORDS.contains(&w.as_str())) else { return false };
+    let before = &words[at.saturating_sub(2)..at];
+    if before.iter().any(|w| NEW_ALARM.contains(&w.as_str())) {
+        return false;
+    }
+    ALARM_DEFINITE.contains(&words[at].as_str()) || before.iter().any(|w| THE_ALARM.contains(&w.as_str()))
 }
 
 /// The first word that is not a greeting or a filler: "okay, is my alarm set?".
@@ -345,20 +377,19 @@ fn when_words(words: &[String], markers: &[&str]) -> (Option<When>, Vec<bool>) {
     pick(words, clock_words(words, markers, false))
 }
 
-/// The time of day, unless a duration is said with "in" before it: "in 10 minutes to call Anna at
-/// 3" is in 10 minutes, and "in an hour and 15" is not 15:00. Without "in" the time wins, since
-/// "a quarter to eight" also reads as a quarter of an hour.
+/// The time of day, unless a duration is said first, with "in" before it: "in 10 minutes to call
+/// Anna at 3" is in 10 minutes, and "in an hour and 15" is not 15:00, but "at 6 to leave in 20
+/// minutes" is at 6. Without "in" the time wins, since "a quarter to eight" also reads as a quarter
+/// of an hour.
 fn pick(words: &[String], clock: Option<(Clock, Vec<bool>)>) -> (Option<When>, Vec<bool>) {
     let (seconds, by_length) = duration_words(words);
     let Some((clock, by_clock)) = clock else { return (seconds.map(When::In), by_length) };
     let Some(seconds) = seconds else { return (Some(When::At(clock)), by_clock) };
     let first = by_length.iter().position(|&u| u).unwrap_or(0);
-    let after_in = first > 0 && ["in", "om"].contains(&words[first - 1].as_str());
-    if after_in {
+    let clock_first = by_clock.iter().position(|&u| u).unwrap_or(0);
+    if first > 0 && first < clock_first && ["in", "om"].contains(&words[first - 1].as_str()) {
         let mut used = by_length;
-        if after_in {
-            used[first - 1] = true;
-        }
+        used[first - 1] = true;
         return (Some(When::In(seconds)), used);
     }
     (Some(When::At(clock)), by_clock)
@@ -1216,7 +1247,7 @@ impl Timers {
                 self.start(Plan { is_alarm: true, ..Plan::default() }, when, lang, now)
             }
             TimerCommand::MoveAlarm(to) => self.move_alarm(to, lang, now),
-            TimerCommand::Snooze => self.snooze(lang, now),
+            TimerCommand::Snooze => self.snooze(SNOOZE, lang, now),
             TimerCommand::StopAlarm => self.stop_alarm(lang, now),
             TimerCommand::Remaining(which) if which.alarm => (self.alarms(lang, now), vec![]),
             TimerCommand::Remaining(which) => (self.remaining(&which, lang, now), vec![]),
@@ -1290,10 +1321,16 @@ impl Timers {
     /// The alarm that is set, to a new time: it is replaced, so the device shows the new length.
     fn move_alarm(&mut self, to: Move, lang: Lang, now: Instant) -> (String, Vec<Notice>) {
         let no = lang == Lang::Norwegian;
+        // The ringing one is no longer in the list: "add 10 minutes to my alarm" puts it off.
+        if let Move::By(by) = to {
+            if by > 0 && self.alarm_ringing(now) {
+                return self.snooze(by.min(i64::from(u32::MAX)) as u32, lang, now);
+            }
+        }
         let alarms: Vec<usize> = (0..self.list.len()).filter(|&i| self.list[i].is_alarm).collect();
         let index = match (alarms.as_slice(), to) {
             ([], Move::To(when)) => return self.start(Plan { is_alarm: true, ..Plan::default() }, when, lang, now),
-            ([], Move::Later(_)) => return (no_alarm(no), vec![]),
+            ([], Move::By(_)) => return (no_alarm(no), vec![]),
             ([one], _) => *one,
             _ => {
                 // Which one: the same question a cancel asks, without changing anything.
@@ -1302,9 +1339,17 @@ impl Timers {
         };
         let when = match to {
             Move::To(when) => when,
-            Move::Later(seconds) => {
-                let left = self.list[index].left(now).as_secs().min(u32::MAX as u64) as u32;
-                When::In(left.saturating_add(seconds))
+            Move::By(by) => {
+                let left = self.list[index].left(now).as_secs() as i64 + by;
+                if left <= 0 {
+                    let text = if no {
+                        "Beklager, det tidspunktet har allerede vært."
+                    } else {
+                        "Sorry, that time has already passed."
+                    };
+                    return (text.into(), vec![]);
+                }
+                When::In(left.min(i64::from(u32::MAX)) as u32)
             }
         };
         let old = self.list.remove(index);
@@ -1327,20 +1372,17 @@ impl Timers {
         (text, notices)
     }
 
-    fn snooze(&mut self, lang: Lang, now: Instant) -> (String, Vec<Notice>) {
+    fn snooze(&mut self, seconds: u32, lang: Lang, now: Instant) -> (String, Vec<Notice>) {
         let no = lang == Lang::Norwegian;
         if !self.alarm_ringing(now) {
             return (if no { "Ingen vekkerklokke har ringt." } else { "There's no alarm to snooze." }.into(), vec![]);
         }
         let Some((alarm, _)) = self.rang.take() else { return (String::new(), vec![]) };
         let plan = Plan { name: alarm.name, is_alarm: true, ..Plan::default() };
-        let (_, notices) = self.start(plan, When::In(SNOOZE), lang, now);
-        let minutes = SNOOZE / 60;
-        let text = if no {
-            format!("Ok, jeg vekker deg igjen om {minutes} minutter.")
-        } else {
-            format!("Okay, snoozing for {minutes} minutes.")
-        };
+        let (_, notices) = self.start(plan, When::In(seconds), lang, now);
+        let length = say_duration(seconds, lang);
+        let text =
+            if no { format!("Ok, jeg vekker deg igjen om {length}.") } else { format!("Okay, snoozing for {length}.") };
         (text, notices)
     }
 
@@ -2184,6 +2226,11 @@ mod tests {
             parse("Remind me in 10 minutes to call Anna at 3"),
             Some(Remind { when: Some(In(600)), message: Some("call anna at 3".into()) })
         );
+        // The time said first wins.
+        assert!(matches!(
+            parse("remind me at 6 to leave in 20 minutes"),
+            Some(Remind { when: Some(At(Clock { hour: 6, minute: 0, .. })), .. })
+        ));
         let t0 = Instant::now();
         let mut timers = timers_at(t0, 14, 0);
         timers.run(Remind { when: None, message: None }, Lang::English, t0);
@@ -2215,13 +2262,36 @@ mod tests {
             parse("change my alarm to 7"),
             Some(MoveAlarm(Move::To(At(Clock { hour: 7, minute: 0, pm: None, tomorrow: false }))))
         );
-        assert_eq!(parse("push my alarm back 10 minutes"), Some(MoveAlarm(Move::Later(600))));
-        assert_eq!(parse("add 10 minutes to my alarm"), Some(MoveAlarm(Move::Later(600))));
-        assert_eq!(parse("delay my alarm by an hour"), Some(MoveAlarm(Move::Later(3600))));
+        assert_eq!(parse("push my alarm back 10 minutes"), Some(MoveAlarm(Move::By(600))));
+        assert_eq!(parse("add 10 minutes to my alarm"), Some(MoveAlarm(Move::By(600))));
+        assert_eq!(parse("delay my alarm by an hour"), Some(MoveAlarm(Move::By(3600))));
+        assert_eq!(parse("move my alarm 10 minutes earlier"), Some(MoveAlarm(Move::By(-600))));
+        assert_eq!(parse("move my alarm forward 15 minutes"), Some(MoveAlarm(Move::By(-900))));
+        assert_eq!(
+            parse("postpone my alarm until 8"),
+            Some(MoveAlarm(Move::To(At(Clock { hour: 8, minute: 0, pm: None, tomorrow: false }))))
+        );
+        assert_eq!(
+            parse("flytt vekkerklokka til 8"),
+            Some(MoveAlarm(Move::To(At(Clock { hour: 8, minute: 0, pm: None, tomorrow: false }))))
+        );
+        // No way said: never now plus 15 minutes in place of the alarm.
+        assert_eq!(parse("change my alarm by 15 minutes"), None);
+        // A new alarm, not the one that is set.
         assert_eq!(parse("add an alarm for 7"), Some(Alarm { when: clock(7, 0, None, false) }));
+        for (text, seconds) in [
+            ("add an alarm in 10 minutes", 600),
+            ("set one more alarm in 10 minutes", 600),
+            ("set an extra alarm for 20 minutes", 1200),
+            ("legg inn en vekkerklokke om 20 minutter", 1200),
+            ("set an alarm for half an hour later", 1800),
+        ] {
+            assert_eq!(parse(text), Some(Alarm { when: Some(In(seconds)) }), "{text}");
+        }
+        assert_eq!(parse("set a later alarm at 9"), Some(Alarm { when: clock(9, 0, None, false) }));
         let t0 = Instant::now();
         let mut timers = timers_at(t0, 23, 0);
-        assert_eq!(timers.run(MoveAlarm(Move::Later(600)), Lang::English, t0).0, "You have no alarm set.");
+        assert_eq!(timers.run(MoveAlarm(Move::By(600)), Lang::English, t0).0, "You have no alarm set.");
         timers.run(parse("wake me up at 7").unwrap(), Lang::English, t0);
         let (text, notices) = timers.run(parse("move my alarm to 7:30").unwrap(), Lang::English, t0);
         assert_eq!(text, "Okay, your alarm is moved. It goes off tomorrow at 07:30.");
@@ -2230,7 +2300,24 @@ mod tests {
         assert_eq!(text, "Okay, your alarm is moved. It goes off tomorrow at 07:40.");
         assert_eq!(timers.list().len(), 1);
         assert_eq!(timers.list()[0].label(Lang::English), "the 07:40 alarm");
+        let (text, _) = timers.run(parse("move my alarm 15 minutes earlier").unwrap(), Lang::English, t0);
+        assert_eq!(text, "Okay, your alarm is moved. It goes off tomorrow at 07:25.");
+        assert_eq!(
+            timers.run(MoveAlarm(Move::By(-9 * 3600)), Lang::English, t0).0,
+            "Sorry, that time has already passed."
+        );
+        assert_eq!(timers.list()[0].label(Lang::English), "the 07:25 alarm");
+        // While it rings, later is a snooze that long.
+        let morning = t0 + Duration::from_secs(8 * 3600 + 25 * 60);
+        assert_eq!(timers.due(morning).len(), 1);
+        assert!(timers.list().is_empty());
+        let (text, notices) = timers.run(parse("add 10 minutes to my alarm").unwrap(), Lang::English, morning);
+        assert_eq!(text, "Okay, snoozing for 10 minutes.");
+        assert_eq!(notices[0].total_seconds, 600);
+        assert_eq!(timers.list().len(), 1);
+        timers.run(Cancel(Which { alarm: true, ..Which::default() }), Lang::English, morning);
         // Two alarms: which one.
+        timers.run(parse("wake me up at 7").unwrap(), Lang::English, t0);
         timers.run(parse("wake me up at 9").unwrap(), Lang::English, t0);
         let (text, notices) = timers.run(parse("move my alarm to 8").unwrap(), Lang::English, t0);
         assert!(text.ends_with("Which one?"), "{text}");
@@ -2243,7 +2330,16 @@ mod tests {
     fn a_lone_alarm_word_is_not_a_request_yet() {
         assert_eq!(parse("alarm"), None);
         assert_eq!(parse("the alarm"), None);
-        assert_eq!(parse("show my alarms"), Some(Remaining(Which { alarm: true, ..Which::default() })));
+        for text in [
+            "show my alarms",
+            "when's my alarm",
+            "how long until my alarm",
+            "check my alarm",
+            "alarm status",
+            "my alarm",
+        ] {
+            assert_eq!(parse(text), Some(Remaining(Which { alarm: true, ..Which::default() })), "{text}");
+        }
         assert_eq!(parse("I need an alarm"), Some(Alarm { when: None }));
     }
 

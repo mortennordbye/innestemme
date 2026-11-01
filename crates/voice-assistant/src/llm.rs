@@ -123,21 +123,6 @@ impl Llm {
 }
 
 /// The model's message: a tool call becomes a skill, text becomes speech.
-/// The tool's "at" as HH:MM, which is 24-hour: "05:00" stays in the morning, where a spoken "5"
-/// could be either. `None` for other wording.
-fn tool_time(at: &str) -> Option<timer::When> {
-    let (hour, minute) = at.trim().split_once(':')?;
-    if hour.len() != 2 || minute.len() != 2 {
-        return None;
-    }
-    let (hour, minute) = (hour.parse::<u8>().ok()?, minute.parse::<u8>().ok()?);
-    if hour > 23 || minute > 59 {
-        return None;
-    }
-    let pm = (1..=12).contains(&hour).then_some(hour == 12);
-    Some(timer::When::At(timer::Clock { hour, minute, pm, tomorrow: false }))
-}
-
 fn parse_reply(message: &Value) -> Result<Decision> {
     if let Some(call) = message["tool_calls"].as_array().and_then(|calls| calls.first()) {
         let name = call["function"]["name"].as_str().unwrap_or_default();
@@ -283,12 +268,13 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             let seconds = (number("hours") * 3600.0 + number("minutes") * 60.0 + number("seconds")).round() as u32;
             let seconds = (seconds > 0).then_some(seconds);
             // A time of day ("17:30") for a reminder or an alarm, else the duration.
-            let when = text("at")
-                .and_then(|at| tool_time(&at).or_else(|| timer::when(&format!("at {at}"))))
-                .or(seconds.map(timer::When::In));
+            // "17:30" is 24-hour; "05:00" is left as said, either half of the day, since the model
+            // does not know the time and may have padded a spoken "5".
+            let when = text("at").and_then(|at| timer::when(&format!("at {at}"))).or(seconds.map(timer::When::In));
             // The wake-up alarm, so "cancel my alarm" never reaches a kitchen timer.
-            let alarm =
-                text("name").is_some_and(|n| ["alarm", "wake-up", "wake up", "vekkerklokke"].contains(&n.as_str()));
+            let alarm = text("name")
+                .map(|n| n.to_lowercase())
+                .is_some_and(|n| n.contains("alarm") || n.starts_with("wake") || n.starts_with("vekker"));
             let which = Which {
                 name: text("name").filter(|n| n != "all" && !alarm),
                 all: args["all"].as_bool().unwrap_or(false) || text("name").as_deref() == Some("all"),
@@ -301,6 +287,8 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 "cancel" | "stop" => TimerCommand::Cancel(which),
                 "pause" => TimerCommand::Pause(which),
                 "resume" => TimerCommand::Resume(which),
+                // Moved, so the alarm's time of day stays in step with its end.
+                "add" if alarm => TimerCommand::MoveAlarm(timer::Move::By(i64::from(seconds.unwrap_or(60)))),
                 "add" => TimerCommand::Add { seconds: seconds.unwrap_or(60), which },
                 "remaining" | "status" => TimerCommand::Remaining(which),
                 "remind" => TimerCommand::Remind { when, message: text("message") },
@@ -631,22 +619,24 @@ mod tests {
             Decision::Act(Intent::Timer(TimerCommand::Start { seconds: Some(420), name: Some("eggs".into()) }))
         );
         let at = |hour, minute| Some(timer::When::At(timer::Clock { hour, minute, pm: None, tomorrow: false }));
-        // HH:MM from the tool is 24-hour: "06:30" is the morning, never 18:30.
-        let morning =
-            |hour, minute| Some(timer::When::At(timer::Clock { hour, minute, pm: Some(false), tomorrow: false }));
+        // "06:30" stays either half of the day: the model does not know the time and may have padded "6".
         assert_eq!(
             parse_reply(&call("timer", r#"{"action":"alarm","at":"06:30"}"#)).unwrap(),
-            Decision::Act(Intent::Timer(TimerCommand::Alarm { when: morning(6, 30) }))
-        );
-        assert_eq!(
-            parse_reply(&call("timer", r#"{"action":"remind","at":"05:00","message":"call"}"#)).unwrap(),
-            Decision::Act(Intent::Timer(TimerCommand::Remind { when: morning(5, 0), message: Some("call".into()) }))
+            Decision::Act(Intent::Timer(TimerCommand::Alarm { when: at(6, 30) }))
         );
         // The wake-up alarm is reached by name, and stopping it is not cancelling a kitchen timer.
         let alarm = Which { alarm: true, ..Which::default() };
+        for name in ["alarm", "Morning alarm", "wake-up", "Vekkerklokka"] {
+            let args = format!(r#"{{"action":"cancel","name":"{name}"}}"#);
+            assert_eq!(
+                parse_reply(&call("timer", &args)).unwrap(),
+                Decision::Act(Intent::Timer(TimerCommand::Cancel(alarm.clone()))),
+                "{name}"
+            );
+        }
         assert_eq!(
-            parse_reply(&call("timer", r#"{"action":"cancel","name":"alarm"}"#)).unwrap(),
-            Decision::Act(Intent::Timer(TimerCommand::Cancel(alarm.clone())))
+            parse_reply(&call("timer", r#"{"action":"add","minutes":10,"name":"alarm"}"#)).unwrap(),
+            Decision::Act(Intent::Timer(TimerCommand::MoveAlarm(timer::Move::By(600))))
         );
         assert_eq!(
             parse_reply(&call("timer", r#"{"action":"remaining","name":"alarm"}"#)).unwrap(),
