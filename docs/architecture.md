@@ -109,7 +109,10 @@ another media player. Timers count down on the Voice PE's LED ring through the E
 
 **Timers, reminders and alarms.** `timer.rs` parses durations and times of day ("at 5", "at 17:30", "half past
 six", "tomorrow at 8", "klokka 7"); an hour without am or pm is the next of the two within 12 hours, and for a
-wake-up alarm the morning. A wake-up alarm is a timer that rings, and "snooze" sets it again for 9 minutes. They are
+wake-up alarm the morning. "Tomorrow" said before 05:00 is the coming morning. "In 10 minutes" wins over an hour
+later in the sentence ("remind me in 10 minutes to call Anna at 3"). A wake-up alarm is a timer that rings, "snooze"
+sets it again for 9 minutes, and "move my alarm to 7:30" or "push my alarm back 10 minutes" replaces the one that is
+set. The language model's `at` is 24-hour. They are
 kept in `timers-file` (default `timers.json` next to `unhandled-log`) with wall-clock end times, so a restart (every
 deploy) keeps them. Those that ended while the engine was down are dealt with when a satellite connects, or a minute
 after the start: a reminder is still told ("It was due at 14:30."), a timer up to 10 minutes late is told that it
