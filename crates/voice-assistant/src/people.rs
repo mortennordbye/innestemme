@@ -37,7 +37,8 @@ fn whereabouts(person: &Person, lang: Lang) -> String {
 /// Zone words that mean the same place, in either language: "er Ola på jobb" when Home
 /// Assistant's zone is "Work".
 const ZONE_SYNONYMS: &[&[&str]] = &[
-    &["work", "office", "jobb", "jobben", "kontor", "kontoret", "arbeid"],
+    &["work", "jobb", "jobben", "arbeid"],
+    &["office", "kontor", "kontoret"],
     &["school", "skole", "skolen"],
     &["gym", "trening", "treningssenter", "treningssenteret", "treningen"],
     &["kindergarten", "nursery", "barnehage", "barnehagen"],
@@ -69,27 +70,20 @@ pub fn where_answer(
 ) -> String {
     let no = lang == Lang::Norwegian;
     let Some(person) = find(people, name) else {
-        // Only towns known offline: the geocoder finds a village for almost any name, "Kari" too.
-        if let Some(place) = (zone.is_none() && !arriving).then(|| geo::offline(name, home)).flatten() {
-            // The towns known offline are all Norwegian.
-            let town = if no {
-                format!("{} er en by i Norge.", place.label)
-            } else {
-                format!("{} is a town in Norway.", place.label)
-            };
+        // Only a town by its exact name: the geocoder finds a village for almost any name ("Kari"),
+        // and a sound-alike would make "Malta" or "Alma" Alta.
+        if let Some(place) = (zone.is_none() && !arriving).then(|| geo::known(name, home)).flatten() {
             return match home {
-                Some(home) if home.label != place.label => format!("{town} {}", distance::answer(home, &place, lang)),
-                _ => town,
+                Some(home) if home.label == place.label && no => format!("{} er hjemme.", place.label),
+                Some(home) if home.label == place.label => format!("{} is home.", place.label),
+                // The towns known offline are all Norwegian.
+                Some(home) if no => {
+                    format!("{} er en by i Norge. {}", place.label, distance::answer(home, &place, lang))
+                }
+                Some(home) => format!("{} is a town in Norway. {}", place.label, distance::answer(home, &place, lang)),
+                None if no => format!("{} er en by i Norge.", place.label),
+                None => format!("{} is a town in Norway.", place.label),
             };
-        }
-        // "Is dinner at seven" is about no one: not "I don't track Dinner".
-        if zone.is_some() {
-            return if no {
-                "Beklager, det kan jeg ikke hjelpe med ennå."
-            } else {
-                "Sorry, I can't help with that yet."
-            }
-            .into();
         }
         // The parser lowercases: "kari" is said as Kari.
         let name: Vec<String> = name
@@ -159,7 +153,8 @@ mod tests {
             where_answer(&people(), "torsten", Some("jobb"), false, None, Lang::Norwegian),
             "Ja, Torsten er på work."
         );
-        assert_eq!(say("torsten", Some("the office"), false), "Yes, Torsten is at work.");
+        // Work and office are kept apart: a zone called Office is not Work.
+        assert_eq!(say("torsten", Some("the office"), false), "No, Torsten is at work.");
         let jobb = vec![Person { name: "Kari".into(), state: "Jobb".into() }];
         assert_eq!(where_answer(&jobb, "kari", Some("work"), false, None, Lang::English), "Yes, Kari is at jobb.");
         // Neither yes nor no when Home Assistant cannot tell.
@@ -184,7 +179,11 @@ mod tests {
         assert_eq!(say("bergen", None, false), "Bergen is a town in Norway.");
         // Someone unknown is still no one tracked; nothing is looked up for them.
         assert_eq!(say("kari", None, false), "I don't track Kari.");
-        // "Is dinner at seven": no one, so neither "I don't track" nor a place.
-        assert_eq!(say("dinner", Some("seven"), false), "Sorry, I can't help with that yet.");
+        // A name with a zone, no one tracked.
+        assert_eq!(say("kari", Some("work"), false), "I don't track Kari.");
+        // Only a town by its exact name: not Alta.
+        assert_eq!(say("malta", None, false), "I don't track Malta.");
+        assert_eq!(say("alma", None, false), "I don't track Alma.");
+        assert_eq!(say("tromso", None, false), "Tromsø is a town in Norway.");
     }
 }

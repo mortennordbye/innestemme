@@ -174,7 +174,7 @@ fn about_floods(words: &[String]) -> bool {
 }
 
 /// A device's battery, one per device (some report it twice, through two integrations).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct Battery {
     pub name: String,
     /// Percent; `None` when the sensor has no number, as a dead battery's goes unavailable.
@@ -187,9 +187,25 @@ pub struct Battery {
     pub device: String,
     #[serde(default)]
     pub area: String,
+    /// The entity's state as Home Assistant has it: a level, on/off, "unavailable" or "unknown".
+    #[serde(default)]
+    pub state: String,
+    /// Kept by Home Assistant for an entity whose integration no longer provides it.
+    #[serde(default)]
+    pub restored: bool,
 }
 
+/// More silent batteries than this are counted, not named.
+const MOST_SILENT_NAMED: usize = 3;
+
 impl Battery {
+    /// Whether it says anything about the battery. "Unknown" is a sensor that has not reported
+    /// since a restart, and a restored entity is a leftover of a removed device: neither is a
+    /// dead battery.
+    fn counts(&self) -> bool {
+        self.reporting() || (self.state == "unavailable" && !self.restored)
+    }
+
     fn is_low(&self) -> bool {
         self.level.is_some_and(|l| l < LOW) || self.low == Some(true)
     }
@@ -202,12 +218,12 @@ impl Battery {
 /// Battery sensors and battery binary sensors (on is low, as Zigbee2MQTT and Ring report it),
 /// except the companion app's (phones). Sensors without a number are kept: a dead battery is the
 /// one that stops reporting.
-const BATTERY_TEMPLATE: &str = r#"{% set phones = integration_entities('mobile_app') %}{% set ns = namespace(out=[]) %}{% for s in states.sensor if s.attributes.device_class == 'battery' and s.entity_id not in phones %}{% set ns.out = ns.out + [{"name": s.name, "level": (s.state | float) if s.state | is_number else none, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}{% for s in states.binary_sensor if s.attributes.device_class == 'battery' and s.entity_id not in phones %}{% set ns.out = ns.out + [{"name": s.name, "low": (s.state == 'on') if s.state in ['on', 'off'] else none, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}{{ ns.out | tojson }}"#;
+const BATTERY_TEMPLATE: &str = r#"{% set phones = integration_entities('mobile_app') %}{% set ns = namespace(out=[]) %}{% for s in states.sensor if s.attributes.device_class == 'battery' and s.entity_id not in phones %}{% set ns.out = ns.out + [{"name": s.name, "level": (s.state | float) if s.state | is_number else none, "state": s.state, "restored": s.attributes.restored or false, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}{% for s in states.binary_sensor if s.attributes.device_class == 'battery' and s.entity_id not in phones %}{% set ns.out = ns.out + [{"name": s.name, "low": (s.state == 'on') if s.state in ['on', 'off'] else none, "state": s.state, "restored": s.attributes.restored or false, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}{{ ns.out | tojson }}"#;
 
 pub fn batteries(ha: &HomeAssistant) -> Result<Vec<Battery>> {
     let all: Vec<Battery> =
         serde_json::from_str(&ha.template(BATTERY_TEMPLATE)?).context("parsing the battery sensors")?;
-    Ok(per_device(all))
+    Ok(per_device(all.into_iter().filter(Battery::counts).collect()))
 }
 
 /// One battery per device: the lowest level, under the shortest name.
@@ -238,7 +254,8 @@ fn per_device(all: Vec<Battery>) -> Vec<Battery> {
 /// "Kitchen Sink Leak Battery Level" is the kitchen sink leak.
 fn device_name(name: &str) -> String {
     let mut name = name.trim().to_lowercase();
-    for suffix in [" level", " battery", " batteri"] {
+    // "Smoke Alarm Battery Low" is a battery binary sensor's name.
+    for suffix in [" battery low", " low battery", " level", " battery", " batteri"] {
         if let Some(rest) = name.strip_suffix(suffix) {
             name = rest.trim_end().to_owned();
         }
@@ -337,12 +354,20 @@ pub fn battery_answer(batteries: &[Battery], name: Option<&str>, lang: Lang) -> 
         return found.iter().map(|b| level_sentence(b, lang)).collect::<Vec<_>>().join(" ");
     }
     let low: Vec<&Battery> = batteries.iter().filter(|b| b.is_low()).collect();
-    let silent = batteries.iter().filter(|b| !b.reporting());
+    let silent: Vec<&Battery> = batteries.iter().filter(|b| !b.reporting()).collect();
     let mut parts: Vec<String> = low.iter().map(|b| level_sentence(b, lang)).collect();
     if parts.is_empty() {
         parts.push(if no { "Ingen batterier er lave." } else { "No batteries are low." }.into());
     }
-    parts.extend(silent.map(|b| level_sentence(b, lang)));
+    parts.extend(silent.iter().take(MOST_SILENT_NAMED).map(|b| level_sentence(b, lang)));
+    let more = silent.len().saturating_sub(MOST_SILENT_NAMED);
+    if more > 0 {
+        parts.push(if no {
+            format!("Og {more} til svarer ikke.")
+        } else {
+            format!("And {more} more aren't reporting.")
+        });
+    }
     parts.join(" ")
 }
 
@@ -421,7 +446,14 @@ mod tests {
     }
 
     fn battery(name: &str, level: f64, device: &str, area: &str) -> Battery {
-        Battery { name: name.into(), level: Some(level), low: None, device: device.into(), area: area.into() }
+        Battery {
+            name: name.into(),
+            level: Some(level),
+            low: None,
+            device: device.into(),
+            area: area.into(),
+            ..Default::default()
+        }
     }
 
     fn batteries() -> Vec<Battery> {
@@ -471,19 +503,17 @@ mod tests {
         assert_eq!(battery_answer(&fine, None, Lang::Norwegian), "Ingen batterier er lave.");
     }
 
+    fn silent(name: &str, device: &str) -> Battery {
+        Battery { name: name.into(), device: device.into(), state: "unavailable".into(), ..Default::default() }
+    }
+
     #[test]
     fn dead_and_binary_batteries() {
         let mut all = batteries();
         // A dead battery's sensor goes unavailable: no number, but it is the one to change.
-        all.push(Battery { name: "door contact".into(), level: None, low: None, device: "d5".into(), area: "".into() });
+        all.push(silent("door contact", "d5"));
         // A battery binary sensor: on is low.
-        all.push(Battery {
-            name: "smoke alarm".into(),
-            level: None,
-            low: Some(true),
-            device: "d6".into(),
-            area: "".into(),
-        });
+        all.push(Battery { name: "smoke alarm".into(), low: Some(true), device: "d6".into(), ..Default::default() });
         assert_eq!(
             battery_answer(&all, None, Lang::English),
             "The study vibration battery is at 12 percent. The smoke alarm battery is low. The door contact battery \
@@ -495,17 +525,39 @@ mod tests {
             "No batteries are low. The door contact battery isn't reporting."
         );
         // A device reporting through both a dead and a working sensor keeps the level.
-        let merged = per_device(vec![
-            Battery { name: "Hall Battery".into(), level: None, low: None, device: "d1".into(), area: "".into() },
-            Battery {
-                name: "Hall Battery Level".into(),
-                level: Some(50.0),
-                low: None,
-                device: "d1".into(),
-                area: "".into(),
-            },
-        ]);
+        let mut level = silent("Hall Battery Level", "d1");
+        level.level = Some(50.0);
+        let merged = per_device(vec![silent("Hall Battery", "d1"), level]);
         assert_eq!(merged[0].level, Some(50.0));
+    }
+
+    #[test]
+    fn only_unavailable_batteries_are_silent() {
+        // "Unknown" since a restart, or a restored leftover of a removed device: not a dead battery.
+        let mut unknown = silent("hall", "d1");
+        unknown.state = "unknown".into();
+        let mut restored = silent("old remote", "d2");
+        restored.restored = true;
+        assert!(!unknown.counts());
+        assert!(!restored.counts());
+        assert!(silent("door", "d3").counts());
+        assert!(batteries().iter().all(Battery::counts));
+    }
+
+    #[test]
+    fn many_silent_batteries_are_counted() {
+        let all: Vec<Battery> = ["a", "b", "c", "d", "e"].iter().map(|n| silent(&format!("{n} sensor"), n)).collect();
+        assert_eq!(
+            battery_answer(&all, None, Lang::English),
+            "No batteries are low. The a sensor battery isn't reporting. The b sensor battery isn't reporting. The c \
+             sensor battery isn't reporting. And 2 more aren't reporting."
+        );
+    }
+
+    #[test]
+    fn a_low_battery_sensor_is_named_for_its_device() {
+        assert_eq!(device_name("Smoke Alarm Battery Low"), "smoke alarm");
+        assert_eq!(device_name("Front Door Low Battery"), "front door");
     }
 
     #[test]

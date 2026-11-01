@@ -459,8 +459,8 @@ fn where_is(words: &[String]) -> Option<Intent> {
     // "Is dinner at seven", "is Kiwi at Storo open": a time or a state, not a zone.
     let not_a_zone = [
         "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "noon",
-        "midnight", "o'clock", "open", "closed", "åpen", "åpent", "stengt", "ett", "to", "tre", "fire", "fem", "seks",
-        "sju", "syv", "åtte", "ni", "ti", "elleve", "tolv",
+        "midnight", "o'clock", "open", "closed", "åpen", "åpent", "stengt", "ett", "tre", "fem", "seks", "sju", "syv",
+        "åtte", "ni", "ti", "elleve", "tolv",
     ];
     if zone.is_empty()
         || zone.len() > 2
@@ -1018,7 +1018,9 @@ const WEEKDAYS: &[(jiff::civil::Weekday, &str, &str)] = {
 /// The day a weather question asks about, from its normalised words; today when it names none.
 fn day_of(words: &[String]) -> Day {
     let has = |w: &str| words.iter().any(|x| x.trim_end_matches("'s") == w);
-    let pair = |a: &str, b: &[&str]| words.windows(2).any(|p| p[0] == a && b.contains(&p[1].as_str()));
+    let pair = |a: &str, b: &[&str]| {
+        words.windows(2).any(|p| p[0].trim_end_matches("'s") == a && b.contains(&p[1].trim_end_matches("'s")))
+    };
     if pair("after", &["tomorrow"]) || has("overmorgen") || has("iovermorgen") {
         return Day::AfterTomorrow;
     }
@@ -1643,6 +1645,7 @@ mod tests {
         assert_eq!(day_named("weekend"), Day::Weekend);
         assert_eq!(parse("what's the weather next Monday"), weather(None, Day::NextWeekday(Monday)));
         assert_eq!(parse("what is the weather next weekend"), weather(None, Day::NextWeekend));
+        assert_eq!(day_named("next Monday's"), Day::NextWeekday(Monday));
         assert_eq!(day_named("today"), Day::Today);
     }
 
@@ -1950,6 +1953,7 @@ mod tests {
         assert_eq!(parse("hvor er Ingrid"), at("ingrid", None, false));
         assert_eq!(parse("is Ingrid at work"), at("ingrid", Some("work"), false));
         assert_eq!(parse("er Ola på jobb"), at("ola", Some("jobb"), false));
+        assert_eq!(parse("is Ola at the fire station"), at("ola", Some("fire station"), false));
         assert_eq!(parse("when will Ingrid be home"), at("ingrid", None, true));
         assert_eq!(parse("when is Ola coming home?"), at("ola", None, true));
         assert_eq!(parse("når kommer Ingrid hjem"), at("ingrid", None, true));

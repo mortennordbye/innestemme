@@ -169,14 +169,15 @@ pub struct Conversion {
 impl Eq for Conversion {}
 
 /// "1,000" and "5,280": groups of three digits after a comma, as the transcriber writes English
-/// thousands. Anything else with a comma ("1,5") is a decimal.
+/// thousands. Anything else with a comma ("1,5", "0,250") is a decimal.
 fn thousands(word: &str) -> bool {
     let mut groups = word.split(',');
-    let first = groups.next().unwrap_or_default();
+    let first = groups.next().unwrap_or_default().trim_start_matches('-');
     let whole = |g: &str| g.chars().all(|c| c.is_ascii_digit());
     word.contains(',')
-        && (1..=3).contains(&first.trim_start_matches('-').len())
-        && whole(first.trim_start_matches('-'))
+        && (1..=3).contains(&first.len())
+        && whole(first)
+        && !first.starts_with('0')
         && groups.all(|g| g.split('.').next().is_some_and(|g| g.len() == 3 && whole(g)))
 }
 
@@ -276,35 +277,73 @@ fn number(token: &str) -> Option<f64> {
     token.parse::<f64>().ok().filter(|n| n.is_finite())
 }
 
+/// A fraction said as a word: "half", "quarter", "halv".
+fn fraction_word(token: &str) -> Option<f64> {
+    match token {
+        "half" | "halves" | "halv" | "halvt" | "halve" => Some(0.5),
+        "quarter" | "quarters" => Some(0.25),
+        _ => None,
+    }
+}
+
+/// Past "of" and "a" after a fraction: "half (of) a cup", "a quarter of a pound".
+fn after_fraction(tokens: &[String], mut i: usize) -> usize {
+    if tokens.get(i).is_some_and(|t| t == "of") {
+        i += 1;
+    }
+    if tokens.get(i).is_some_and(|t| t == "a" || t == "an") {
+        i += 1;
+    }
+    i
+}
+
+/// "And a half", "og en halv" at `i`: the fraction and the index after it.
+fn and_a_fraction(tokens: &[String], i: usize) -> Option<(f64, usize)> {
+    let word = |at: usize| tokens.get(at).map(String::as_str);
+    if !matches!(word(i)?, "and" | "og") || !ONE.contains(&word(i + 1)?) {
+        return None;
+    }
+    Some((fraction_word(word(i + 2)?)?, i + 3))
+}
+
 /// The amount said at `i` and the index after it: "10", "minus 40", "half a", "a quarter of a",
-/// "en halv", "1/2".
+/// "en halv", "1/2", "one and a half", "1 1/2", "three quarters of a".
 fn value_at(tokens: &[String], i: usize) -> Option<(f64, usize)> {
     let word = |at: usize| tokens.get(at).map(String::as_str);
+    // The rest of an amount begun before: "1 1/2", "one and a half", "half" after "a".
+    let continues = i > 0 && word(i - 1).is_some_and(|w| number(w).is_some() || w == "and" || w == "og");
     let (sign, i) = match word(i)? {
         "minus" | "negative" => (-1.0, i + 1),
         _ => (1.0, i),
     };
-    let fraction = match word(i)? {
-        "half" | "halv" | "halvt" => Some(0.5),
-        "quarter" => Some(0.25),
-        _ => None,
-    };
-    if let Some(fraction) = fraction {
-        // "Half a cup", "a quarter of a pound".
-        let mut after = i + 1;
-        if word(after) == Some("of") {
-            after += 1;
-        }
-        if matches!(word(after), Some("a" | "an")) {
-            after += 1;
-        }
-        return Some((sign * fraction, after));
+    let first = word(i)?;
+    let fraction_next = word(i + 1).and_then(fraction_word);
+    // "Half a cup"; "a quarter cup", "en halv kopp".
+    if let Some(fraction) = fraction_word(first) {
+        return (!continues).then(|| (sign * fraction, after_fraction(tokens, i + 1)));
     }
-    // "Half" before "a" is said with the fraction, not one.
-    if ONE.contains(&word(i)?) && i > 0 && matches!(word(i - 1), Some("half" | "of" | "halv")) {
+    if ONE.contains(&first) {
+        if let Some(fraction) = fraction_next {
+            return (!continues).then(|| (sign * fraction, after_fraction(tokens, i + 2)));
+        }
+    }
+    let whole = number(first)?;
+    if continues && first.contains('/') {
         return None;
     }
-    Some((sign * number(word(i)?)?, i + 1))
+    // "Three quarters of a cup", "three quarter cup".
+    if let Some(fraction) = fraction_next {
+        return Some((sign * whole * fraction, after_fraction(tokens, i + 2)));
+    }
+    // "One and a half", "en og en halv".
+    if let Some((fraction, after)) = and_a_fraction(tokens, i + 1) {
+        return Some((sign * (whole + fraction), after));
+    }
+    // "1 1/2".
+    if let Some(part) = word(i + 1).filter(|w| w.contains('/')).and_then(number) {
+        return Some((sign * (whole + part), i + 2));
+    }
+    Some((sign * whole, i + 1))
 }
 
 /// The amount and unit at `i`, with any more of the same kind after it added: "5 feet 10
@@ -318,12 +357,21 @@ fn amount_at(tokens: &[String], i: usize) -> Option<(f64, usize, usize)> {
     if UNITS[unit].dimension == Temperature {
         return Some((value, unit, next));
     }
+    // "A mile and a half".
+    if let Some((fraction, after)) = and_a_fraction(tokens, next) {
+        value += fraction;
+        next = after;
+    }
     loop {
         let start = if tokens.get(next).is_some_and(|t| t == "and" || t == "og") { next + 1 } else { next };
         let Some((more, after)) = value_at(tokens, start) else { break };
         let Some(more_unit) = unit_at(tokens, after) else { break };
-        if UNITS[more_unit].dimension != UNITS[unit].dimension || more_unit == unit {
+        if UNITS[more_unit].dimension != UNITS[unit].dimension {
             break;
+        }
+        // "5 feet 2 feet" says the amount twice or wrongly: not a guess at which.
+        if more_unit == unit {
+            return None;
         }
         value += more * UNITS[more_unit].factor / UNITS[unit].factor;
         next = after + 1;
@@ -527,6 +575,26 @@ mod tests {
         assert_eq!(say("5 feet 10 inches in centimetres").as_deref(), Some("5.83 feet is 177.8 centimetres."));
         assert_eq!(say("2 pounds and 3 ounces in grams").as_deref(), Some("2.19 pounds is 992.2 grams."));
         assert_eq!(say("how many centimetres in 5 feet 10 inches").as_deref(), Some("5.83 feet is 177.8 centimetres."));
+        // The same unit twice says nothing sure.
+        assert_eq!(parse("convert 5 feet 2 feet to metres"), None);
+    }
+
+    #[test]
+    fn reads_mixed_numbers() {
+        let value = |text: &str| parse(text).map(|c| c.value);
+        assert_eq!(value("convert one and a half cups to millilitres"), Some(1.5));
+        assert_eq!(value("convert 1 1/2 cups to millilitres"), Some(1.5));
+        assert_eq!(value("2 and a half pounds in kilograms"), Some(2.5));
+        assert_eq!(value("three quarter cup in millilitres"), Some(0.75));
+        assert_eq!(value("three quarters of a cup in millilitres"), Some(0.75));
+        assert_eq!(value("a quarter cup in millilitres"), Some(0.25));
+        assert_eq!(value("a mile and a half in kilometres"), Some(1.5));
+        assert_eq!(value("how many millilitres in a quarter cup"), Some(0.25));
+        assert_eq!(value("how many millilitres in one and a half cups"), Some(1.5));
+        assert_eq!(value("how many kilometres in a mile and a half"), Some(1.5));
+        assert_eq!(value("hva er en og en halv kopp i desiliter"), Some(1.5));
+        // A decimal comma before three digits, when the whole number is nought.
+        assert_eq!(value("convert 0,250 kg to grams"), Some(0.25));
     }
 
     #[test]
