@@ -10,6 +10,7 @@ use tracing::{info, warn};
 use voice_assistant::geo::{self, Location};
 use voice_assistant::ha::HomeAssistant;
 use voice_assistant::jokes::Jokes;
+use voice_assistant::lang::Lang;
 use voice_assistant::lookup::Lookup;
 use voice_assistant::music::Player;
 use voice_assistant::news::News;
@@ -212,7 +213,7 @@ impl AssistantProcessor {
                 let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
                 if last.is_none_or(|at| at.elapsed() > Duration::from_secs(10)) {
                     *last = Some(Instant::now());
-                    let _ = failed.send(Job::Failed(unreachable_text(error, false).into()));
+                    let _ = failed.send(Job::Failed(unreachable_text(error, false).into(), Lang::English));
                 }
             })?;
             match ha.check() {
@@ -222,8 +223,8 @@ impl AssistantProcessor {
                 }
             }
             let failed = jobs.clone();
-            worker.player.on_late_failure(move |text| {
-                let _ = failed.send(Job::Failed(text));
+            worker.player.on_late_failure(move |text, lang| {
+                let _ = failed.send(Job::Failed(text, lang));
             });
             match worker.player.check(&ha) {
                 Ok(player) => info!(player, "music assistant connected"),

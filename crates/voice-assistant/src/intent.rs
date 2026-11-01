@@ -209,7 +209,9 @@ fn light_level(words: &[String], text: &str) -> Option<LightLevel> {
         let unit = t.ends_with('%')
             || raw.get(i + 1).is_some_and(|n| ["percent", "prosent", "%"].contains(&n.to_lowercase().as_str()));
         // "Set the living room lights to 50": a level after "to" counts when the request is about light.
-        let to = i > 0 && ["to", "at", "til", "på"].contains(&raw[i - 1].to_lowercase().as_str());
+        // Not after "at"/"på" ("turn on the lights at 7", "lyset på 2. etasje"), and never with "off":
+        // "turn the lights off at 11" is not a brightness.
+        let to = i > 0 && ["to", "til"].contains(&raw[i - 1].to_lowercase().as_str()) && !has("off") && !has("av");
         (unit || to).then_some((number.min(100), unit))
     });
     // "It's too bright in here", "det er for mørkt på kjøkkenet".
@@ -1032,17 +1034,43 @@ fn place_of(words: &[String]) -> Option<String> {
 const JOKE_STEMS: &[&str] = &["joke", "joik", "vits", "morsom", "funny"];
 
 /// "Which lights are on", "is anything left on", "står det noe lys på", "er lyset på i stua".
+/// The word a question opens with once lead-ins are skipped: "so did I leave the lights on" ->
+/// "did", "can you tell me if the lights are on" -> "if", "tell me which lights are on" -> "which".
+/// A request ("can you turn the lights on") keeps its first word, so callers still see "can".
+pub(crate) fn question_word(words: &[String]) -> &str {
+    const LEAD: &[&str] = &["so", "oh", "okay", "ok", "hey", "well", "um", "uh", "and", "but", "just", "please", "så"];
+    const ASK: &[&str] = &["tell", "check", "see", "know", "fortell", "sjekk", "vet"];
+    const ME: &[&str] = &["me", "us", "meg", "oss"];
+    let mut i = words.iter().take_while(|w| LEAD.contains(&w.as_str())).count();
+    let at = |i: usize| words.get(i).map(String::as_str).unwrap_or_default();
+    // "Can you tell me", "could you check", "do you know", "kan du sjekke".
+    if ["can", "could", "would", "will", "do", "kan", "vil"].contains(&at(i))
+        && ["you", "du"].contains(&at(i + 1))
+        && ASK.iter().any(|a| at(i + 2).starts_with(a))
+    {
+        i += 2;
+    }
+    if ASK.iter().any(|a| at(i).starts_with(a)) {
+        let after = i + 1 + usize::from(ME.contains(&at(i + 1)));
+        if ["if", "whether", "which", "what", "om", "hvilke", "hva"].contains(&at(after)) {
+            i = after;
+        }
+    }
+    at(i)
+}
+
 fn is_lights_question(words: &[String]) -> bool {
     let has = |w: &str| words.iter().any(|x| x == w);
     // "Did I leave the lights on" is a question too, not "turn the lights on".
     let question = [
-        "which", "what", "are", "is", "any", "did", "have", "has", "do", "does", "hvilke", "hvilket", "er", "står",
-        "hva", "har", "glemte", "lot",
+        "which", "what", "are", "is", "any", "did", "have", "has", "do", "does", "if", "whether", "hvilke", "hvilket",
+        "er", "står", "hva", "har", "glemte", "lot", "om",
     ];
-    let asks = words.first().is_some_and(|w| question.contains(&w.as_str()));
+    let asks = question.contains(&question_word(words));
     let about = words.iter().any(|w| LIGHT_WORDS.contains(&w.as_str()))
         || ["anything", "everything", "something", "noe", "alt"].iter().any(|w| has(w));
-    asks && about && (has("on") || has("på") || has("left"))
+    // "Are the lights off?" asks too; switching them off would answer by acting.
+    asks && about && (has("on") || has("på") || has("left") || has("off") || has("av"))
 }
 
 const LIGHT_WORDS: &[&str] =
@@ -1349,6 +1377,33 @@ mod tests {
             Intent::Party(crate::party::PartyCommand::On(crate::party::Pace::Normal))
         );
         assert_eq!(parse("Turn on the TV"), Intent::Tv(TvCommand::Power(true)));
+        for phrase in [
+            "Can you tell me if the lights are on",
+            "Tell me which lights are on",
+            "Check if the lights are on",
+            "So did I leave the lights on?",
+            "Oh, did I leave the lights on?",
+            "Are the lights off?",
+            "Did I turn off the kitchen lights?",
+            "Er lyset av?",
+        ] {
+            assert_eq!(parse(phrase), status(phrase), "{phrase}");
+        }
+        let party_status = Intent::Party(crate::party::PartyCommand::Status);
+        assert_eq!(parse("Okay, is party mode on?"), party_status);
+        assert_eq!(parse("Tell me if party mode is on"), party_status);
+        assert_eq!(parse("Can you check if the TV is on"), Intent::Tv(TvCommand::Status));
+        // Requests phrased politely still act.
+        assert_eq!(
+            parse("Can you turn the lights on"),
+            Intent::Lights { on: true, target: "Can you turn the lights on".into() }
+        );
+        assert_eq!(parse("Turn the lights off"), Intent::Lights { on: false, target: "Turn the lights off".into() });
+        assert_eq!(
+            parse("Could you start party mode"),
+            Intent::Party(crate::party::PartyCommand::On(crate::party::Pace::Normal))
+        );
+        assert_eq!(parse("Can you turn on the TV"), Intent::Tv(TvCommand::Power(true)));
     }
 
     #[test]
@@ -1357,6 +1412,14 @@ mod tests {
         assert_eq!(parse("Set the living room lights to 50"), level(50, "the living room lights"));
         assert_eq!(parse("Set the brightness to 30"), level(30, "the"));
         assert_eq!(parse("Set the volume to 30"), Intent::Music(MusicCommand::VolumeTo(30)));
+        assert_eq!(
+            parse("Turn the lights off at 11"),
+            Intent::Lights { on: false, target: "Turn the lights off at 11".into() }
+        );
+        assert_eq!(
+            parse("Turn on the lights at 7"),
+            Intent::Lights { on: true, target: "Turn on the lights at 7".into() }
+        );
         assert_eq!(
             parse("Set a timer for 10 minutes"),
             Intent::Timer(TimerCommand::Start { seconds: Some(600), name: None })

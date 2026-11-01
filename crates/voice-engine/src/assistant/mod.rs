@@ -226,8 +226,8 @@ enum Job {
     Plan(String, tokio::sync::oneshot::Sender<serde_json::Value>),
     /// A safety sensor went off: speak this warning.
     Alert(String),
-    /// A Home Assistant call the answer did not wait for failed: say so.
-    Failed(String),
+    /// A Home Assistant call the answer did not wait for failed: say so, in the request's language.
+    Failed(String, Lang),
     /// A button on the web page: a fixed request, acted on without a spoken answer. The answer's
     /// text comes back.
     Act(String, tokio::sync::oneshot::Sender<String>),
@@ -452,7 +452,7 @@ impl Worker {
                     info!(text, "safety alert");
                     self.announce(&text, tts::alarm_chime(), Lang::English, false);
                 }
-                Job::Failed(text) => self.announce(&text, Vec::new(), Lang::English, false),
+                Job::Failed(text, lang) => self.announce(&text, Vec::new(), lang, false),
                 Job::Act(text, reply) => {
                     let start = Instant::now();
                     let answer = self.compose(&text, Lang::English).unwrap_or_default();
@@ -739,11 +739,14 @@ impl Worker {
                 );
             }
             if intent == Intent::Unknown && text.split_whitespace().count() <= LIST_REPLY_WORDS {
-                if let Some(remove @ ListCommand::Remove(_)) = voice_assistant::shopping::open_list_command(text) {
-                    let answer = self.shopping_list(remove, lang, true);
+                let changes = voice_assistant::shopping::open_list_commands(text);
+                if changes.iter().any(|c| matches!(c, ListCommand::Remove(_))) {
+                    // "Remove milk and add bread": each change in turn, answered together.
+                    let answers: Vec<String> =
+                        changes.into_iter().map(|change| self.shopping_list(change, lang, true)).collect();
                     // Still open: more items may follow the correction.
                     self.list_open = Some(Instant::now());
-                    return Some(answer);
+                    return Some(answers.join(" "));
                 }
                 let items = self.items_heard(text);
                 if !items.is_empty() {

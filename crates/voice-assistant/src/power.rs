@@ -72,8 +72,9 @@ pub fn parse(text: &str) -> Option<PowerQuery> {
         return Some(PowerQuery::Cheapest(when));
     }
     // "How expensive is power", "er strømmen dyr" ask the price; "when is it most expensive" the dearest.
+    // Tonight has no price now: "how expensive is power tonight" asks for its dearest hour.
     let plain_dear = ["expensive", "dyr"];
-    let superlative = has("most") || has("when") || has("når") || has("hour") || has("time");
+    let superlative = has("most") || has("when") || has("når") || has("hour") || has("time") || when == When::Tonight;
     if words.iter().any(|w| DEAR_WORDS.contains(&w.as_str()) && (!plain_dear.contains(&w.as_str()) || superlative)) {
         return Some(PowerQuery::Dearest(when));
     }
@@ -369,6 +370,7 @@ mod tests {
         assert_eq!(parse("what's the electricity price tomorrow"), Some(PowerQuery::Tomorrow));
         assert_eq!(parse("hva koster strømmen i morgen"), Some(PowerQuery::Tomorrow));
         assert_eq!(parse("how expensive is power"), Some(PowerQuery::Now));
+        assert_eq!(parse("how expensive is power tonight"), Some(PowerQuery::Dearest(When::Tonight)));
         assert_eq!(parse("is electricity expensive now"), Some(PowerQuery::Now));
         assert_eq!(parse("when is electricity most expensive"), Some(PowerQuery::Dearest(When::Today)));
         assert_eq!(parse("what's the weather"), None);

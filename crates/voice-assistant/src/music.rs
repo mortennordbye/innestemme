@@ -62,7 +62,7 @@ pub struct Player {
     dry_run: bool,
     /// See [`Player::paused_for_request`].
     held: bool,
-    late_failure: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    late_failure: Option<Arc<dyn Fn(String, Lang) + Send + Sync>>,
 }
 
 /// The library changes rarely.
@@ -281,15 +281,16 @@ impl Player {
             if let Err(error) = ha.service("music_assistant", "play_media", play) {
                 warn!(error = format!("{error:#}"), "could not start the music");
                 if let Some(late) = late {
-                    late(failed.to_owned());
+                    late(failed.to_owned(), if no { Lang::Norwegian } else { Lang::English });
                 }
             }
         });
         Ok(answer)
     }
 
-    /// `failed` hears the answer to speak when music that was already announced did not start.
-    pub fn on_late_failure(&mut self, failed: impl Fn(String) + Send + Sync + 'static) {
+    /// `failed` hears the answer to speak, and its language, when music that was already announced
+    /// did not start.
+    pub fn on_late_failure(&mut self, failed: impl Fn(String, Lang) + Send + Sync + 'static) {
         self.late_failure = Some(Arc::new(failed));
     }
 

@@ -164,8 +164,14 @@ pub struct Light {
 impl Light {
     /// A status LED (network gear, the Voice PE's ring) that reports itself as a light. Nobody means it
     /// by "all the lights" or a room; only by its name.
+    /// The name ends in "LED" or "LED ring": "Kitchen LED strip" is a real light.
     pub fn status_led(&self) -> bool {
-        self.name.split_whitespace().any(|w| w.eq_ignore_ascii_case("led"))
+        let words: Vec<String> = self.name.split_whitespace().map(str::to_lowercase).collect();
+        match words.as_slice() {
+            [.., last] if last == "led" => true,
+            [.., led, ring] => led == "led" && ring == "ring",
+            _ => false,
+        }
     }
 }
 
@@ -830,6 +836,8 @@ mod tests {
         assert!(light("light.ring", "Home Assistant Voice 0a1f4d LED Ring", "").status_led());
         assert!(light("light.usw_led", "USW-Lite-8-PoE LED", "").status_led());
         assert!(!light("light.sled", "Sled lamp", "").status_led());
+        assert!(!light("light.strip", "Kitchen LED strip", "").status_led());
+        assert!(!light("light.strip", "LED Strip", "").status_led());
     }
 
     #[test]

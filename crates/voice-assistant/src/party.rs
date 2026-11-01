@@ -50,7 +50,8 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
     }
     let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
     // "Is party mode on?" asks; it must not start the party.
-    if ["is", "are", "did", "was", "er", "står"].contains(&words[0].as_str()) {
+    if ["is", "are", "did", "was", "if", "whether", "er", "står", "om"].contains(&crate::intent::question_word(words))
+    {
         return Some(PartyCommand::Status);
     }
     // "Turn on party mode" holds "on", not "off"; "the party is over" holds "over".

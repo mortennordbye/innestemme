@@ -72,7 +72,7 @@ pub(super) fn heard_by_itself(intent: &Intent) -> bool {
 
 /// Commands that nothing said after them could change, so a draft that is one is acted on. Not
 /// resume: "play" is also the start of "play Careless Whisper"; not louder or quieter: "increase
-/// the sound" may go on "by 25%".
+/// the sound" may go on "by 25%"; not the date: "what day is it" may go on "tomorrow".
 pub(super) fn complete_at_once(intent: &Intent) -> bool {
     match intent {
         // "Turn off the kitchen lights", not "turn off the lights" (may go on "in the kitchen").
@@ -123,7 +123,6 @@ fn complete_command(intent: &Intent) -> bool {
             | Intent::Routine(_)
             | Intent::Party(_)
             | Intent::Time
-            | Intent::Date
             | Intent::Thanks
             | Intent::Joke
             // A length is the end of the request: "set a timer for 5 minutes", "stop the timer".
@@ -172,6 +171,7 @@ mod tests {
         assert!(heard_by_itself(&parse("play some music")));
         assert!(complete_at_once(&parse("pause the music")));
         assert!(complete_at_once(&parse("what time is it")));
+        assert!(!complete_at_once(&parse("what day is it")));
         assert!(!complete_at_once(&parse("turn off the lights")));
         assert!(!complete_at_once(&parse("play")));
         assert!(complete_at_once(&parse("turn off the kitchen lights")));

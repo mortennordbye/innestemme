@@ -59,7 +59,7 @@ pub const SKILLS: &[Skill] = &[
         does: "Tells which lights are on, or whether one is.",
         source: "Home Assistant states",
         calls: &["GET /api/states"],
-        examples: &["Which lights are on?", "Is the kitchen light on?"],
+        examples: &["Which lights are on?", "Is the kitchen light on?", "Are the lights off?"],
         norwegian: &["Hvilke lys er på?"],
     },
     Skill {

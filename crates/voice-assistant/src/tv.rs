@@ -215,6 +215,9 @@ pub fn parse(words: &[String]) -> Option<TvCommand> {
     let first = words.iter().map(String::as_str).find(|w| !POLITE.contains(w)).unwrap_or_default();
     // "Is the TV on?", "did I leave the TV on?" ask whether it is on; "what's on TV tonight" is
     // for someone else.
+    // "Can you check if the TV is on", "so is the TV on" ask too, after their lead-ins.
+    let question = crate::intent::question_word(words);
+    let first = if ["if", "whether", "om", "is", "are", "did", "er"].contains(&question) { "is" } else { first };
     if ["is", "are", "did", "have", "has", "do", "does", "what", "what's", "er", "står", "har", "hva"].contains(&first)
     {
         let power = has("on") || has("off") || has("på") || has("av") || has("left");
