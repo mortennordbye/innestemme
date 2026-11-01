@@ -511,6 +511,27 @@ pub const SKILLS: &[Skill] = &[
         norwegian: &["Hvor mange centimeter er en tomme?", "Hva er 2 kopper i desiliter?", "Hvor mange desiliter er to kopper?"],
     },
     Skill {
+        id: "memory",
+        name: "Notes",
+        group: "Everyday",
+        icon: "bookmark",
+        does: "Remembers what you tell it and says it back when asked: \"where is the spare key?\" is answered from a note \
+               about it before people and places. Up to 50 notes; the same thing said again replaces its note, and \
+               \"forget everything\" asks first. Passwords and codes are not kept, since anyone in the room can ask.",
+        source: "Built in, kept in memory.json on the models volume",
+        calls: &[],
+        examples: &[
+            "Remember that the spare key is in the kitchen drawer",
+            "What did I say about the spare key?",
+            "Where did I put my keys?",
+            "Where did I park?",
+            "What do you remember?",
+            "Forget the spare key",
+            "Forget everything",
+        ],
+        norwegian: &["Husk at reservenøkkelen ligger i skuffen", "Hva sa jeg om reservenøkkelen?", "Hva husker du?", "Glem reservenøkkelen"],
+    },
+    Skill {
         id: "distance",
         name: "Distances",
         group: "Information",
@@ -586,6 +607,7 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
         Intent::ShoppingList(_) => "shopping",
         Intent::WhosHome(_) | Intent::WhereIs { .. } => "whos_home",
         Intent::Convert(_) => "convert",
+        Intent::Memory(_) => "memory",
         Intent::Briefing => "briefing",
         Intent::News => "news",
         Intent::Lookup(_) => "lookup",

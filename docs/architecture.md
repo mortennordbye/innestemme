@@ -142,6 +142,26 @@ deploy) keeps them. Those that ended while the engine was down are dealt with wh
 after the start: a reminder is still told ("It was due at 14:30."), a timer up to 10 minutes late is told that it
 ended, an alarm up to 30 minutes late rings; anything later is dropped.
 
+**Notes.** `memory.rs` keeps what it is told, and its rules are narrow because they run before most skills: a
+note is a statement after "remember that", "make a note that" or "husk at", or "remember my/the X is ..."
+("remember the milk", "remember to ...", "husk å ..." are not notes). It is said back in the second person
+("Your bike is in the shed.") and is about the words before its verb ("Ingrid's bike", "the spare key"), the thing
+after "put"/"la" ("I put my bike in the shed"), or parking ("I parked on level 3"). A new note replaces an old
+one only when both are about the same thing and say the same kind of thing (where, when, or something else), so
+"the dentist is on Friday" and "the dentist is Dr Hansen" are both kept. Recall is "what did I say about ...",
+"what do you remember (about ...)", "where did I put/park ...", "hva sa jeg om ...", "hvor la jeg ..."; "where is
+X" is answered from a note about X only when no person (by the whole name), zone, phone or known town is meant
+("where's my phone" and "where did I put my phone" still ring it; "where is Ingrid's bike" is about the bike), and
+a note of where it is comes first. A recall or a forget that finds no note goes to the other skills as before ("what
+did I tell you about the timer", "forget the milk"). A note is said back in its own language. "Forget X" (forget/glem only, never with a timer, alarm, reminder or list word, and not "forget
+it") matches what notes are about, and asks first when several match; "forget everything" always asks. At most
+50 notes, kept in `memory-file` (default `memory.json` next to `unhandled-log`), written aside, synced and
+renamed; an entry that does not read loses only itself, a damaged file is set aside under a numbered name, and a
+file that cannot be read is left alone and not saved over. Passwords, PINs, codes, Wi-Fi keys, card numbers and
+lock, safe, alarm or key box numbers (digits said apart too; not times or years) are refused, since anyone in the room can ask for a note. Notes are never in the speech cache, in
+whatever words the persona says them; "Remember what?" takes the next request only if it gets past the usual
+follow-up filters, and the web page's preview leaves such questions alone.
+
 **Screens.** `web: true` serves on the metrics port. `/` is the dashboard: Home (an overview: the face, the
 clock and forecast, every room's lights and climate, buttons for the whole apartment (all on, all off, one colour
 everywhere, party mode, the lockdown), each room's temperature, quick switches, the house's status, what plays, the

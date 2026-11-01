@@ -43,6 +43,7 @@ use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::llm::{self, Decision, Llm, Turn};
 use voice_assistant::lookup::Lookup;
+use voice_assistant::memory::{Memory, MemoryCommand};
 use voice_assistant::music::Player;
 use voice_assistant::news::News;
 use voice_assistant::persona::Persona;
@@ -143,6 +144,9 @@ pub struct AssistantConfig {
     /// Where timers, reminders and alarms are kept, so they survive a restart; in memory only
     /// without it.
     pub timers_file: Option<std::path::PathBuf>,
+    /// Where the notes ("remember that ...") are kept, so they survive a restart; in memory only
+    /// without it.
+    pub memory_file: Option<std::path::PathBuf>,
     /// The TV's media player entity; default: the media player that is a TV.
     pub tv: Option<String>,
     /// The Plex server for "play <title> on Plex".
@@ -301,6 +305,17 @@ struct Worker {
     /// A camera or alarm change waiting for "yes": a misheard request must not switch them.
     pending_confirm: Option<(HouseCommand, Instant)>,
     timers: Timers,
+    /// Notes: "remember that the spare key is in the kitchen drawer".
+    memory: Memory,
+    /// The notes in the answer being given, lowercased: their sentences are synthesized however the
+    /// persona words them, never taken from or added to the speech cache.
+    notes_said: Vec<String>,
+    /// A request answered for the web page's preview or rendered ahead: questions waiting for an
+    /// answer are neither taken nor asked.
+    previewing: bool,
+    /// The request being answered was said to the assistant: with its name, or after a wake word
+    /// with the name. Only such a request, or one that is not room talk, answers "Remember what?".
+    request_addressed: bool,
     persona: Option<Persona>,
     /// Renders speech ahead of time, when there is a speech cache.
     render: Option<RenderAhead>,
@@ -464,7 +479,11 @@ impl Worker {
                 Job::Failed(text, lang) => self.announce(&text, Vec::new(), lang, false),
                 Job::Act(text, reply) => {
                     let start = Instant::now();
+                    // Typed on the web page: a question asked by voice ("Forget everything I
+                    // remember?") is neither answered nor dropped by it.
+                    self.previewing = true;
                     let answer = self.compose(&text, Lang::English).unwrap_or_default();
+                    self.previewing = false;
                     info!(request = text, answer, "done from the web page");
                     let turn = self.turn_for(&text, Some(answer.clone()), Outcome::Done, start);
                     self.config.activity.record(turn);
@@ -606,11 +625,13 @@ impl Worker {
             }
         }
         // A question waiting for "yes" only takes a yes or a no: other words without the name are the room.
-        let confirming = self.pending_confirm.is_some() && confirmation(&request).is_some();
+        let confirming =
+            (self.pending_confirm.is_some() || self.memory.asked_to_forget()) && confirmation(&request).is_some();
         // A "Which one?" left unanswered goes; one still open takes only an answer ("the first
         // one"), so other words without the name still face the room-talk filter.
         self.timers.forget_stale(Instant::now());
         let timers_asked = self.timers.takes_answer(&request);
+        // "Remember what?" is answered like any request: its answer still faces the filters.
         let pending = self.pending_lights.is_some() || confirming || timers_asked || self.list_is_open();
         // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
         // for murdering his barn it 40 stop" set the volume.
@@ -625,6 +646,7 @@ impl Worker {
             return;
         }
         self.busy.store(true, Relaxed);
+        self.request_addressed = addressed || (self.woken_at.is_some() && !unnamed);
         self.request_audio = audio.to_vec();
         self.answer(&request, heard.lang, start);
         self.request_audio.clear();
@@ -702,6 +724,14 @@ impl Worker {
             Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
             _ => answer,
         };
+        // A note as the persona says it ("Your bike is in the shed, sir.") is still a note.
+        for sentence in answer.split_inclusive(['.', '?', '!']).map(str::trim) {
+            let lower = sentence.to_lowercase();
+            if self.notes_said.iter().any(|note| lower.contains(note.as_str())) {
+                self.live.insert(sentence.to_owned());
+            }
+        }
+        self.notes_said.clear();
         if lead.is_none() {
             self.emit(AssistantEvent::Answer { text: answer.clone() });
         }
@@ -727,6 +757,19 @@ impl Worker {
             // A language model knows facts the opening of an article leaves out; it can still look
             // things up with its tool.
             Intent::Lookup(_) if self.config.llm.is_some() => Intent::Unknown,
+            intent => intent,
+        };
+        // No note about it: as the other skills take it ("what did I tell you about the timer",
+        // "forget the milk"), unless none does.
+        let intent = match intent {
+            Intent::Memory(ref command @ (MemoryCommand::Recall(_) | MemoryCommand::Forget(_)))
+                if !self.memory.finds(command) =>
+            {
+                match intent::parse_without_notes(text) {
+                    Intent::Unknown => intent,
+                    other => other,
+                }
+            }
             intent => intent,
         };
         // "Set a timer." "For how long?" "Ten minutes."
@@ -764,6 +807,21 @@ impl Worker {
                 }
             }
         }
+        // "Forget everything I remember?" "Yes." / "Remember what?" "The bins go out on Tuesday."
+        // A preview from the web page neither takes nor drops them.
+        if !self.previewing {
+            let (asked_what, asked_to_forget) = (self.memory.asked_what(), self.memory.asked_to_forget());
+            if asked_to_forget {
+                if let Some(yes) = confirmation(text) {
+                    return Some(self.memory.answer_forget(yes, lang));
+                }
+            }
+            self.memory.clear_question();
+            let meant = self.request_addressed || !room_talk(text);
+            if asked_what && meant && matches!(intent, Intent::Unknown | Intent::Lookup(_)) {
+                return Some(self.memory.remember(text, lang));
+            }
+        }
         if let Some((command, at)) = self.pending_confirm.take() {
             match confirmation(text) {
                 Some(true) if at.elapsed() < CONFIRM_WINDOW => return Some(self.house(&command, lang)),
@@ -780,6 +838,12 @@ impl Worker {
             if intent == Intent::Unknown {
                 return Some(self.scene(&format!("{scene} in {text}"), lang));
             }
+        }
+        // "Where is the spare key": a note about it, unless a person, a zone, a phone or a known place
+        // is meant ("where's my phone" still rings it).
+        if let Some(note) = self.memory.where_is(text).filter(|_| !self.where_is_elsewhere(text, &intent)) {
+            self.keep_live(&note);
+            return Some(note);
         }
         if let Some(parts) = intent::split_commands(text) {
             return self.several(&parts, lang);
@@ -820,6 +884,38 @@ impl Worker {
             }
         }
         self.act(intent, lang)
+    }
+
+    /// A note's sentences are synthesized, never kept by the speech cache: here as they are, and in
+    /// `answer` again as the persona words them.
+    fn keep_live(&mut self, text: &str) {
+        let sentences: Vec<&str> =
+            text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()).collect();
+        self.live.extend(sentences.iter().map(|s| (*s).to_owned()));
+        let cores =
+            sentences.iter().map(|s| s.trim_end_matches(['.', '?', '!']).to_lowercase()).filter(|s| !s.is_empty());
+        self.notes_said.extend(cores);
+    }
+
+    /// Whether "where is X" means a person, a zone, a phone or a known place rather than a note.
+    fn where_is_elsewhere(&self, text: &str, intent: &Intent) -> bool {
+        match intent {
+            Intent::House(HouseCommand::FindPhone(_) | HouseCommand::PhoneBattery(_)) => true,
+            // "Where is Ingrid's bike" is about the bike.
+            Intent::WhereIs { .. } if possessive(text) => false,
+            Intent::WhereIs { name, .. } => {
+                if voice_assistant::geo::known(name, self.home_location.as_ref()).is_some() {
+                    return true;
+                }
+                let people = self.home_assistant.as_ref().and_then(|ha| ha.people().ok()).unwrap_or_default();
+                // A person by the whole name asked: a sound-alike for one word, else the full name.
+                let one_word = name.split_whitespace().count() == 1;
+                voice_assistant::people::find(&people, name)
+                    .is_some_and(|p| one_word || p.name.eq_ignore_ascii_case(name))
+                    || people.iter().any(|p| p.state.eq_ignore_ascii_case(name))
+            }
+            _ => false,
+        }
     }
 
     fn unhandled(&self, reason: Reason, heard: &str, answer: Option<&str>) {
@@ -947,6 +1043,12 @@ impl Worker {
             Intent::WhosHome(name) => self.whos_home(name.as_deref(), lang),
             Intent::WhereIs { name, zone, arriving } => self.where_is(&name, zone.as_deref(), arriving, lang),
             Intent::Convert(conversion) => voice_assistant::units::answer(&conversion, lang),
+            Intent::Memory(command) => {
+                let answer = self.memory.run(command, lang);
+                let notes: Vec<String> = self.memory.sentences().map(str::to_owned).collect();
+                notes.iter().for_each(|note| self.keep_live(note));
+                answer
+            }
             Intent::Briefing => self.briefing(lang),
             Intent::Lookup(topic) => match self.lookup.answer(&topic, lang) {
                 Ok(Some(answer)) => {
@@ -1189,9 +1291,23 @@ pub(crate) fn save_wav(
     Ok(path)
 }
 
+/// "Ingrid's bike": a name owning a thing, so the question is about the thing.
+fn possessive(text: &str) -> bool {
+    let words: Vec<String> = text.split_whitespace().map(voice_assistant::dialog::normalize).collect();
+    words.windows(2).any(|p| p[0].len() > 2 && p[0].ends_with("'s") && !p[1].is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_thing_someone_owns_is_the_thing() {
+        assert!(possessive("where is Ingrid's bike"));
+        assert!(possessive("where's Ola's jacket?"));
+        assert!(!possessive("where is Ingrid"));
+        assert!(!possessive("where is Ingrid's"));
+    }
 
     #[test]
     fn says_the_date() {

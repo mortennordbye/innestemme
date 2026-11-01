@@ -5,6 +5,7 @@ use voice_assistant::ha::{self, Light};
 use voice_assistant::house::{self, HouseCommand, Routine, Switch};
 use voice_assistant::intent::{self, Intent};
 use voice_assistant::lang::Lang;
+use voice_assistant::memory::MemoryCommand;
 use voice_assistant::party::PartyCommand;
 use voice_assistant::shopping::ListCommand;
 use voice_assistant::{plan, tv};
@@ -36,6 +37,7 @@ impl Worker {
                 | Intent::WhosHome(_)
                 | Intent::WhereIs { .. }
                 | Intent::Convert(_)
+                | Intent::Memory(MemoryCommand::Recall(_) | MemoryCommand::List)
                 | Intent::Briefing
                 | Intent::News
                 | Intent::Lookup(_)
@@ -57,10 +59,16 @@ impl Worker {
                 )
         );
         let answer = match intent {
-            _ if reads => match self.compose(&request, Lang::English) {
-                Some(answer) => answer,
-                None => return Preview::Silent,
-            },
+            _ if reads => {
+                self.previewing = true;
+                let answer = self.compose(&request, Lang::English);
+                self.previewing = false;
+                self.notes_said.clear();
+                match answer {
+                    Some(answer) => answer,
+                    None => return Preview::Silent,
+                }
+            }
             Intent::Unknown if self.config.llm.is_none() => "Sorry, I didn't catch that.".to_owned(),
             Intent::Unknown => {
                 return Preview::NotRun("The language model would decide; it is not asked from the page.")

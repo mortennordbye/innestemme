@@ -37,6 +37,8 @@ fn main() -> anyhow::Result<()> {
         ("I'm bored, cheer me up", &[], "Joke or say"),
         ("roughly how much is a cup of flour in millilitres?", &[], "Convert or say"),
         ("what's six foot two in centimetres?", &[], "Convert or say"),
+        ("keep in mind that the bins go out on Tuesdays", &[], "Memory+remember+bins"),
+        ("which day did I tell you the bins go out?", &[], "Memory+bins"),
         ("are any of the sensor batteries running out?", &[], "Sensors+battery"),
         ("is water coming out under the sink?", &[], "Sensors+leaks"),
         ("where did Ingrid go?", &[], "WhosHome+ingrid"),

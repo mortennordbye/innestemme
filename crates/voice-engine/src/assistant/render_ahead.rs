@@ -63,6 +63,7 @@ impl Worker {
             .chain(&["Okay, I'll leave it.", "Anything else?", "Okay, that's everything."])
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
             .chain(timer::ENGLISH_ANSWERS)
+            .chain(voice_assistant::memory::ENGLISH_ANSWERS)
             .chain(&[
                 "Okay, party mode is on.",
                 "Party mode is on.",
@@ -207,7 +208,10 @@ impl Worker {
     /// Today's answers from the forecast and prices fetched ahead, to render before anyone asks.
     fn data_sentences(&mut self) -> Vec<String> {
         let kept: Vec<&str> = DATA_QUESTIONS.iter().copied().filter(|q| self.data_kept(q, Lang::English)).collect();
+        self.previewing = true;
         let answers: Vec<String> = kept.into_iter().filter_map(|q| self.compose(q, Lang::English)).collect();
+        self.previewing = false;
+        self.notes_said.clear();
         self.spoken_sentences(&answers)
     }
 

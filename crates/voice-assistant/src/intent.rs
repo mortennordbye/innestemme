@@ -85,6 +85,10 @@ pub enum Intent {
     },
     /// "Convert 10 miles to kilometres", "how many grams in a pound".
     Convert(crate::units::Conversion),
+    /// Personal notes: "remember that the spare key is in the kitchen drawer", "what did I say
+    /// about the spare key", "forget the spare key". "Where is the spare key" is answered from a
+    /// note when there is one, before people and places.
+    Memory(crate::memory::MemoryCommand),
     /// "Good morning": the time, the weather at home and the shopping list in a few sentences.
     Briefing,
     /// "What's the news?": the latest headlines.
@@ -1228,8 +1232,18 @@ fn mood(words: &[String]) -> Option<&'static str> {
 }
 
 pub fn parse(text: &str) -> Intent {
+    parse_with(text, true)
+}
+
+/// As the other skills take the words, leaving notes out: for "what did I tell you about the
+/// timer" or "forget the milk" when no note is about them.
+pub fn parse_without_notes(text: &str) -> Intent {
+    parse_with(text, false)
+}
+
+fn parse_with(text: &str, notes: bool) -> Intent {
     // A lookup only when no skill takes the words: "what is the weather" stays the weather.
-    match rules(text) {
+    match rules(text, notes) {
         Intent::Unknown => crate::lookup::topic(text).map_or(Intent::Unknown, Intent::Lookup),
         intent => intent,
     }
@@ -1285,12 +1299,17 @@ fn corrected(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-fn rules(text: &str) -> Intent {
+fn rules(text: &str, notes: bool) -> Intent {
     let text = &*corrected(text);
     let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
     // Whole short phrases only, so it takes nothing from the skills ("how are the lights" is not it).
     if let Some(chat) = crate::smalltalk::parse(&words) {
         return Intent::SmallTalk(chat);
+    }
+    // Before the sums, timers and shopping list: a note holds any words ("remember that the timer
+    // is in the drawer", "my locker is number 12").
+    if let Some(command) = crate::memory::parse(text).filter(|_| notes) {
+        return Intent::Memory(command);
     }
     if let Some((said, _)) = crate::calc::parse(text) {
         return Intent::Calculate(said);
@@ -2074,6 +2093,164 @@ mod tests {
         ] {
             assert!(matches!(parse(said), Intent::Convert(_)), "{said} -> {:?}", parse(said));
         }
+    }
+
+    /// Phrases a review found the notes taking from other skills: each parses as it did before
+    /// the notes (main at 57dc051).
+    #[test]
+    fn notes_take_nothing_from_other_skills() {
+        let before: &[(&str, &str)] = &[
+            (r#"remember to take the bins out"#, r#"Unknown"#),
+            (r#"remember to buy milk"#, r#"Unknown"#),
+            (r#"remember to add milk to the shopping list"#, r#"Unknown"#),
+            (
+                r#"remind me to call mum at 5"#,
+                r#"Timer(Remind { when: Some(At(Clock { hour: 5, minute: 0, pm: None, tomorrow: false })), message: Some("call mum") })"#,
+            ),
+            (r#"remember me"#, r#"Unknown"#),
+            (r#"remember the milk"#, r#"Unknown"#),
+            (r#"remember the time we went to Bergen"#, r#"Unknown"#),
+            (r#"remember when we went to Bergen"#, r#"Unknown"#),
+            (r#"remember that song"#, r#"Unknown"#),
+            (r#"husk å kjøpe melk"#, r#"Unknown"#),
+            (r#"husk på å ringe mamma"#, r#"Unknown"#),
+            (r#"husk melk"#, r#"Unknown"#),
+            (r#"forget it, turn off the lights"#, r#"Lights { on: false, target: "forget it, turn off the lights" }"#),
+            (r#"forget it"#, r#"Cancel"#),
+            (r#"forget about it"#, r#"Cancel"#),
+            (r#"forget that"#, r#"Cancel"#),
+            (
+                r#"forget the timer"#,
+                r#"Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (
+                r#"forget the pasta timer"#,
+                r#"Timer(Remaining(Which { name: Some("pasta"), seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (
+                r#"forget my alarm"#,
+                r#"Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: false, alarm: true }))"#,
+            ),
+            (
+                r#"forget the reminder"#,
+                r#"Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: true, alarm: false }))"#,
+            ),
+            (r#"forget milk from the shopping list"#, r#"Unknown"#),
+            (r#"forget the shopping list"#, r#"Cancel"#),
+            (
+                r#"delete the timer"#,
+                r#"Timer(Cancel(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (r#"delete milk from the shopping list"#, r#"ShoppingList(Remove(["Milk"]))"#),
+            (
+                r#"delete my alarm"#,
+                r#"Timer(Cancel(Which { name: None, seconds: None, all: false, reminder: false, alarm: true }))"#,
+            ),
+            (
+                r#"slett timeren"#,
+                r#"Timer(Cancel(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (r#"slett melk fra handlelisten"#, r#"ShoppingList(Remove(["Melk"]))"#),
+            (
+                r#"glem timeren"#,
+                r#"Timer(Remaining(Which { name: Some("glem"), seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (r#"glem det, skru av lyset"#, r#"Lights { on: false, target: "glem det, skru av lyset" }"#),
+            (r#"glem handlelisten"#, r#"Cancel"#),
+            (r#"do you know what time it is"#, r#"Time"#),
+            (
+                r#"do you know what the weather is tomorrow"#,
+                r#"Weather { place: None, day: Tomorrow, focus: General }"#,
+            ),
+            (r#"do you know where Ingrid is"#, r#"Unknown"#),
+            (r#"do you remember what time it is"#, r#"Unknown"#),
+            (r#"do you know what's on the shopping list"#, r#"ShoppingList(Read)"#),
+            (r#"vet du hva klokka er"#, r#"Unknown"#),
+            (r#"vet du hvor Ingrid er"#, r#"Unknown"#),
+            (r#"husker du hva klokka er"#, r#"Unknown"#),
+            (r#"what do you know about Edvard Munch"#, r#"Lookup("Edvard Munch")"#),
+            (r#"what do you know about Bergen"#, r#"Lookup("Bergen")"#),
+            (r#"hva vet du om Edvard Munch"#, r#"Unknown"#),
+            (r#"what did you say"#, r#"Unknown"#),
+            (r#"what did you say about the weather"#, r#"Weather { place: None, day: Today, focus: General }"#),
+            (
+                r#"what did you say about the timer"#,
+                r#"Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (r#"what's the weather tomorrow"#, r#"Weather { place: None, day: Tomorrow, focus: General }"#),
+            (r#"what time is it"#, r#"Time"#),
+            (r#"set a timer for 10 minutes"#, r#"Timer(Start { seconds: Some(600), name: None })"#),
+            (r#"add milk to the shopping list"#, r#"ShoppingList(Add(["Milk"]))"#),
+            (r#"where is Ingrid"#, r#"WhereIs { name: "ingrid", zone: None, arriving: false }"#),
+            (r#"where's my phone"#, r#"House(FindPhone(None))"#),
+            (r#"where is my phone"#, r#"House(FindPhone(None))"#),
+            (r#"where is Bergen"#, r#"WhereIs { name: "bergen", zone: None, arriving: false }"#),
+            (r#"who is Edvard Munch"#, r#"Lookup("Edvard Munch")"#),
+            (r#"play Remember the Time"#, r#"Music(Song("remember the time"))"#),
+            (r#"note that down"#, r#"Unknown"#),
+            (r#"make a note"#, r#"Unknown"#),
+            (
+                r#"cancel the timer"#,
+                r#"Timer(Cancel(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (
+                r#"remind me in 10 minutes to check the oven"#,
+                r#"Timer(Remind { when: Some(In(600)), message: Some("check the oven") })"#,
+            ),
+            (r#"don't let me forget the laundry in half an hour"#, r#"Unknown"#),
+            (r#"what's on the shopping list"#, r#"ShoppingList(Read)"#),
+            (r#"where did I put my phone"#, r#"House(FindPhone(None))"#),
+            (r#"where did I leave my phone"#, r#"House(FindPhone(None))"#),
+            (r#"where did I put my phone?"#, r#"House(FindPhone(None))"#),
+            (r#"hvor la jeg telefonen"#, r#"House(FindPhone(None))"#),
+            (r#"hvor la jeg mobilen min"#, r#"House(FindPhone(None))"#),
+            (r#"hvor har jeg lagt telefonen"#, r#"House(FindPhone(None))"#),
+            (r#"where is Ingrid's bike"#, r#"WhereIs { name: "ingrid bike", zone: None, arriving: false }"#),
+            (r#"where is Ola's jacket"#, r#"WhereIs { name: "ola jacket", zone: None, arriving: false }"#),
+        ];
+        let changed: Vec<String> = before
+            .iter()
+            .filter(|(said, was)| format!("{:?}", parse(said)) != *was)
+            .map(|(said, was)| format!("{said}: {:?}, was {was}", parse(said)))
+            .collect();
+        assert!(changed.is_empty(), "{changed:#?}");
+    }
+
+    /// When no note is about it, the engine asks the other skills, which take it as on main.
+    #[test]
+    fn without_notes_the_other_skills_take_it() {
+        for (said, was) in [
+            (
+                "what did I tell you about the timer",
+                "Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))",
+            ),
+            ("forget the milk", "Cancel"),
+            ("glem melka", "Cancel"),
+            ("forget the lights", "Cancel"),
+        ] {
+            assert!(matches!(parse(said), Intent::Memory(_)), "{said}");
+            assert_eq!(format!("{:?}", parse_without_notes(said)), was, "{said}");
+        }
+        // A note, though main set an alarm: the words say to keep it.
+        assert!(matches!(parse("remember the alarm is at 7"), Intent::Memory(_)));
+    }
+
+    #[test]
+    fn notes_take_their_words_and_leave_the_rest() {
+        use crate::memory::MemoryCommand;
+        let note = |s: &str| Intent::Memory(MemoryCommand::Remember(s.into()));
+        // Words other skills would take: a timer, a sum, the shopping list.
+        assert_eq!(parse("remember that the timer is in the top drawer"), note("the timer is in the top drawer"));
+        assert_eq!(parse("remember that my locker is number 12"), note("my locker is number 12"));
+        assert_eq!(parse("remember that we need milk on Friday"), note("we need milk on Friday"));
+        assert_eq!(parse("forget the spare key"), Intent::Memory(MemoryCommand::Forget("the spare key".into())));
+        // Still "never mind", reminders and people.
+        assert_eq!(parse("forget it"), Intent::Cancel);
+        assert_eq!(parse("glem det"), Intent::Cancel);
+        assert!(matches!(parse("remind me in 10 minutes to check the oven"), Intent::Timer(_)));
+        assert!(matches!(parse("don't let me forget the laundry in half an hour"), Intent::Timer(_) | Intent::Unknown));
+        assert!(matches!(parse("where is Ingrid"), Intent::WhereIs { .. }));
+        assert!(matches!(parse("play Remember the Time"), Intent::Music(_)));
     }
 
     #[test]
