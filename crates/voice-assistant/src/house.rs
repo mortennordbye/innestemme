@@ -1416,7 +1416,7 @@ pub fn party_restore(ha: &HomeAssistant) -> Result<bool> {
 }
 
 /// A lockdown's snapshot exists. It outlives an engine restart, not a Home Assistant one.
-fn locked_down(ha: &HomeAssistant) -> bool {
+pub fn locked_down(ha: &HomeAssistant) -> bool {
     ha.state(&format!("scene.{LOCKDOWN_SCENE}")).is_ok()
 }
 
@@ -1450,7 +1450,8 @@ mod tests {
 
     #[test]
     fn routine_answers_are_rendered_ahead() {
-        let light = Light { id: "light.a".into(), name: "A".into(), area: "Kitchen".into(), group: false };
+        let light =
+            Light { id: "light.a".into(), name: "A".into(), area: "Kitchen".into(), group: false, members: Vec::new() };
         for lights in [vec![], vec![light]] {
             for (music, tvs) in [(false, false), (true, false), (false, true), (true, true)] {
                 let switched = Switched { lights: lights.clone(), music, tvs };
@@ -1757,7 +1758,13 @@ mod tests {
 
     #[test]
     fn status_reads_in_sentences() {
-        let lights = vec![Light { id: "light.a".into(), name: "A".into(), area: "Kitchen".into(), group: false }];
+        let lights = vec![Light {
+            id: "light.a".into(),
+            name: "A".into(),
+            area: "Kitchen".into(),
+            group: false,
+            members: Vec::new(),
+        }];
         let snapshot = Snapshot {
             alarm: "disarmed".into(),
             tvs: vec!["TV".into()],
@@ -1771,7 +1778,13 @@ mod tests {
             status_answer(&[], &lights, &snapshot, Lang::English),
             "All is well. The alarm is off. Lights are on in the kitchen. The TV is on. Music is playing in the living room."
         );
-        let house = Light { id: "light.house".into(), name: "House Lights".into(), area: String::new(), group: true };
+        let house = Light {
+            id: "light.house".into(),
+            name: "House Lights".into(),
+            area: String::new(),
+            group: true,
+            members: Vec::new(),
+        };
         assert_eq!(rooms_lit(&[house, lights[0].clone()]), ["kitchen"]);
     }
 }

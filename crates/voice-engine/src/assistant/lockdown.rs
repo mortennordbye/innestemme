@@ -75,6 +75,8 @@ impl Worker {
         match house::lockdown(ha) {
             Ok(red) => {
                 info!(red = red.len(), "lockdown");
+                // Undo would put a look from before the lockdown back over its red lights.
+                self.last_lights = None;
                 let blinking = self.alarm.as_ref().is_some_and(|a| !a.thread.is_finished());
                 if !blinking && !red.is_empty() {
                     match Alarm::start(ha.detached(), red) {
@@ -171,6 +173,9 @@ impl Worker {
 
     pub(super) fn stand_down(&mut self, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
+        if self.home_assistant.is_some() {
+            self.party_off_for_stand_down();
+        }
         let Some(ha) = &self.home_assistant else {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
@@ -179,6 +184,7 @@ impl Worker {
         if let Some(alarm) = self.alarm.take() {
             alarm.stop();
         }
+        self.last_lights = None;
         let restored = match house::stand_down(ha) {
             Ok(restored) => restored,
             Err(error) => return unreachable(&error, no),

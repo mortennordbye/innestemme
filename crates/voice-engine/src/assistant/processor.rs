@@ -178,6 +178,7 @@ impl AssistantProcessor {
             warmed_prompt: String::new(),
             lockdown_volume: None,
             party_under_lockdown: false,
+            party_restore: None,
             lockdown_tv: None,
             threat_turn: 0,
             music_under_answer: false,

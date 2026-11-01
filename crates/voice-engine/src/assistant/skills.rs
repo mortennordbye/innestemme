@@ -1,6 +1,8 @@
 //! Skills answered by the worker itself: weather, people, briefing, distance, party, scenes, scripts.
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
 use voice_assistant::ha::{self, HomeAssistant};
@@ -18,6 +20,81 @@ use super::{time_of_day, unreachable, Worker};
 /// How long the Hue bridge takes to let go of the lights once party mode's stream stops; calls
 /// to them before then are lost.
 const PARTY_RELEASE: Duration = Duration::from_secs(1);
+
+/// What starting party mode keeps of the lights for its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SnapshotPlan {
+    /// A lockdown is on: its snapshot (and a party's from before it) is the look to go back to,
+    /// not the red lights now.
+    Skip,
+    /// Party mode is already on: the snapshot from its start still holds the lights from before.
+    KeepExisting,
+    /// A new snapshot, replacing one left over from a restore whose delete failed.
+    Fresh,
+}
+
+fn snapshot_plan(party_on: bool, locked_down: bool) -> SnapshotPlan {
+    match (locked_down, party_on) {
+        (true, _) => SnapshotPlan::Skip,
+        (false, true) => SnapshotPlan::KeepExisting,
+        (false, false) => SnapshotPlan::Fresh,
+    }
+}
+
+/// Where the lights go once party mode's stream has let go of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterParty {
+    /// Back to the snapshot from before the party.
+    PartyScene,
+    /// A party during a lockdown: back to red, the party's snapshot kept for standing down.
+    LockdownRed,
+}
+
+fn after_party(locked_down: bool) -> AfterParty {
+    if locked_down {
+        AfterParty::LockdownRed
+    } else {
+        AfterParty::PartyScene
+    }
+}
+
+/// Party mode's lights put back on a thread of its own after a wait; until then it can be called off.
+pub(super) struct PendingRestore {
+    cancelled: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+    /// When the party stopped.
+    stopped: Instant,
+}
+
+impl PendingRestore {
+    fn spawn(wait: Duration, restore: impl FnOnce() + Send + 'static) -> std::io::Result<Self> {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let called_off = cancelled.clone();
+        let thread = std::thread::Builder::new().name("party-restore".into()).spawn(move || {
+            // In short sleeps, so calling it off is not kept waiting.
+            let start = Instant::now();
+            while start.elapsed() < wait {
+                if called_off.load(Relaxed) {
+                    return;
+                }
+                std::thread::sleep(wait.saturating_sub(start.elapsed()).min(Duration::from_millis(20)));
+            }
+            // Taken in one step, so a restore and calling it off never both happen.
+            if !called_off.swap(true, Relaxed) {
+                restore();
+            }
+        })?;
+        Ok(Self { cancelled, thread, stopped: Instant::now() })
+    }
+
+    /// Calls the restore off unless it has begun, and waits for one in flight. Whether it was
+    /// called off in time.
+    fn cancel(self) -> bool {
+        let in_time = !self.cancelled.swap(true, Relaxed);
+        let _ = self.thread.join();
+        in_time
+    }
+}
 
 impl Worker {
     /// "Party mode": the Hue lights follow the music, after a snapshot to put them back from.
@@ -49,9 +126,20 @@ impl Worker {
             }
             .into();
         }
+        // A restore still waiting would land on the party's first frames.
+        if let Some(pending) = self.party_restore.take() {
+            pending.cancel();
+        }
         if let Some(ha) = &self.home_assistant {
-            let keep = self.config.party.mode().is_some() || self.party_under_lockdown;
-            if let Err(error) = house::party_snapshot(ha, keep) {
+            let locked_down = house::locked_down(ha);
+            // Left set by a lockdown that was never stood down here, or one Home Assistant forgot.
+            self.party_under_lockdown &= locked_down;
+            let snapshot = match snapshot_plan(self.config.party.mode().is_some(), locked_down) {
+                SnapshotPlan::Skip => Ok(()),
+                SnapshotPlan::KeepExisting => house::party_snapshot(ha, true),
+                SnapshotPlan::Fresh => house::party_snapshot(ha, false),
+            };
+            if let Err(error) = snapshot {
                 warn!(error = format!("{error:#}"), "party mode: no snapshot of the lights");
             }
         }
@@ -69,6 +157,8 @@ impl Worker {
             }
             .into();
         }
+        // The stream changes the lights: undo has no look from before it to go back to.
+        self.last_lights = None;
         match (pace, no) {
             (Pace::Relaxed, false) => "Okay, relaxed party mode is on.",
             (Pace::Normal, false) => "Okay, party mode is on.",
@@ -86,16 +176,23 @@ impl Worker {
             return false;
         }
         self.config.party.stop();
+        self.last_lights = None;
         if let Some((url, token)) = self.config.home_assistant.clone() {
             // On a thread of its own: the bridge lets go of the lights after the stream's last frame.
-            let restore = std::thread::Builder::new().name("party-restore".into()).spawn(move || {
-                std::thread::sleep(PARTY_RELEASE);
-                if let Err(error) = house::party_restore(&HomeAssistant::new(&url, &token)) {
+            let restore = PendingRestore::spawn(PARTY_RELEASE, move || {
+                let ha = HomeAssistant::new(&url, &token);
+                let put_back = match after_party(house::locked_down(&ha)) {
+                    // Red again; the party's snapshot stays for standing down.
+                    AfterParty::LockdownRed => house::lockdown(&ha).map(|_| true),
+                    AfterParty::PartyScene => house::party_restore(&ha),
+                };
+                if let Err(error) = put_back {
                     warn!(error = format!("{error:#}"), "party mode: could not put the lights back");
                 }
             });
-            if let Err(error) = restore {
-                warn!(%error, "party mode: could not put the lights back");
+            match restore {
+                Ok(pending) => self.party_restore = Some(pending),
+                Err(error) => warn!(%error, "party mode: could not put the lights back"),
             }
         }
         true
@@ -103,8 +200,18 @@ impl Worker {
 
     /// Ends party mode for a lockdown, keeping its snapshot for standing down: put back now, it
     /// would land on the lockdown's red lights, and the lockdown's own snapshot would hold the
-    /// party's colours. Waits until the bridge has let go of the lights. Whether it was on.
+    /// party's colours. Waits until the bridge has let go of the lights. A party ended a moment
+    /// ago whose lights are not back yet counts too. Whether it was on.
     pub(super) fn party_off_for_lockdown(&mut self) -> bool {
+        if let Some(pending) = self.party_restore.take() {
+            let stopped = pending.stopped;
+            if pending.cancel() {
+                // The restore never ran: the party's snapshot is still the look to go back to.
+                self.party_under_lockdown = true;
+                std::thread::sleep(PARTY_RELEASE.saturating_sub(stopped.elapsed()));
+                return true;
+            }
+        }
         if self.config.party.mode().is_none() {
             return false;
         }
@@ -112,6 +219,20 @@ impl Worker {
         self.party_under_lockdown = true;
         std::thread::sleep(PARTY_RELEASE);
         true
+    }
+
+    /// Before standing down: a party started during the lockdown lets go of the lights first, or
+    /// its stream would cover the restored look. A restore still waiting is dropped, since standing
+    /// down puts the lights back itself.
+    pub(super) fn party_off_for_stand_down(&mut self) {
+        if let Some(pending) = self.party_restore.take() {
+            pending.cancel();
+        }
+        if self.config.party.mode().is_some() {
+            self.config.party.stop();
+            info!("party mode ended for standing down");
+            std::thread::sleep(PARTY_RELEASE);
+        }
     }
 
     /// A named place, else the home: the address when it is set, else the `home` place name.
@@ -308,6 +429,8 @@ impl Worker {
             return unreachable(&error, no);
         }
         info!(scene = scene.id, request, "scene activated");
+        // Undo would otherwise jump back past the scene, to the look before an earlier dimming.
+        self.last_lights = None;
         self.show("scene", serde_json::json!({ "name": scene.name }), Some(SCREEN_MOMENT));
         let name = scene.name.to_lowercase();
         if no {
@@ -352,5 +475,51 @@ impl Worker {
         let ha = self.home_assistant.as_mut()?;
         let scene = ha.scenes().ok().and_then(|scenes| ha::exact(scenes, request).cloned())?;
         Some(self.scene(&scene.name, lang))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn a_party_during_a_lockdown_keeps_no_snapshot_of_the_red_lights() {
+        assert_eq!(snapshot_plan(false, true), SnapshotPlan::Skip);
+        assert_eq!(snapshot_plan(true, true), SnapshotPlan::Skip);
+        assert_eq!(snapshot_plan(true, false), SnapshotPlan::KeepExisting);
+        // No lockdown on: a snapshot left from one never stood down is replaced.
+        assert_eq!(snapshot_plan(false, false), SnapshotPlan::Fresh);
+        assert_eq!(after_party(true), AfterParty::LockdownRed);
+        assert_eq!(after_party(false), AfterParty::PartyScene);
+    }
+
+    #[test]
+    fn a_restore_called_off_in_time_never_runs() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = runs.clone();
+        let pending = PendingRestore::spawn(Duration::from_millis(300), move || {
+            counted.fetch_add(1, Relaxed);
+        })
+        .unwrap();
+        let start = Instant::now();
+        assert!(pending.cancel());
+        // Not kept waiting for the whole wait.
+        assert!(start.elapsed() < Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(350));
+        assert_eq!(runs.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn a_restore_that_ran_is_not_called_off() {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = runs.clone();
+        let pending = PendingRestore::spawn(Duration::ZERO, move || {
+            counted.fetch_add(1, Relaxed);
+        })
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!pending.cancel());
+        assert_eq!(runs.load(Relaxed), 1);
     }
 }

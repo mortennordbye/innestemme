@@ -103,9 +103,13 @@ impl Worker {
             Ok(None) => return "Say which room, for example: dim the living room.".into(),
             Err(answer) => return answer,
         };
-        let Some(ha) = &self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
+        let Some(ha) = &mut self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
+        let lamps = match ha.lights() {
+            Ok(lights) => ha::each_lamp(lights, &target.ids),
+            Err(error) => return unreachable(&error, no),
+        };
         // Queued ahead of the change, so the snapshot holds the look from before it.
-        let snapshot = serde_json::json!({ "scene_id": UNDO_SCENE, "snapshot_entities": target.ids });
+        let snapshot = serde_json::json!({ "scene_id": UNDO_SCENE, "snapshot_entities": lamps });
         if let Err(error) = ha.send("scene", "create", snapshot).and_then(|()| ha.set_level(&target, level)) {
             return unreachable(&error, no);
         }
