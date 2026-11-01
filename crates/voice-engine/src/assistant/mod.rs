@@ -226,8 +226,8 @@ enum Job {
     Plan(String, tokio::sync::oneshot::Sender<serde_json::Value>),
     /// A safety sensor went off: speak this warning.
     Alert(String),
-    /// A Home Assistant call the answer did not wait for failed: say so.
-    Failed(String),
+    /// A Home Assistant call the answer did not wait for failed: say so, in the request's language.
+    Failed(String, Lang),
     /// A button on the web page: a fixed request, acted on without a spoken answer. The answer's
     /// text comes back.
     Act(String, tokio::sync::oneshot::Sender<String>),
@@ -288,7 +288,7 @@ struct Worker {
     pending_lights: Option<bool>,
     shopping: ShoppingList,
     /// The last change to the shopping list and when, for "undo".
-    last_list: Option<(Change, Instant)>,
+    last_list: Option<(Vec<Change>, Instant)>,
     /// "Add to the shopping list" named nothing: the next answer is the items.
     /// When an item was last added: the list takes more without "add" until `LIST_OPEN` later.
     list_open: Option<Instant>,
@@ -452,7 +452,7 @@ impl Worker {
                     info!(text, "safety alert");
                     self.announce(&text, tts::alarm_chime(), Lang::English, false);
                 }
-                Job::Failed(text) => self.announce(&text, Vec::new(), Lang::English, false),
+                Job::Failed(text, lang) => self.announce(&text, Vec::new(), lang, false),
                 Job::Act(text, reply) => {
                     let start = Instant::now();
                     let answer = self.compose(&text, Lang::English).unwrap_or_default();
@@ -739,11 +739,12 @@ impl Worker {
                 );
             }
             if intent == Intent::Unknown && text.split_whitespace().count() <= LIST_REPLY_WORDS {
-                if let Some(remove @ ListCommand::Remove(_)) = voice_assistant::shopping::open_list_command(text) {
-                    let answer = self.shopping_list(remove, lang, true);
-                    // Still open: more items may follow the correction.
-                    self.list_open = Some(Instant::now());
-                    return Some(answer);
+                let changes = voice_assistant::shopping::open_list_commands(text);
+                // "Remove milk and add bread", "add bread and put milk on", "check if we have eggs":
+                // each change in turn. A single "add X" goes the way of plain items, which may be
+                // heard again in Norwegian.
+                if changes.len() > 1 || changes.iter().any(|c| !matches!(c, ListCommand::Add(_))) {
+                    return Some(self.shopping_changes(changes, lang));
                 }
                 let items = self.items_heard(text);
                 if !items.is_empty() {

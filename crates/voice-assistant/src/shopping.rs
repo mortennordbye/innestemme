@@ -20,6 +20,8 @@ pub enum ListCommand {
     Read,
     /// Ticks off every open item.
     Clear,
+    /// "Check if we have eggs": whether these are on the list.
+    Has(Vec<String>),
 }
 
 /// Words that name the list. "liste"/"lista"/"listen" alone count only after a Norwegian
@@ -54,6 +56,7 @@ const POLITE: &[&str] = &[
 const EDGE_FILLER: &[&str] = &[
     "to", "on", "onto", "the", "my", "our", "off", "from", "of", "some", "a", "an", "please", "til", "på", "opp",
     "inn", "fra", "av", "min", "mi", "vår", "noe", "litt", "en", "ei", "et", "og", "and", "also", "også", "i", "in",
+    "away", "bort", "vekk", "out", "ut",
 ];
 
 /// A shopping-list request, or `None` when the text does not name the list.
@@ -169,31 +172,112 @@ pub fn closes_list(text: &str) -> bool {
 /// A change said while the list is open, without naming the list: "remove milk", "actually take
 /// the milk off", "add bread". `None` for a reply that is only items, or something else.
 pub fn open_list_command(text: &str) -> Option<ListCommand> {
+    open_list_commands(text).into_iter().next()
+}
+
+/// Every change in a reply while the list is open: "remove milk and add bread" is two. Empty for a
+/// reply that is only items, or something else.
+pub fn open_list_commands(text: &str) -> Vec<ListCommand> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let words: Vec<String> = tokens.iter().map(|t| normalize(t)).collect();
-    let verb_at = words.iter().position(|w| {
-        !w.is_empty() && !POLITE.contains(&w.as_str()) && !REPLY_LEAD.contains(&w.as_str()) && w != "and" && w != "og"
-    })?;
-    let verb = words[verb_at].as_str();
-    let found = items(&tokens[verb_at + 1..]);
-    if found.is_empty() {
-        return None;
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(verb_at) = (from..words.len()).find(|&i| {
+        let w = words[i].as_str();
+        !w.is_empty()
+            && !POLITE.contains(&w)
+            && !REPLY_LEAD.contains(&w)
+            && !YES_NO.contains(&w)
+            && w != "and"
+            && w != "og"
+    }) {
+        // The next change starts at a verb after "and" or a comma: "remove milk *and add* bread".
+        let end = (verb_at + 1..words.len())
+            .find(|&i| {
+                let joined = ["and", "og"].contains(&words[i - 1].as_str()) || tokens[i - 1].ends_with(',');
+                joined && (ADD_VERBS.contains(&words[i].as_str()) || REMOVE_VERBS.contains(&words[i].as_str()))
+            })
+            .unwrap_or(words.len());
+        let verb = words[verb_at].as_str();
+        let next = words.get(verb_at + 1).map(String::as_str).unwrap_or_default();
+        let mut skip = verb_at + 1;
+        // "Check if we have eggs", "sjekk om vi har egg": a question, not a change.
+        let asks = ["check", "sjekk"].contains(&verb) && ["if", "whether", "om"].contains(&next);
+        if asks {
+            skip += 1;
+            skip += words[skip.min(end)..end].iter().take_while(|w| HAVE_LEAD.contains(&w.as_str())).count();
+        }
+        // "Ta med melk" (bring milk) adds it.
+        let brings = verb == "ta" && next == "med";
+        if brings {
+            skip += 1;
+        }
+        let found = items(&tokens[skip.min(end)..end]);
+        let command = if asks {
+            ListCommand::Has(found.clone())
+        } else if brings || ADD_VERBS.contains(&verb) {
+            ListCommand::Add(found.clone())
+        } else if REMOVE_VERBS.contains(&verb) {
+            // "Take the milk", "check the milk": an item that is not on the list is answered as such.
+            ListCommand::Remove(found.clone())
+        } else {
+            break;
+        };
+        if found.is_empty() {
+            break;
+        }
+        out.push(command);
+        from = end;
     }
-    if REMOVE_VERBS.contains(&verb) {
-        return Some(ListCommand::Remove(found));
-    }
-    ADD_VERBS.contains(&verb).then_some(ListCommand::Add(found))
+    out
 }
+
+/// Yes before a reply: "yes, bread".
+const YES: &[&str] = &["yes", "yeah", "yep", "ja", "jo"];
+/// No before a correction: "no, remove the milk".
+const NO: &[&str] = &["no", "nope", "nah", "nei"];
+const YES_NO: &[&str] = &["yes", "yeah", "yep", "ja", "jo", "no", "nope", "nah", "nei"];
+/// Between "check if" and the items: "check if *we have* eggs", "sjekk om *vi har* egg".
+const HAVE_LEAD: &[&str] = &[
+    "we", "i", "you", "have", "got", "need", "there's", "there", "is", "are", "any", "vi", "jeg", "har", "trenger",
+    "det", "er", "noe",
+];
+/// "No milk", "not milk", "ikke melk", "don't add milk": nothing to add.
+const NEGATION: &[&str] = &["not", "don't", "dont", "never", "ikke", "aldri"];
+/// Words a sentence opens with that make it a request or a question, never an item.
+const NOT_ITEMS: &[&str] = &[
+    "check", "take", "remove", "delete", "is", "are", "do", "does", "did", "have", "has", "if", "what", "what's",
+    "how", "turn", "switch", "er", "har", "hva", "hvor", "vet", "sjekk", "skru", "slå", "ta", "fjern",
+];
 
 /// The items in a reply that is only items ("milk and eggs", "og brunost"), as to "what should I
 /// add?".
 pub fn items_of(text: &str) -> Vec<String> {
     let tokens: Vec<&str> = text.split_whitespace().collect();
-    let skip = tokens.iter().take_while(|t| {
-        let w = normalize(t);
-        ADD_VERBS.contains(&w.as_str()) || POLITE.contains(&w.as_str()) || REPLY_LEAD.contains(&w.as_str())
-    });
-    items(&tokens[skip.count()..])
+    let words: Vec<String> = tokens.iter().map(|t| normalize(t)).collect();
+    if words.iter().any(|w| NEGATION.contains(&w.as_str())) {
+        return Vec::new();
+    }
+    let lead = |w: &String| {
+        ADD_VERBS.contains(&w.as_str())
+            || POLITE.contains(&w.as_str())
+            || REPLY_LEAD.contains(&w.as_str())
+            || YES.contains(&w.as_str())
+    };
+    let mut skip = words.iter().take_while(|w| lead(w)).count();
+    // "No, bread" or "no milk" corrects or refuses; only "no, add bread" adds.
+    if words.get(skip).is_some_and(|w| NO.contains(&w.as_str())) {
+        if !words.get(skip + 1).is_some_and(|w| ADD_VERBS.contains(&w.as_str())) {
+            return Vec::new();
+        }
+        skip += 1;
+        skip += words[skip..].iter().take_while(|w| lead(w)).count();
+    }
+    // "Check if we have eggs", "take the milk": a request, never items.
+    if words.get(skip).is_some_and(|w| NOT_ITEMS.contains(&w.as_str()) || REMOVE_VERBS.contains(&w.as_str())) {
+        return Vec::new();
+    }
+    items(&tokens[skip..])
 }
 
 /// Splits "milk, eggs and bread" into items, dropping filler at both ends of each.
@@ -334,6 +418,14 @@ impl ShoppingList {
                 let answer = removed_answer(&removed, &missing, lang);
                 (answer, (!removed.is_empty()).then_some(Change::Removed(removed)))
             }
+            ListCommand::Has(names) => {
+                let open: Vec<&Item> = items.iter().filter(|i| i.open()).collect();
+                let known = crate::names::Names::new(open.iter().map(|i| i.summary.as_str()));
+                let (on, off): (Vec<String>, Vec<String>) = names.iter().cloned().partition(|name| {
+                    open.iter().any(|i| i.summary.to_lowercase() == name.to_lowercase()) || known.best(name).is_some()
+                });
+                (has_answer(&on, &off, lang), None)
+            }
             ListCommand::Read => {
                 let open: Vec<String> = items.iter().filter(|i| i.open()).map(|i| i.summary.to_lowercase()).collect();
                 // A spoken list longer than this is not useful; the app has the rest.
@@ -458,6 +550,33 @@ fn removed_answer(removed: &[String], missing: &[String], lang: Lang) -> String 
     parts.join(" ")
 }
 
+/// "Yes, eggs are on the list." / "No, eggs aren't on the list."
+fn has_answer(on: &[String], off: &[String], lang: Lang) -> String {
+    let no = lang == Lang::Norwegian;
+    let mut parts = Vec::new();
+    if !on.is_empty() {
+        let list = join(&lower(on), lang);
+        let is = if on.len() > 1 { "are" } else { "is" };
+        parts.push(match (no, off.is_empty()) {
+            (false, true) => format!("Yes, {list} {is} on the list."),
+            (false, false) => format!("{} {is} on the list.", capitalize(&list)),
+            (true, true) => format!("Ja, {list} står på lista."),
+            (true, false) => format!("{} står på lista.", capitalize(&list)),
+        });
+    }
+    if !off.is_empty() {
+        let list = join(&lower(off), lang);
+        let isnt = if off.len() > 1 { "aren't" } else { "isn't" };
+        parts.push(match (no, on.is_empty()) {
+            (false, true) => format!("No, {list} {isnt} on the list."),
+            (false, false) => format!("{} {isnt} on the list.", capitalize(&list)),
+            (true, true) => format!("Nei, {list} står ikke på lista."),
+            (true, false) => format!("{} står ikke på lista.", capitalize(&list)),
+        });
+    }
+    parts.join(" ")
+}
+
 fn lower(items: &[String]) -> Vec<String> {
     items.iter().map(|i| i.to_lowercase()).collect()
 }
@@ -549,6 +668,38 @@ mod tests {
         assert_eq!(open_list_command("milk and eggs"), None);
         assert_eq!(open_list_command("remove"), None);
         assert_eq!(items_of("actually bread"), ["Bread"]);
+        // A yes or no before the correction is not an item.
+        assert_eq!(open_list_command("No, remove the milk"), remove(&["Milk"]));
+        assert_eq!(open_list_command("Oh no, take the eggs off"), remove(&["Eggs"]));
+        assert_eq!(open_list_command("Nei, fjern melk"), remove(&["Melk"]));
+        assert_eq!(items_of("Yes, bread"), ["Bread"]);
+        assert!(items_of("No, bread").is_empty());
+        assert!(items_of("no milk").is_empty());
+        assert!(items_of("no, not milk").is_empty());
+        assert!(items_of("nei, ikke melk").is_empty());
+        assert_eq!(items_of("no, add bread"), ["Bread"]);
+        for request in ["Check if we have eggs", "ta med melk", "take the milk", "check the milk", "is milk on it"] {
+            assert!(items_of(request).is_empty(), "{request}");
+        }
+        assert_eq!(open_list_command("take out the milk"), remove(&["Milk"]));
+        assert_eq!(open_list_command("take the milk out"), remove(&["Milk"]));
+        assert_eq!(open_list_command("ta ut melka"), remove(&["Melka"]));
+        assert_eq!(
+            open_list_commands("add bread and put milk on"),
+            [ListCommand::Add(vec!["Bread".into()]), ListCommand::Add(vec!["Milk".into()])]
+        );
+        // Two changes in one reply; neither swallows the other.
+        assert_eq!(
+            open_list_commands("Remove milk and add bread"),
+            [ListCommand::Remove(vec!["Milk".into()]), ListCommand::Add(vec!["Bread".into()])]
+        );
+        // Questions and bringing are not removals.
+        assert_eq!(open_list_command("Check if we have eggs"), Some(ListCommand::Has(vec!["Eggs".into()])));
+        assert_eq!(open_list_command("ta med melk"), add(&["Melk"]));
+        assert_eq!(open_list_command("take the milk"), remove(&["Milk"]));
+        assert_eq!(open_list_command("check the milk"), remove(&["Milk"]));
+        assert_eq!(open_list_command("check off the eggs"), remove(&["Eggs"]));
+        assert_eq!(open_list_command("ta egg av"), remove(&["Egg"]));
     }
 
     #[test]
