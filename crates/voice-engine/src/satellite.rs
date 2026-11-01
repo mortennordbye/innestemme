@@ -40,7 +40,7 @@ use voice_proto::{Codec, Header, Kind, HEADER_LEN, MAX_DATAGRAM, PACKET_SAMPLES,
 use serde_json::json;
 use voice_assistant::ha::HomeAssistant;
 
-use crate::assistant::{AssistantEvent, AssistantHandle};
+use crate::assistant::{AnnounceOn, AssistantEvent, AssistantHandle};
 use crate::metrics::{Clip, SpeechClips};
 
 const DEVICE_RATE: u32 = 16_000;
@@ -120,8 +120,13 @@ pub struct AnswerPlayer {
 
 impl AnswerPlayer {
     fn announce(&self, url: &str) -> Result<()> {
+        self.announce_on(&self.entity, url)
+    }
+
+    /// On another player through the same Home Assistant, at the answers' volume.
+    fn announce_on(&self, entity: &str, url: &str) -> Result<()> {
         let mut data = json!({
-            "entity_id": self.entity,
+            "entity_id": entity,
             "media_content_id": url,
             "media_content_type": "music",
             "announce": true,
@@ -598,7 +603,24 @@ impl Bridge<'_> {
                     })
                     .await?;
             }
-            AssistantEvent::Announcement { text, audio, timer_ring } => {
+            // What Home Assistant announces plays where answers play, or on a room's speaker.
+            AssistantEvent::Announcement { text, audio, on, .. }
+                if on != AnnounceOn::Device && self.player.is_some() =>
+            {
+                let Some(player) = self.player.clone() else { return Ok(()) };
+                let url = format!("{}{}", self.base_url, self.speech.put(&audio, SAMPLE_RATE));
+                let entity = match on {
+                    AnnounceOn::Player(entity) => entity,
+                    _ => player.entity.clone(),
+                };
+                info!(url, text, player = entity, "announcement for the player");
+                tokio::task::spawn_blocking(move || {
+                    if let Err(error) = player.announce_on(&entity, &url) {
+                        warn!(error = format!("{error:#}"), "announcement on the player failed");
+                    }
+                });
+            }
+            AssistantEvent::Announcement { text, audio, timer_ring, .. } => {
                 // A device that shows timers rings for them itself.
                 if timer_ring && self.device.info.has(feature::TIMERS) || !self.device.info.has(feature::ANNOUNCE) {
                     return Ok(());

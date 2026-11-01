@@ -30,7 +30,7 @@ focus; Norwegian works with Whisper and Piper.
 |---|---|
 | Lights | "turn off the kitchen lights", "dim the living room to 30 percent", "make the bedroom red", "which lights are on?", "undo" |
 | Scenes and scripts | "set the living room to relax", "I want to relax", "run movie time" |
-| Music | "play my liked songs", "play Hello by Adele", "next song", "volume 40 percent" (Music Assistant) |
+| Music | "play my liked songs", "play Hello by Adele", "next song", "volume 40 percent", "play jazz in the kitchen", "play Hello after this song", "what's next?", "move the music to the bedroom" (Music Assistant) |
 | Timers, reminders and alarms | "set a pasta timer for 8 minutes", "remind me in 20 minutes to check the oven", "remind me at 5 to call mum", "wake me up at 7", "snooze" |
 | TV and its screen | "turn off the TV", "put Netflix on the TV", "put on Exit on NRK", "next episode of The Office on Plex", "show the weather on the TV" |
 | Routines | "I'm leaving", "I'm home", "good night" |
@@ -45,6 +45,7 @@ focus; Norwegian works with Whisper and Piper.
 | Shopping list | "add milk to the shopping list", then "brunost", "rømme og egg", "remove the milk", "that's all" (items one after the other, written in Norwegian with `norwegian-groceries`), "what's on the list?" |
 | Small talk | "do you love me?", "you're useless" (it has comebacks), "will you marry me?", "what's the meaning of life?", "open the pod bay doors"; "shut up" just stops it |
 | Safety alerts | spoken unasked when a smoke, carbon monoxide, gas, water or breaking glass sensor goes off |
+| Announcements | what a Home Assistant automation sends ("someone is at the door"), where answers play or on a room's speaker (`announce-token`, see [deployment](docs/deployment.md#announcements-from-home-assistant)) |
 
 The engine's web page lists every skill with its data source, the calls it makes and phrases that reach it.
 

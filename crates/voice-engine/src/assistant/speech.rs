@@ -11,7 +11,7 @@ use voice_proto::SAMPLE_RATE;
 use crate::activity;
 
 use super::follow_up::ECHO_WINDOW;
-use super::{AssistantEvent, Worker, FOLLOW_UP};
+use super::{AnnounceOn, Announcement, AssistantEvent, Worker, FOLLOW_UP};
 
 /// From queuing an answer to the speaker having played it: its length and this for the player to
 /// start. Music started or stopped sooner cuts the announcement off.
@@ -131,15 +131,49 @@ impl Worker {
     /// Speaks outside a conversation, after a chime. The audio also goes to satellites as an
     /// announcement.
     pub(super) fn announce(&mut self, text: &str, chime: Vec<i16>, lang: Lang, timer_ring: bool) {
+        self.announce_on(text, chime, lang, timer_ring, AnnounceOn::Device);
+    }
+
+    /// Text from outside (Home Assistant's) goes through `speak_live`, never into the speech
+    /// cache: it is anything at all, and each one would stay on disk.
+    fn announce_on(&mut self, text: &str, chime: Vec<i16>, lang: Lang, timer_ring: bool, on: AnnounceOn) {
         // Deaf while it plays, like an answer.
         self.busy.store(true, Relaxed);
         let mut audio = chime;
-        if let Err(error) = self.tts.speak(text, lang, &mut |pcm| audio.extend_from_slice(pcm)) {
+        let mut sink = |pcm: &[i16]| audio.extend_from_slice(pcm);
+        let spoken = match on {
+            AnnounceOn::Device => self.tts.speak(text, lang, &mut sink),
+            AnnounceOn::AnswerPlayer | AnnounceOn::Player(_) => self.tts.speak_live(text, lang, &mut sink),
+        };
+        if let Err(error) = spoken {
             warn!(%error, "speech synthesis failed");
         }
         push(&mut self.reply, &audio);
         self.busy.store(false, Relaxed);
-        self.emit(AssistantEvent::Announcement { text: text.to_owned(), audio: audio.into(), timer_ring });
+        self.emit(AssistantEvent::Announcement { text: text.to_owned(), audio: audio.into(), timer_ring, on });
+    }
+
+    /// Speaks what Home Assistant sent, where answers play or on a room's speaker. A room without
+    /// one, or Home Assistant not answering, falls back to where answers play: an announcement
+    /// heard in the wrong room beats one not heard.
+    pub(super) fn announce_from_home(&mut self, announcement: Announcement) {
+        let on = match (&announcement.player, &announcement.room, &self.home_assistant) {
+            (Some(player), _, _) => AnnounceOn::Player(player.clone()),
+            (None, Some(room), Some(ha)) => match voice_assistant::ha::announcer_in(ha, room) {
+                Ok(Some(player)) => AnnounceOn::Player(player),
+                Ok(None) => {
+                    warn!(room, "no speaker that announces in that room; using the answer speaker");
+                    AnnounceOn::AnswerPlayer
+                }
+                Err(error) => {
+                    warn!(error = format!("{error:#}"), room, "could not find the room's speaker");
+                    AnnounceOn::AnswerPlayer
+                }
+            },
+            _ => AnnounceOn::AnswerPlayer,
+        };
+        info!(text = crate::web::one_line(&announcement.text), ?on, "announcement from Home Assistant");
+        self.announce_on(&announcement.text, Vec::new(), announcement.lang, false, on);
     }
 
     pub(super) fn play(&mut self, pcm: &[i16]) {

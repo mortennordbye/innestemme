@@ -14,7 +14,7 @@ use crate::screen::Screen;
 
 use super::pause::Pause;
 use super::wake::WakeName;
-use super::{AssistantEvent, Job, Preview};
+use super::{Announcement, AssistantEvent, Job, Preview};
 
 /// The end of the audio before the wake word fired that holds the wake word: 1.5 s at 16 kHz. More
 /// takes in what was said before it, the TV or someone else.
@@ -125,6 +125,11 @@ impl AssistantHandle {
         answer
     }
 
+    /// Text from Home Assistant to speak, after whatever the assistant is saying now.
+    pub fn announce(&self, announcement: Announcement) {
+        let _ = self.jobs.send(Job::Announce(announcement));
+    }
+
     /// A satellite connected: its names, to look up its room in Home Assistant.
     pub fn satellite(&self, names: Vec<String>) {
         let _ = self.jobs.send(Job::Satellite(names));
@@ -132,5 +137,26 @@ impl AssistantHandle {
 
     pub fn subscribe(&self) -> broadcast::Receiver<AssistantEvent> {
         self.events.subscribe()
+    }
+
+    /// A handle with no assistant behind it, and the announcements sent to it so far.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> (Self, impl Fn() -> Vec<Announcement>) {
+        let (jobs, received) = mpsc::channel();
+        let handle = Self {
+            jobs,
+            events: broadcast::channel(4).0,
+            hear_now: Default::default(),
+            interrupted: Default::default(),
+            pause: Default::default(),
+            screen: Default::default(),
+            party: Party::new(None),
+            activity: Default::default(),
+            voice_gender: None,
+        };
+        let announced = move || {
+            received.try_iter().filter_map(|job| if let Job::Announce(a) = job { Some(a) } else { None }).collect()
+        };
+        (handle, announced)
     }
 }

@@ -376,6 +376,10 @@ struct Args {
     /// unset.
     #[arg(long, env = "VOICE_WAKE_CHECK_FROM")]
     wake_check_from: Option<f32>,
+    /// Lets Home Assistant automations speak through the assistant: `POST /api/announce` on the web
+    /// page's port (`--web`) with `Authorization: Bearer <this>`. Off when unset.
+    #[arg(long, env = "VOICE_ANNOUNCE_TOKEN", hide_env_values = true)]
+    announce_token: Option<String>,
     /// Announcement volume on `--answer-player`, 0 to 1. Default: the player's own volume.
     #[arg(long, env = "VOICE_ANSWER_VOLUME")]
     answer_volume: Option<f32>,
@@ -720,7 +724,8 @@ fn main() -> Result<()> {
                 Web::new(wake, about, handle.clone(), speech.clone(), unhandled.clone())
                     .with_hub(hub)
                     .with_control(control)
-                    .with_learned(learned.clone()),
+                    .with_learned(learned.clone())
+                    .with_announce_token(args.announce_token.clone()),
             )
         });
         tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));

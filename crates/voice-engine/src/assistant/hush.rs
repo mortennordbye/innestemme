@@ -28,7 +28,40 @@ fn players_to_hush(players: Vec<Playing>, music: &[String]) -> Vec<Playing> {
     players.into_iter().filter(|p| !(assistant_plays && p.sonos)).collect()
 }
 
+/// Whether a room's `player` is this room's: the speaker, or one of the players paused for the
+/// request. A command for it then counts as one for here.
+pub(super) fn is_here(hushed: Option<&Hushed>, speaker: Option<&str>, player: &str) -> bool {
+    speaker == Some(player) || hushed.is_some_and(|h| h.players.iter().any(|p| p.id == player))
+}
+
 impl Worker {
+    /// Whether a room as said is the one the request came from, by its player (see [`is_here`]).
+    pub(super) fn is_this_room(&mut self, room: &str) -> bool {
+        let Some(ha) = &self.home_assistant else { return false };
+        let Some(player) = self.player.room_player(ha, room) else { return false };
+        let speaker = self.player.check(ha).ok();
+        is_here(self.hushed.as_ref(), speaker.as_deref(), &player)
+    }
+
+    /// What undoes a music command a draft did here at once, should the request go on to name
+    /// another room ("pause the music" ... "in the kitchen"). Read before it is done.
+    pub(super) fn draft_undo(
+        &mut self,
+        command: &voice_assistant::intent::MusicCommand,
+    ) -> Option<voice_assistant::intent::MusicCommand> {
+        use voice_assistant::intent::MusicCommand::*;
+        match command {
+            // Only music that played: resuming would otherwise start music nobody asked for.
+            Pause | Stop if self.hushed.is_some() || self.music_playing() => Some(Resume),
+            Mute(true) => Some(Mute(false)),
+            Louder | Quieter | VolumeBy(_) | VolumeTo(_) => {
+                let ha = self.home_assistant.as_ref()?;
+                self.player.volume(ha).map(VolumeTo)
+            }
+            _ => None,
+        }
+    }
+
     /// Music Assistant's player is playing.
     pub(super) fn music_playing(&mut self) -> bool {
         let Some(ha) = &self.home_assistant else { return false };
@@ -91,6 +124,21 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_room_paused_by_name_is_not_resumed() {
+        let now = Instant::now();
+        let playing = |id: &str| Playing { id: id.into(), sonos: false, content: String::new() };
+        let hushed = Hushed { players: vec![playing("media_player.tv")], at: now, last_heard: now };
+        let speaker = Some("media_player.living_room_2");
+        // "Pause the music in the living room", said there.
+        assert!(is_here(Some(&hushed), speaker, "media_player.living_room_2"));
+        assert!(is_here(Some(&hushed), speaker, "media_player.tv"));
+        assert!(is_here(None, speaker, "media_player.living_room_2"));
+        // Another room's: what was paused here plays on.
+        assert!(!is_here(Some(&hushed), speaker, "media_player.kitchen"));
+        assert!(!is_here(None, None, "media_player.kitchen"));
+    }
 
     #[test]
     fn hushes_music_assistant_not_the_speaker_under_it() {

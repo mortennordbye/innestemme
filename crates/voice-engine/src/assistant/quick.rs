@@ -83,8 +83,18 @@ pub(super) fn complete_at_once(intent: &Intent) -> bool {
         }
         // Small talk is a whole short phrase; a bare "hey" is often a request still to come.
         Intent::SmallTalk(chat) => *chat != voice_assistant::smalltalk::Chat::Hello,
+        // "Pause the music" is acted on at once even though it may go on "in the kitchen": the
+        // command is the most common there is, and one that turns out to name another room is
+        // undone here (`Worker::draft_undo`). A room said ends it too.
+        Intent::Music(MusicCommand::InRoom(_, inner)) => complete_command(&Intent::Music((**inner).clone())),
         _ => complete_command(intent),
     }
+}
+
+/// A draft that ends in "and" ("pause the music and ...") is not a whole request, whatever it parses as.
+pub(super) fn goes_on(request: &str) -> bool {
+    let last = request.split_whitespace().last().map(voice_assistant::dialog::normalize);
+    last.is_some_and(|w| w == "and" || w == "og")
 }
 
 /// Whether a light request ends on what it switches: "the kitchen lights", "the kitchen".
@@ -169,7 +179,18 @@ mod tests {
         assert!(heard_by_itself(&parse("next song")));
         assert!(!heard_by_itself(&parse("turn it up")));
         assert!(heard_by_itself(&parse("play some music")));
+        assert!(goes_on("pause the music and"));
+        assert!(goes_on("stopp musikken og"));
+        assert!(!goes_on("pause the music"));
+        assert!(!goes_on(""));
+        // At once, though it may go on "in the kitchen": then it is undone here.
         assert!(complete_at_once(&parse("pause the music")));
+        assert!(complete_at_once(&parse("next song")));
+        assert!(complete_at_once(&parse("volume 30")));
+        assert!(complete_at_once(&parse("what's playing")));
+        assert!(complete_at_once(&parse("pause the music in the kitchen")));
+        assert!(complete_at_once(&parse("next song in the bedroom")));
+        assert!(!complete_at_once(&parse("play jazz in the kitchen")));
         assert!(complete_at_once(&parse("what time is it")));
         assert!(!complete_at_once(&parse("what day is it")));
         assert!(!complete_at_once(&parse("turn off the lights")));

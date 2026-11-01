@@ -34,6 +34,8 @@ fn main() -> anyhow::Result<()> {
         ("and what about tomorrow?", &weather, "Weather+bergen+tomorrow"),
         ("it's too dark in the kitchen", &[], "kitchen+on or kitchen+brighter"),
         ("put on some Beatles", &[], "Music+beatles"),
+        ("stick some Beatles on in the kitchen", &[], "Music+inroom+kitchen+beatles"),
+        ("chuck Hey Jude on after this one", &[], "Music+queue+hey jude"),
         ("I'm bored, cheer me up", &[], "Joke or say"),
         ("roughly how much is a cup of flour in millilitres?", &[], "Convert or say"),
         ("what's six foot two in centimetres?", &[], "Convert or say"),

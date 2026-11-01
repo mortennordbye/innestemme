@@ -192,9 +192,32 @@ pub enum AssistantEvent {
     Timer(Notice),
     /// Speech outside a conversation (a timer ran out, a reminder), 24 kHz mono, chime included.
     /// `timer_ring`: a plain timer, which devices with their own timer display ring for instead.
-    Announcement { text: String, audio: Arc<[i16]>, timer_ring: bool },
+    Announcement { text: String, audio: Arc<[i16]>, timer_ring: bool, on: AnnounceOn },
     /// What the TV screen shows now (`Screen::show`'s message), or the face again.
     Show(Option<serde_json::Value>),
+}
+
+/// Where an announcement plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnnounceOn {
+    /// The satellite itself: timers, reminders, warnings.
+    Device,
+    /// The answer player, where answers play, else the satellite: what Home Assistant announces.
+    AnswerPlayer,
+    /// Another Home Assistant media player (a room's), through the answer player's Home Assistant;
+    /// the satellite without one.
+    Player(String),
+}
+
+/// Text Home Assistant asked to have spoken (`POST /api/announce`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Announcement {
+    pub text: String,
+    pub lang: Lang,
+    /// A room by name, for its speaker.
+    pub room: Option<String>,
+    /// A media player entity id, which wins over `room`.
+    pub player: Option<String>,
 }
 
 /// What the assistant would say to a phrase typed on the web page.
@@ -232,6 +255,8 @@ enum Job {
     Alert(String),
     /// A Home Assistant call the answer did not wait for failed: say so, in the request's language.
     Failed(String, Lang),
+    /// Home Assistant asked for this to be spoken.
+    Announce(Announcement),
     /// A button on the web page: a fixed request, acted on without a spoken answer. The answer's
     /// text comes back.
     Act(String, tokio::sync::oneshot::Sender<String>),
@@ -278,6 +303,9 @@ struct Worker {
     /// A command was acted on from its draft, of this many samples: the utterance it ends in is
     /// not answered again.
     answered_draft: Option<usize>,
+    /// What undoes the music command answered from the draft, for a request that goes on to name
+    /// another room.
+    draft_undo: Option<MusicCommand>,
     /// The music was paused for a request, and when something was last heard. It plays on after
     /// the answer, unless the request was to stop it.
     hushed: Option<Hushed>,
@@ -477,6 +505,7 @@ impl Worker {
                     self.announce(&text, tts::alarm_chime(), Lang::English, false);
                 }
                 Job::Failed(text, lang) => self.announce(&text, Vec::new(), lang, false),
+                Job::Announce(announcement) => self.announce_from_home(announcement),
                 Job::Act(text, reply) => {
                     let start = Instant::now();
                     // Typed on the web page: a question asked by voice ("Forget everything I
@@ -507,11 +536,14 @@ impl Worker {
     fn utterance(&mut self, audio: &[i16], ended: Instant) {
         // The utterance ended in the pause the draft was taken in: same speech, more silence.
         let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
+        // Kept only for the rest of a request answered from its draft.
+        let undo = self.draft_undo.take();
         if let Some(len) = self.answered_draft.take() {
             if audio.len() <= len + closing {
                 info!("answered from the draft");
                 return;
             }
+            self.draft_undo = undo;
         }
         // The utterance ends after a stretch of silence; the speaker stopped before it.
         let silence = Duration::from_secs_f32((vad::END_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
@@ -543,6 +575,7 @@ impl Worker {
             }
         };
         self.heard(&candidates, audio, ended, start, from_draft);
+        self.draft_undo = None;
     }
 
     /// A draft that is a whole command with nothing that could follow ("pause the music", "what
@@ -558,15 +591,24 @@ impl Worker {
             _ => return,
         };
         let request = self.learned_meaning(self.config.wake.drop_trailing(&request));
-        if intent::split_commands(&request).is_some() || !complete_at_once(&intent::parse(&request)) {
+        if quick::goes_on(&request) {
+            return;
+        }
+        let intent = intent::parse(&request);
+        if intent::split_commands(&request).is_some() || !complete_at_once(&intent) {
             return;
         }
         let Some((audio, candidates)) = self.draft.take() else { return };
+        let undo = match &intent {
+            Intent::Music(command) => self.draft_undo(command),
+            _ => None,
+        };
         let pause = Duration::from_secs_f32((vad::DRAFT_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
         let now = Instant::now();
         self.speech_ended = now.checked_sub(pause);
         self.answered_draft = Some(audio.len());
         self.heard(&candidates, &audio, now, now, true);
+        self.draft_undo = undo;
     }
 
     /// What was said, as transcribed: a wake word, a request, or nothing for the assistant.
@@ -996,24 +1038,55 @@ impl Worker {
             Intent::Date => date_today(&jiff::Zoned::now(), lang),
             Intent::Party(command) => self.party(command, lang),
             Intent::Music(command) => {
-                // New music replaces what was paused for the request, and "play" plays it itself.
-                if matches!(
-                    command,
-                    MusicCommand::Pause
+                // A command for a room, and whether that room is this one.
+                let (named, inner) = match &command {
+                    MusicCommand::InRoom(room, inner) => (Some(room.as_str()), Some(inner.as_ref())),
+                    MusicCommand::InRooms(rooms, inner) => (rooms.first().map(String::as_str), Some(inner.as_ref())),
+                    _ => (None, None),
+                };
+                let here = named.is_some_and(|room| self.is_this_room(room));
+                // The draft acted here at once, and the request went on to name another room: what
+                // it did here is undone.
+                if let (Some(undo), Some(room)) = (self.draft_undo.take(), named) {
+                    if !here {
+                        info!(room, ?undo, "the request named another room: undoing it here");
+                        self.player.run(self.home_assistant.as_ref(), &undo, lang);
+                    }
+                }
+                // What it does to this room's music, if anything.
+                let for_here = match (named, inner) {
+                    (None, _) => Some(&command),
+                    (Some(_), Some(inner)) if here => Some(inner),
+                    _ => None,
+                };
+                // New music replaces what was paused for the request, and "play" plays it itself;
+                // pausing, stopping or muting it keeps it from playing on after the answer. Music
+                // moved from here is not resumed here. Queued music and another room's leave this
+                // room's music to play on after the answer.
+                let clears = match for_here {
+                    Some(
+                        MusicCommand::Pause
                         | MusicCommand::Resume
                         | MusicCommand::Stop
                         | MusicCommand::Liked
                         | MusicCommand::Playlist(_)
                         | MusicCommand::Song(_)
                         | MusicCommand::Artist(_)
-                        | MusicCommand::Album(_)
-                ) {
+                        | MusicCommand::Album(_),
+                    ) => true,
+                    Some(MusicCommand::Mute(true)) => named.is_some(),
+                    Some(MusicCommand::MoveTo(_, from)) => from.as_deref().is_none_or(|from| self.is_this_room(from)),
+                    _ => false,
+                };
+                if clears {
                     self.hushed = None;
                 }
-                if command == MusicCommand::Stop {
+                if command == MusicCommand::Stop || inner == Some(&MusicCommand::Stop) {
                     self.party_off();
                 }
-                self.player.paused_for_request(self.hushed.is_some());
+                let held: Vec<String> =
+                    self.hushed.iter().flat_map(|h| h.players.iter().map(|p| p.id.clone())).collect();
+                self.player.paused_for_request(self.hushed.is_some(), &held);
                 self.player.run(self.home_assistant.as_ref(), &command, lang)
             }
             Intent::Timer(command) => {

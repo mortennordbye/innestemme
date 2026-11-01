@@ -18,8 +18,8 @@ use crate::names::Names;
 /// Volume change in percent per "louder" / "quieter".
 const VOLUME_STEP: f64 = 10.0;
 
-/// Music Assistant's media players with their names, rendered by Home Assistant.
-const PLAYERS_TEMPLATE: &str = r#"[{% for id in integration_entities("music_assistant") | select("match", "media_player[.]") %}{"id": {{ id | tojson }}, "name": {{ (state_attr(id, "friendly_name") or id) | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
+/// Music Assistant's media players with their names and rooms, rendered by Home Assistant.
+const PLAYERS_TEMPLATE: &str = r#"[{% for id in integration_entities("music_assistant") | select("match", "media_player[.]") %}{"id": {{ id | tojson }}, "name": {{ (state_attr(id, "friendly_name") or id) | tojson }}, "area": {{ (area_name(id) or "") | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
 
 #[derive(Debug, Clone, PartialEq)]
 struct Found {
@@ -46,7 +46,41 @@ pub const ENGLISH_ANSWERS: &[&str] = &[
     "The music is paused.",
     "Shuffling your liked songs.",
     "Sorry, I couldn't play that.",
+    "Nothing is queued after this song.",
 ];
+
+/// How new music joins what plays: Music Assistant's `enqueue` option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Enqueue {
+    Replace,
+    /// After the song playing.
+    Next,
+    /// At the end of the queue.
+    Add,
+}
+
+/// What a play request found, and how an answer names it.
+struct Pick {
+    found: Found,
+    media_type: &'static str,
+    /// "Hello by Adele", "your Kos playlist"; in Norwegian for a Norwegian answer.
+    label: String,
+}
+
+/// A room's speaker: its player, and the room as said for the answer.
+#[derive(Debug, Clone, Copy)]
+struct On<'a> {
+    entity: &'a str,
+    room: &'a str,
+}
+
+/// A Music Assistant player and the Home Assistant area it is in ("" when none).
+#[derive(Debug, Clone, PartialEq)]
+struct Speaker {
+    id: String,
+    name: String,
+    area: String,
+}
 
 pub struct Player {
     /// The speaker: a Music Assistant media player entity id, or its name ("Living Room"). `None`:
@@ -62,6 +96,8 @@ pub struct Player {
     dry_run: bool,
     /// See [`Player::paused_for_request`].
     held: bool,
+    /// The players paused for the request, a room's among them.
+    held_players: Vec<String>,
     late_failure: Option<Arc<dyn Fn(String, Lang) + Send + Sync>>,
 }
 
@@ -70,7 +106,16 @@ const LIBRARY_REFRESH: std::time::Duration = std::time::Duration::from_secs(600)
 
 impl Player {
     pub fn new(speaker: Option<String>) -> Self {
-        Self { speaker, resolved: None, artists: None, liked: None, dry_run: false, held: false, late_failure: None }
+        Self {
+            speaker,
+            resolved: None,
+            artists: None,
+            liked: None,
+            dry_run: false,
+            held: false,
+            held_players: Vec::new(),
+            late_failure: None,
+        }
     }
 
     pub fn dry_run(mut self) -> Self {
@@ -97,9 +142,8 @@ impl Player {
         let entity = match &self.speaker {
             Some(id) if id.contains('.') => id.clone(),
             speaker => {
-                let players: Vec<Value> =
-                    serde_json::from_str(&ha.template(PLAYERS_TEMPLATE)?).context("parsing Music Assistant players")?;
-                let name = |p: &Value| normalize_phrase(p["name"].as_str().unwrap_or_default());
+                let players = speakers(ha)?;
+                let name = |p: &Speaker| normalize_phrase(&p.name);
                 let names = || players.iter().map(name).collect::<Vec<_>>();
                 let found = match speaker {
                     // Music Assistant names its players after the speaker, e.g. "Living Room player".
@@ -118,11 +162,23 @@ impl Player {
                         _ => bail!("set `speaker` to one of the Music Assistant players: {:?}", names()),
                     },
                 };
-                found["id"].as_str().context("Music Assistant player without an id")?.to_owned()
+                found.id.clone()
             }
         };
         self.resolved = Some((entry.clone(), entity.clone()));
         Ok((entry, entity))
+    }
+
+    /// The player for a room as said, if it has one.
+    pub fn room_player(&self, ha: &HomeAssistant, room: &str) -> Option<String> {
+        let players = speakers(ha).ok()?;
+        in_room(&players, room).map(|p| p.id.clone())
+    }
+
+    /// Music Assistant and the player a command is for: a room's, else the speaker's.
+    fn target(&mut self, ha: &HomeAssistant, on: Option<On>) -> Result<(String, String)> {
+        let (entry, entity) = self.resolve(ha)?;
+        Ok((entry, on.map_or(entity, |on| on.entity.to_owned())))
     }
 
     /// Carries out a command; the answer to speak.
@@ -132,26 +188,78 @@ impl Player {
             return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
                 .into();
         };
-        let result = match command {
-            MusicCommand::Liked
-            | MusicCommand::Playlist(_)
-            | MusicCommand::Song(_)
-            | MusicCommand::Artist(_)
-            | MusicCommand::Album(_) => self.start(ha, command, no),
-            MusicCommand::NowPlaying => self.now_playing(ha, no),
-            _ => self.control(ha, command, no),
-        };
-        result.unwrap_or_else(|error| {
-            warn!(%error, ?command, "music request failed");
+        self.dispatch(ha, command, no, None).unwrap_or_else(|error| {
+            warn!(error = format!("{error:#}"), ?command, "music request failed");
             // Look Music Assistant up again next time: the add-on may have restarted or been set up since.
             self.resolved = None;
             if no { "Beklager, det gikk ikke å styre musikken." } else { "Sorry, I couldn't control the music." }.into()
         })
     }
 
-    fn start(&mut self, ha: &HomeAssistant, command: &MusicCommand, no: bool) -> Result<String> {
-        let (entry, entity) = self.resolve(ha)?;
-        let (found, media_type, answer) = match command {
+    fn dispatch(&mut self, ha: &HomeAssistant, command: &MusicCommand, no: bool, on: Option<On>) -> Result<String> {
+        match command {
+            MusicCommand::InRoom(room, inner) => {
+                let players = speakers(ha)?;
+                let Some(speaker) = in_room(&players, room) else {
+                    // "Dancing in the Kitchen" with no kitchen speaker is the title.
+                    if let Some(title) = title_with_room(inner, room, no) {
+                        info!(room, "no player in that room: a title");
+                        return self.dispatch(ha, &title, no, on);
+                    }
+                    return Ok(no_speaker(room, &players, no));
+                };
+                info!(room, player = speaker.id, "music in a room");
+                self.dispatch(ha, inner, no, Some(On { entity: &speaker.id, room }))
+            }
+            // One room at a time: grouping players is not done.
+            MusicCommand::InRooms(rooms, inner) => {
+                let first = MusicCommand::InRoom(rooms[0].clone(), inner.clone());
+                let answer = self.dispatch(ha, &first, no, on)?;
+                Ok(if no {
+                    format!("{answer} Jeg kan bare spille i ett rom om gangen.")
+                } else {
+                    format!("{answer} I can only play in one room at a time.")
+                })
+            }
+            MusicCommand::MoveTo(to, from) => self.move_to(ha, to, from.as_deref(), no),
+            MusicCommand::UpNext => self.up_next(ha, on, no),
+            MusicCommand::Queue(inner, next) if **inner == MusicCommand::NowPlaying => {
+                self.queue_this(ha, no, on, if *next { Enqueue::Next } else { Enqueue::Add })
+            }
+            MusicCommand::Queue(inner, _) if **inner == MusicCommand::Resume => Ok(if no {
+                "Si hva som skal i køen, for eksempel legg til Kygo i køen."
+            } else {
+                "Say what to queue, like queue up Hello by Adele."
+            }
+            .into()),
+            MusicCommand::Queue(inner, next) => {
+                self.start(ha, inner, no, on, if *next { Enqueue::Next } else { Enqueue::Add })
+            }
+            MusicCommand::Liked
+            | MusicCommand::Playlist(_)
+            | MusicCommand::Song(_)
+            | MusicCommand::Artist(_)
+            | MusicCommand::Album(_) => self.start(ha, command, no, on, Enqueue::Replace),
+            MusicCommand::NowPlaying => self.now_playing(ha, on, no),
+            _ => self.control(ha, command, no, on),
+        }
+    }
+
+    fn start(
+        &mut self,
+        ha: &HomeAssistant,
+        command: &MusicCommand,
+        no: bool,
+        on: Option<On>,
+        enqueue: Enqueue,
+    ) -> Result<String> {
+        let (entry, entity) = self.target(ha, on)?;
+        let by = |found: &Found| match (no, found.artist.is_empty()) {
+            (_, true) => found.name.clone(),
+            (false, false) => format!("{} by {}", found.name, found.artist),
+            (true, false) => format!("{} av {}", found.name, found.artist),
+        };
+        let pick = match command {
             MusicCommand::Song(request) => {
                 let artists = self.library_artists(ha, &entry)?;
                 let names = Names::new(artists.iter().map(|a| a.name.as_str()));
@@ -161,34 +269,28 @@ impl Player {
                     let artist =
                         artists.iter().find(|a| a.name == m.name).cloned().context("matched artist vanished")?;
                     info!(heard = request, artist = artist.name, score = m.score, "artist matched");
-                    let answer =
-                        if no { format!("Spiller {}.", artist.name) } else { format!("Playing {}.", artist.name) };
-                    return self.play(ha, &entity, &artist, "artist", answer, no);
-                }
-                // Part of it is ("play hello by the neighborhood"): search with the right spelling.
-                let corrected = names.best(request).map(|m| {
-                    let words: Vec<&str> = request.split_whitespace().collect();
-                    [&words[..m.words.start], &[m.name], &words[m.words.end..]].concat().join(" ")
-                });
-                let found = match search_track(ha, &entry, corrected.as_deref().unwrap_or(request))? {
-                    Some(track) => Some(track),
-                    None if corrected.is_some() => search_track(ha, &entry, request)?,
-                    None => None,
-                };
-                let Some(track) = found else {
-                    return Ok(if no {
-                        format!("Jeg fant ikke {request}.")
-                    } else {
-                        format!("I couldn't find {request}.")
+                    let label = artist.name.clone();
+                    Pick { found: artist, media_type: "artist", label }
+                } else {
+                    // Part of it is ("play hello by the neighborhood"): search with the right spelling.
+                    let corrected = names.best(request).map(|m| {
+                        let words: Vec<&str> = request.split_whitespace().collect();
+                        [&words[..m.words.start], &[m.name], &words[m.words.end..]].concat().join(" ")
                     });
-                };
-                let answer = match (no, track.artist.is_empty()) {
-                    (false, false) => format!("Playing {} by {}.", track.name, track.artist),
-                    (false, true) => format!("Playing {}.", track.name),
-                    (true, false) => format!("Spiller {} av {}.", track.name, track.artist),
-                    (true, true) => format!("Spiller {}.", track.name),
-                };
-                (track, "track", answer)
+                    let found = match search_track(ha, &entry, corrected.as_deref().unwrap_or(request))? {
+                        Some(track) => Some(track),
+                        None if corrected.is_some() => search_track(ha, &entry, request)?,
+                        None => None,
+                    };
+                    let Some(track) = found else {
+                        return Ok(if no {
+                            format!("Jeg fant ikke {request}.")
+                        } else {
+                            format!("I couldn't find {request}.")
+                        });
+                    };
+                    Pick { label: by(&track), found: track, media_type: "track" }
+                }
             }
             MusicCommand::Artist(request) => {
                 let artists = self.library_artists(ha, &entry)?;
@@ -201,8 +303,7 @@ impl Player {
                         format!("I couldn't find {request}.")
                     });
                 };
-                let answer = if no { format!("Spiller {}.", artist.name) } else { format!("Playing {}.", artist.name) };
-                (artist, "artist", answer)
+                Pick { label: artist.name.clone(), found: artist, media_type: "artist" }
             }
             MusicCommand::Album(request) => {
                 let Some(album) = search(ha, &entry, request, "album")? else {
@@ -212,13 +313,7 @@ impl Player {
                         format!("I couldn't find the album {request}.")
                     });
                 };
-                let answer = match (no, album.artist.is_empty()) {
-                    (false, false) => format!("Playing {} by {}.", album.name, album.artist),
-                    (false, true) => format!("Playing {}.", album.name),
-                    (true, false) => format!("Spiller {} av {}.", album.name, album.artist),
-                    (true, true) => format!("Spiller {}.", album.name),
-                };
-                (album, "album", answer)
+                Pick { label: by(&album), found: album, media_type: "album" }
             }
             MusicCommand::Playlist(name) => {
                 let Some(list) = find_playlist(ha, &entry, name)? else {
@@ -228,12 +323,9 @@ impl Player {
                         format!("I couldn't find a playlist called {name}.")
                     });
                 };
-                let answer = if no {
-                    format!("Spiller spillelisten {}.", list.name)
-                } else {
-                    format!("Playing your {} playlist.", list.name)
-                };
-                (list, "playlist", answer)
+                let label =
+                    if no { format!("spillelisten {}", list.name) } else { format!("your {} playlist", list.name) };
+                Pick { found: list, media_type: "playlist", label }
             }
             _ => {
                 let list = match &self.liked {
@@ -242,26 +334,37 @@ impl Player {
                         .ok_or_else(|| anyhow!("no Liked Songs playlist in Music Assistant (is Spotify added?)"))?,
                 };
                 self.liked = Some(list.clone());
-                let answer = if no { "Spiller de likte sangene dine." } else { "Shuffling your liked songs." };
-                (list, "playlist", answer.to_owned())
+                let label = if no { "de likte sangene dine" } else { "your liked songs" };
+                Pick { found: list, media_type: "playlist", label: label.into() }
             }
         };
-        self.play(ha, &entity, &found, media_type, answer, no)
+        let answer = play_answer(&pick, enqueue, on.map(|on| on.room), no);
+        self.play(ha, &entity, &pick.found, pick.media_type, enqueue, answer, no)
     }
 
     /// Starts `found` on a thread of its own and answers at once: Music Assistant answers the
     /// call only once the speaker plays, over a second later, and the music starting is the answer.
     /// A call that fails is told afterwards through [`Player::on_late_failure`].
+    #[allow(clippy::too_many_arguments)]
     fn play(
         &self,
         ha: &HomeAssistant,
         entity: &str,
         found: &Found,
         media_type: &str,
+        enqueue: Enqueue,
         answer: String,
         no: bool,
     ) -> Result<String> {
-        info!(uri = found.uri, name = found.name, artist = found.artist, entity, dry_run = self.dry_run, "playing");
+        info!(
+            uri = found.uri,
+            name = found.name,
+            artist = found.artist,
+            entity,
+            ?enqueue,
+            dry_run = self.dry_run,
+            "playing"
+        );
         if self.dry_run {
             return Ok(answer);
         }
@@ -270,14 +373,22 @@ impl Player {
             (ha.detached(), entity.to_owned(), found.uri.clone(), media_type.to_owned());
         let late = self.late_failure.clone();
         std::thread::spawn(move || {
-            // Before the start, so the queue is shuffled as it loads, first song included.
+            // Before the start, so the queue is shuffled as it loads, first song included. Queued
+            // music leaves the queue's own order alone.
             let shuffle = !matches!(media_type.as_str(), "track" | "album");
-            if let Err(error) =
-                ha.service("media_player", "shuffle_set", json!({ "entity_id": entity, "shuffle": shuffle }))
-            {
-                warn!(%error, "could not set shuffle");
+            let set_shuffle =
+                || ha.service("media_player", "shuffle_set", json!({ "entity_id": entity, "shuffle": shuffle }));
+            if enqueue == Enqueue::Replace {
+                if let Err(error) = set_shuffle() {
+                    warn!(%error, "could not set shuffle");
+                }
             }
-            let play = json!({ "entity_id": entity, "media_id": uri, "media_type": media_type, "enqueue": "replace" });
+            let option = match enqueue {
+                Enqueue::Replace => "replace",
+                Enqueue::Next => "next",
+                Enqueue::Add => "add",
+            };
+            let play = json!({ "entity_id": entity, "media_id": uri, "media_type": media_type, "enqueue": option });
             if let Err(error) = ha.service("music_assistant", "play_media", play) {
                 warn!(error = format!("{error:#}"), "could not start the music");
                 if let Some(late) = late {
@@ -305,8 +416,8 @@ impl Player {
         Ok(artists)
     }
 
-    fn control(&mut self, ha: &HomeAssistant, command: &MusicCommand, no: bool) -> Result<String> {
-        let (_, entity) = self.resolve(ha)?;
+    fn control(&mut self, ha: &HomeAssistant, command: &MusicCommand, no: bool, on: Option<On>) -> Result<String> {
+        let (_, entity) = self.target(ha, on)?;
         let (service, answer) = match command {
             MusicCommand::Pause => ("media_pause", if no { "Ok, pause." } else { "Okay, paused." }),
             MusicCommand::Resume => ("media_play", if no { "Ok." } else { "Okay." }),
@@ -376,7 +487,7 @@ impl Player {
                 }
                 .into());
             }
-            _ => unreachable!("start() handles play requests"),
+            _ => unreachable!("dispatch() handles play, room and queue requests"),
         };
         ha.service("media_player", service, json!({ "entity_id": entity }))?;
         info!(service, entity, "speaker");
@@ -385,23 +496,242 @@ impl Player {
 
     /// The song playing, from the player's state. The title is a sentence of its own: the rest of
     /// what is said stays the same.
-    fn now_playing(&mut self, ha: &HomeAssistant, no: bool) -> Result<String> {
-        let (_, entity) = self.resolve(ha)?;
+    fn now_playing(&mut self, ha: &HomeAssistant, on: Option<On>, no: bool) -> Result<String> {
+        let (_, entity) = self.target(ha, on)?;
         let state = ha.state(&entity)?;
+        // Only this room's music is paused for a request.
+        let held = self.held_on(ha, on);
         info!(
             state = state["state"].as_str(),
             title = state["attributes"]["media_title"].as_str(),
-            held = self.held,
+            held,
             "now playing"
         );
-        Ok(now_playing_answer(&state, self.held, no))
+        Ok(now_playing_answer(&state, held, no))
+    }
+
+    /// The song after this one, from Music Assistant's queue for the player.
+    fn up_next(&mut self, ha: &HomeAssistant, on: Option<On>, no: bool) -> Result<String> {
+        let (_, entity) = self.target(ha, on)?;
+        let response = ha.service_response("music_assistant", "get_queue", json!({ "entity_id": entity }))?;
+        // Keyed by the player asked for; older versions answered with the queue itself.
+        let queue = if response.get(&entity).is_some() { &response[&entity] } else { &response };
+        Ok(up_next_answer(queue, no))
+    }
+
+    /// Moves the music's queue to a room's speaker, from the player that has it: the speaker's,
+    /// else any other that plays or holds paused music.
+    fn move_to(&mut self, ha: &HomeAssistant, room: &str, source: Option<&str>, no: bool) -> Result<String> {
+        let (_, here) = self.resolve(ha)?;
+        let players = speakers(ha)?;
+        let Some(to) = in_room(&players, room) else {
+            return Ok(no_speaker(room, &players, no));
+        };
+        // A room said to move from is where the music is, playing or not.
+        let named = match source {
+            Some(source) => match in_room(&players, source) {
+                Some(player) => Some(player.id.clone()),
+                None => return Ok(no_speaker(source, &players, no)),
+            },
+            None => None,
+        };
+        let has_music = |id: &str| {
+            ha.state(id).is_ok_and(|s| matches!(s["state"].as_str(), Some("playing" | "paused")))
+                || (id == here && self.held)
+        };
+        let others = players.iter().map(|p| p.id.as_str()).filter(|id| *id != here);
+        let found = named.as_deref().or_else(|| std::iter::once(here.as_str()).chain(others).find(|id| has_music(id)));
+        let Some(from) = found else {
+            return Ok(if no { "Ingenting spilles." } else { "Nothing is playing." }.into());
+        };
+        if from == to.id {
+            return Ok(if no {
+                format!("Musikken spiller allerede på {room}.")
+            } else {
+                format!("The music is already playing in the {room}.")
+            });
+        }
+        info!(from, to = to.id, "moving the music");
+        if !self.dry_run {
+            let data = json!({ "entity_id": to.id, "source_player": from, "auto_play": true });
+            ha.service("music_assistant", "transfer_queue", data)?;
+        }
+        Ok(if no {
+            format!("Ok, flytter musikken til {room}.")
+        } else {
+            format!("Okay, moving the music to the {room}.")
+        })
     }
 
     /// The music was paused for the request being answered, so a paused or idle player still
     /// counts as playing for "what's playing".
-    pub fn paused_for_request(&mut self, held: bool) {
+    pub fn paused_for_request(&mut self, held: bool, players: &[String]) {
         self.held = held;
+        self.held_players = players.to_vec();
     }
+
+    /// Whether a room's player is among those paused for the request: the speaker's, or one paused.
+    fn held_on(&mut self, ha: &HomeAssistant, on: Option<On>) -> bool {
+        let Some(on) = on else { return self.held };
+        let here = self.resolve(ha).ok().map(|(_, entity)| entity);
+        self.held && (here.as_deref() == Some(on.entity) || self.held_players.iter().any(|p| p == on.entity))
+    }
+
+    /// The speaker's volume in percent, to put back.
+    pub fn volume(&mut self, ha: &HomeAssistant) -> Option<u8> {
+        let (_, entity) = self.resolve(ha).ok()?;
+        let level = ha.state(&entity).ok()?["attributes"]["volume_level"].as_f64()?;
+        Some((level * 100.0).round().clamp(0.0, 100.0) as u8)
+    }
+
+    /// "Queue this song": the song playing, queued again.
+    fn queue_this(&mut self, ha: &HomeAssistant, no: bool, on: Option<On>, enqueue: Enqueue) -> Result<String> {
+        let (_, entity) = self.target(ha, on)?;
+        let state = ha.state(&entity)?;
+        let Some(found) = playing_track(&state) else {
+            return Ok(if no {
+                "Ingenting spilles. Si hva som skal i køen, for eksempel legg til Kygo i køen."
+            } else {
+                "Nothing is playing. Say what to queue, like queue up Hello by Adele."
+            }
+            .into());
+        };
+        let by = match (no, found.artist.is_empty()) {
+            (_, true) => found.name.clone(),
+            (false, false) => format!("{} by {}", found.name, found.artist),
+            (true, false) => format!("{} av {}", found.name, found.artist),
+        };
+        let pick = Pick { label: by, found, media_type: "track" };
+        let answer = play_answer(&pick, enqueue, on.map(|on| on.room), no);
+        self.play(ha, &entity, &pick.found, pick.media_type, enqueue, answer, no)
+    }
+}
+
+fn speakers(ha: &HomeAssistant) -> Result<Vec<Speaker>> {
+    parse_speakers(&ha.template(PLAYERS_TEMPLATE)?)
+}
+
+fn parse_speakers(json: &str) -> Result<Vec<Speaker>> {
+    let players: Vec<Value> = serde_json::from_str(json).context("parsing Music Assistant players")?;
+    let text = |p: &Value, key: &str| p[key].as_str().unwrap_or_default().to_owned();
+    Ok(players
+        .iter()
+        .filter(|p| p["id"].is_string())
+        .map(|p| Speaker { id: text(p, "id"), name: text(p, "name"), area: text(p, "area") })
+        .collect())
+}
+
+/// Words in a player's name that say what it is, not where: "Kitchen speaker", "Bedroom Sonos".
+const PLAYER_WORDS: &[&str] = &["player", "speaker", "speakers", "sonos", "høyttaler", "høyttaleren", "ma"];
+
+/// A player's name without its kind: "Kitchen player" is "kitchen".
+fn room_of_name(name: &str) -> String {
+    let words: Vec<String> = name
+        .split_whitespace()
+        .map(normalize)
+        .filter(|w| !w.is_empty() && !PLAYER_WORDS.contains(&w.as_str()))
+        .collect();
+    words.join(" ")
+}
+
+/// The player for a room as said ("kitchen", "badet"): one in that Home Assistant area, else one
+/// named after the room, in either language.
+fn in_room<'a>(players: &'a [Speaker], room: &str) -> Option<&'a Speaker> {
+    players
+        .iter()
+        .find(|p| !p.area.is_empty() && crate::ha::is_room(&p.area, room))
+        .or_else(|| players.iter().find(|p| crate::ha::is_room(&room_of_name(&p.name), room)))
+}
+
+/// No speaker in the room asked for: which rooms have one.
+fn no_speaker(room: &str, players: &[Speaker], no: bool) -> String {
+    let lang = if no { Lang::Norwegian } else { Lang::English };
+    let mut rooms: Vec<String> = Vec::new();
+    for player in players {
+        let place = if player.area.is_empty() { room_of_name(&player.name) } else { player.area.clone() };
+        // In the answer's language when it is a room people name ("Stue" is "the living room").
+        let place = match crate::ha::room_name(&place, lang) {
+            Some(name) if no => name.to_owned(),
+            Some(name) => format!("the {name}"),
+            None if no => place.to_lowercase(),
+            None => place,
+        };
+        if !place.is_empty() && !rooms.contains(&place) {
+            rooms.push(place);
+        }
+    }
+    match (rooms.is_empty(), no) {
+        (true, false) => format!("I can't find a speaker in the {room}."),
+        (true, true) => format!("Jeg finner ingen høyttaler på {room}."),
+        (false, false) => {
+            format!("I can't find a speaker in the {room}. There are speakers in {}.", crate::house::join(&rooms, lang))
+        }
+        (false, true) => {
+            format!("Jeg finner ingen høyttaler på {room}. Det er høyttalere på {}.", crate::house::join(&rooms, lang))
+        }
+    }
+}
+
+/// What is said when music starts or is queued: "Playing Hello by Adele.", "Okay, I'll play
+/// Hello by Adele next.", with the room when it is another speaker's.
+fn play_answer(pick: &Pick, enqueue: Enqueue, room: Option<&str>, no: bool) -> String {
+    let at = match (room, no) {
+        (None, _) => String::new(),
+        (Some(room), false) => format!(" in the {room}"),
+        (Some(room), true) => format!(" på {room}"),
+    };
+    let label = &pick.label;
+    let liked = pick.media_type == "playlist" && (label == "your liked songs" || label == "de likte sangene dine");
+    match (enqueue, no) {
+        (Enqueue::Replace, false) if liked => format!("Shuffling your liked songs{at}."),
+        (Enqueue::Replace, true) if liked => format!("Spiller de likte sangene dine{at}."),
+        (Enqueue::Replace, false) => format!("Playing {label}{at}."),
+        (Enqueue::Replace, true) => format!("Spiller {label}{at}."),
+        (Enqueue::Next, false) => format!("Okay, I'll play {label} next{at}."),
+        (Enqueue::Next, true) => format!("Ok, jeg spiller {label} etter denne{at}."),
+        (Enqueue::Add, false) => format!("Okay, I've added {label} to the queue{at}."),
+        (Enqueue::Add, true) => format!("Ok, jeg la {label} i køen{at}."),
+    }
+}
+
+/// The song after this one in a Music Assistant queue (`music_assistant.get_queue`).
+fn up_next_answer(queue: &Value, no: bool) -> String {
+    let item = &queue["next_item"];
+    let media = &item["media_item"];
+    let title = media["name"].as_str().or_else(|| item["name"].as_str()).unwrap_or_default();
+    let artist = media["artists"][0]["name"].as_str().unwrap_or_default();
+    match (title.is_empty(), artist.is_empty(), no) {
+        (true, _, false) => "Nothing is queued after this song.".into(),
+        (true, _, true) => "Det er ingenting i køen etter denne sangen.".into(),
+        (false, true, false) => format!("Next is {title}."),
+        (false, true, true) => format!("Neste er {title}."),
+        (false, false, false) => format!("Next is {title} by {artist}."),
+        (false, false, true) => format!("Neste er {title} av {artist}."),
+    }
+}
+
+/// A song title that ends in a room ("Dancing in the Kitchen"), when that room has no speaker: the
+/// search again with the room put back. Only song searches: a playlist or an artist named "... in
+/// the kitchen" is rare.
+fn title_with_room(command: &MusicCommand, room: &str, no: bool) -> Option<MusicCommand> {
+    // Only the rooms the rules take from a title; one the language model names is meant as a room.
+    if !crate::ha::is_room_phrase(room) {
+        return None;
+    }
+    match command {
+        MusicCommand::Song(title) if no => Some(MusicCommand::Song(format!("{title} på {room}"))),
+        MusicCommand::Song(title) => Some(MusicCommand::Song(format!("{title} in the {room}"))),
+        _ => None,
+    }
+}
+
+/// The track a player plays, from its state: Music Assistant puts the track's URI in
+/// `media_content_id`.
+fn playing_track(state: &Value) -> Option<Found> {
+    let text = |key: &str| state["attributes"][key].as_str().unwrap_or_default().to_owned();
+    let uri = text("media_content_id");
+    let playing = matches!(state["state"].as_str(), Some("playing" | "paused"));
+    (playing && !uri.is_empty()).then(|| Found { uri, name: text("media_title"), artist: text("media_artist") })
 }
 
 fn now_playing_answer(state: &Value, held: bool, no: bool) -> String {
@@ -535,5 +865,106 @@ mod tests {
         assert_eq!(now_playing_answer(&player("off"), true, false), "Nothing is playing.");
         let untitled = json!({ "state": "playing", "attributes": {} });
         assert_eq!(now_playing_answer(&untitled, false, false), "Nothing is playing.");
+    }
+
+    fn players() -> Vec<Speaker> {
+        parse_speakers(
+            r#"[{"id": "media_player.stue_2", "name": "Stue", "area": "Stue"},
+                {"id": "media_player.kitchen_ma", "name": "Kitchen speaker", "area": ""},
+                {"id": "media_player.bed", "name": "Sonos One", "area": "Bedroom"}]"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn finds_a_room_speaker_by_area_or_name_in_either_language() {
+        let players = players();
+        let id = |room: &str| in_room(&players, room).map(|p| p.id.as_str());
+        assert_eq!(id("living room"), Some("media_player.stue_2"));
+        assert_eq!(id("stua"), Some("media_player.stue_2"));
+        assert_eq!(id("kitchen"), Some("media_player.kitchen_ma"));
+        assert_eq!(id("kjøkkenet"), Some("media_player.kitchen_ma"));
+        assert_eq!(id("soverommet"), Some("media_player.bed"));
+        assert_eq!(id("bathroom"), None);
+        assert_eq!(
+            no_speaker("bathroom", &players, false),
+            "I can't find a speaker in the bathroom. There are speakers in the living room, the kitchen and the bedroom."
+        );
+        // Rooms in the answer's language, whatever Home Assistant calls them.
+        assert_eq!(
+            no_speaker("badet", &players, true),
+            "Jeg finner ingen høyttaler på badet. Det er høyttalere på stua, kjøkkenet og soverommet."
+        );
+        let odd = [Speaker { id: "media_player.x".into(), name: "X".into(), area: "Loft".into() }];
+        assert_eq!(
+            no_speaker("bathroom", &odd, false),
+            "I can't find a speaker in the bathroom. There are speakers in Loft."
+        );
+        assert_eq!(no_speaker("bathroom", &[], false), "I can't find a speaker in the bathroom.");
+    }
+
+    #[test]
+    fn says_where_and_when_music_plays() {
+        let found = Found { uri: "spotify://x".into(), name: "Hello".into(), artist: "Adele".into() };
+        let pick = |label: &str, media_type| Pick { found: found.clone(), media_type, label: label.into() };
+        let song = pick("Hello by Adele", "track");
+        assert_eq!(play_answer(&song, Enqueue::Replace, None, false), "Playing Hello by Adele.");
+        assert_eq!(
+            play_answer(&song, Enqueue::Replace, Some("kitchen"), false),
+            "Playing Hello by Adele in the kitchen."
+        );
+        assert_eq!(play_answer(&song, Enqueue::Next, None, false), "Okay, I'll play Hello by Adele next.");
+        assert_eq!(play_answer(&song, Enqueue::Add, None, false), "Okay, I've added Hello by Adele to the queue.");
+        assert_eq!(
+            play_answer(&pick("Hello av Adele", "track"), Enqueue::Replace, Some("badet"), true),
+            "Spiller Hello av Adele på badet."
+        );
+        assert_eq!(
+            play_answer(&pick("Hello av Adele", "track"), Enqueue::Add, None, true),
+            "Ok, jeg la Hello av Adele i køen."
+        );
+        let liked = pick("your liked songs", "playlist");
+        assert_eq!(play_answer(&liked, Enqueue::Replace, None, false), "Shuffling your liked songs.");
+        assert_eq!(
+            play_answer(&liked, Enqueue::Replace, Some("bedroom"), false),
+            "Shuffling your liked songs in the bedroom."
+        );
+    }
+
+    #[test]
+    fn a_title_that_ends_in_a_room_without_a_speaker_is_a_title() {
+        let song = |s: &str| MusicCommand::Song(s.into());
+        assert_eq!(title_with_room(&song("dancing"), "kitchen", false), Some(song("dancing in the kitchen")));
+        assert_eq!(title_with_room(&song("ghost"), "hall", false), Some(song("ghost in the hall")));
+        assert_eq!(title_with_room(&song("dans"), "kjøkkenet", true), Some(song("dans på kjøkkenet")));
+        // Not a title: playing something else here would be wrong.
+        assert_eq!(title_with_room(&MusicCommand::Pause, "kitchen", false), None);
+        assert_eq!(title_with_room(&MusicCommand::Liked, "kitchen", false), None);
+        // A room the language model names is a room.
+        assert_eq!(title_with_room(&song("jazz"), "garden", false), None);
+    }
+
+    #[test]
+    fn queues_the_song_playing() {
+        let state = json!({ "state": "playing", "attributes": {
+            "media_content_id": "spotify://track/1", "media_title": "Hello", "media_artist": "Adele" } });
+        let track = playing_track(&state).unwrap();
+        assert_eq!(
+            (track.uri.as_str(), track.name.as_str(), track.artist.as_str()),
+            ("spotify://track/1", "Hello", "Adele")
+        );
+        assert_eq!(playing_track(&json!({ "state": "idle", "attributes": { "media_content_id": "x" } })), None);
+        assert_eq!(playing_track(&json!({ "state": "playing", "attributes": {} })), None);
+    }
+
+    #[test]
+    fn tells_the_next_song_in_the_queue() {
+        let queue = json!({ "next_item": { "name": "Adele - Hello", "media_item": { "name": "Hello", "artists": [{ "name": "Adele" }] } } });
+        assert_eq!(up_next_answer(&queue, false), "Next is Hello by Adele.");
+        assert_eq!(up_next_answer(&queue, true), "Neste er Hello av Adele.");
+        let bare = json!({ "next_item": { "name": "Radio stream" } });
+        assert_eq!(up_next_answer(&bare, false), "Next is Radio stream.");
+        assert_eq!(up_next_answer(&json!({ "next_item": null }), false), "Nothing is queued after this song.");
+        assert!(ENGLISH_ANSWERS.contains(&up_next_answer(&json!({}), false).as_str()));
     }
 }

@@ -242,8 +242,9 @@ pub async fn serve_http(
         let (metrics, speech, web) = (metrics.clone(), speech.clone(), web.clone());
         tokio::spawn(async move {
             // The whole request head, which clients may send in pieces; closing with unread
-            // input would reset the connection under the response.
-            let (mut request, mut n) = ([0u8; 2048], 0);
+            // input would reset the connection under the response. Room for an announcement's
+            // text in the URL: its 1200 bytes at most are 3600 encoded, before the headers.
+            let (mut request, mut n) = ([0u8; 8192], 0);
             while n < request.len() && !request[..n].windows(4).any(|w| w == b"\r\n\r\n") {
                 match stream.read(&mut request[n..]).await {
                     Ok(0) | Err(_) => return,
@@ -269,7 +270,11 @@ pub async fn serve_http(
                     return;
                 }
             }
+            let head = std::str::from_utf8(&request[..n]).unwrap_or_default();
             let page = match &web {
+                Some(web) if target.starts_with("/api/announce") => {
+                    web.announce(method == b"POST", target, head, peer.ip())
+                }
                 Some(web) if target.starts_with("/api/hub") => web.hub_api(method == b"POST", target).await,
                 Some(web) if target.starts_with("/api/ha/") => web.control_api(method == b"POST", target).await,
                 Some(web) if target.starts_with("/api/act?") => web.act(method == b"POST", target).await,
