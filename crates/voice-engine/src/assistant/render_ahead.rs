@@ -23,6 +23,7 @@ const DATA_QUESTIONS: &[&str] = &[
     "What's the electricity price now?",
     "When is electricity cheapest today?",
     "When is electricity cheapest tomorrow?",
+    "When should I run the dishwasher?",
 ];
 
 impl Worker {

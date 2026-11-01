@@ -240,9 +240,16 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 Some("tomorrow") => When::Tomorrow,
                 _ => When::Today,
             };
-            Decision::Act(Intent::Power(match text("question").as_deref() {
-                Some("cheapest") => PowerQuery::Cheapest(when),
-                Some("most_expensive") => PowerQuery::Dearest(when),
+            let hours = args["hours"].as_f64().or_else(|| text("hours").and_then(|h| h.parse().ok()));
+            let hours = hours.map(|h| h.round().clamp(1.0, 12.0) as u8);
+            Decision::Act(Intent::Power(match (text("question").as_deref(), hours) {
+                (Some("cheapest"), Some(hours)) if hours > 1 => {
+                    // A model fills in "today" by habit; a stretch runs on past midnight unless
+                    // tonight or tomorrow was said.
+                    PowerQuery::Window { hours, when: (when != When::Today).then_some(when) }
+                }
+                (Some("cheapest"), _) => PowerQuery::Cheapest(when),
+                (Some("most_expensive"), _) => PowerQuery::Dearest(when),
                 _ if when == When::Tomorrow => PowerQuery::Tomorrow,
                 _ => PowerQuery::Now,
             }))
@@ -260,6 +267,8 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             Decision::Act(Intent::Transit(TransitQuery {
                 mode,
                 destination: text("destination").map(|d| d.to_lowercase()),
+                line: text("line").map(|l| l.to_lowercase()),
+                from: text("from").map(|f| f.to_lowercase()),
             }))
         }
         "timer" => {
@@ -473,7 +482,9 @@ pub fn tools() -> Value {
             "When the next bus, tram, metro, train or ferry leaves near home.",
             json!({ "type": "object", "properties": {
             "mode": { "type": "string", "enum": ["any", "bus", "tram", "metro", "train", "ferry"] },
-            "destination": { "type": "string", "description": "Omit if not said" }
+            "destination": { "type": "string", "description": "Omit if not said" },
+            "line": { "type": "string", "description": "Line number, e.g. 31" },
+            "from": { "type": "string", "description": "Stop, if not near home" }
         } })
         ),
         tool(
@@ -489,7 +500,8 @@ pub fn tools() -> Value {
             "Electricity price now, or the cheapest or most expensive hour.",
             json!({ "type": "object", "properties": {
             "question": { "type": "string", "enum": ["now", "cheapest", "most_expensive"] },
-            "when": { "type": "string", "enum": ["today", "tonight", "tomorrow"] }
+            "when": { "type": "string", "enum": ["today", "tonight", "tomorrow"] },
+            "hours": { "type": "number", "description": "Cheapest hours in a row" }
         } })
         ),
         tool(
@@ -674,6 +686,19 @@ mod tests {
         assert_eq!(
             parse_reply(&call("electricity_price", r#"{"question":"cheapest","when":"tonight"}"#)).unwrap(),
             Decision::Act(Intent::Power(PowerQuery::Cheapest(When::Tonight)))
+        );
+        assert_eq!(
+            parse_reply(&call("electricity_price", r#"{"question":"cheapest","when":"today","hours":3}"#)).unwrap(),
+            Decision::Act(Intent::Power(PowerQuery::Window { hours: 3, when: None }))
+        );
+        assert_eq!(
+            parse_reply(&call("departures", r#"{"mode":"bus","line":"31","from":"Majorstuen"}"#)).unwrap(),
+            Decision::Act(Intent::Transit(TransitQuery {
+                mode: Mode::Bus,
+                destination: None,
+                line: Some("31".into()),
+                from: Some("majorstuen".into()),
+            }))
         );
         assert_eq!(
             parse_reply(&call("who_is_home", r#"{"name":"Ingrid"}"#)).unwrap(),

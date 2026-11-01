@@ -78,6 +78,20 @@ sound-alike, then the geocoder's best match anywhere. A sound-alike also answers
 "Lerwick" is one letter off Larvik and ends up there. Places found or not are kept in memory. "Next Monday" asked
 on a Monday is a week ahead, and "tonight" asked after 04:00 is the coming evening.
 
+**Departures and power.** Departures come from the stops within a walk of home, by mode and by line. A number
+is a line only with a clear cue ("line 31", "bus 31", "the 31 bus", "37-buss", "neste 37", "next N12"); "the next
+2 buses", "the next 10 mins" and "the 8:15 train" are a count and times. A destination is a trip from home, which
+also says when to leave; with a line, only trips riding it count, and none is said as such rather than the line
+going the other way. "From Nationaltheatret" looks the stop up in Entur's geocoder, preferring one that serves
+the mode asked ("next train from Lysaker" is the station), and answers from it; "from the stop" is the stop near
+home. Electricity prices answer the price now, the cheapest or dearest hour, the cheapest hour within the next
+hours ("cheapest in the next 3 hours"), and the cheapest whole hours in a row ("the cheapest 3 hours", "when should
+I run the dishwasher": 3 hours, 2 for the washing machine or dryer, 4 to charge the car), averaged by time over
+hourly or quarter-hour prices. A stretch starts now, counting only what is left of the price under way, or at a
+later price. Without "today", "tonight" or "tomorrow" it runs over every price known, past midnight once
+tomorrow's prices are out (around 13:00); before that the answer says they aren't out yet. Reminders and timers
+("remind me to run the dishwasher in 3 hours") are never price questions.
+
 **Home Assistant.** REST only (`ha.rs`): one template call lists every light with its area, service calls do the
 rest. Writes that the answer does not depend on (lights, scenes, the lockdown, routines, ringing a phone, pausing
 and resuming music) go to a queue on a thread of their own and run in order, because Home Assistant answers a

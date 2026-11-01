@@ -1317,6 +1317,10 @@ fn rules(text: &str) -> Intent {
         if let Some(command) = shopping::parse(text) {
             return Intent::ShoppingList(command);
         }
+        // Before timers: "billigste fire timer med strøm" is four hours of prices, not a timer.
+        if let Some(query @ PowerQuery::Window { .. }) = power::parse(text) {
+            return Intent::Power(query);
+        }
         if let Some(command) = timer::parse(text) {
             return Intent::Timer(command);
         }
@@ -2090,6 +2094,26 @@ mod tests {
         assert_eq!(parse("is it dark outside"), Intent::House(HouseCommand::Sun(SunEvent::IsDark(true))));
         assert_eq!(parse("when does it get light"), Intent::House(HouseCommand::Sun(SunEvent::Sunrise)));
         assert!(matches!(parse("when is electricity cheapest tonight"), Intent::Power(_)));
+        // Appliances and stretches of hours reach the prices, not the house or a timer.
+        for question in [
+            "best time to run the washing machine tonight",
+            "when is it cheapest to charge the car",
+            "billigste fire timer med strøm",
+            "when should I start the dryer",
+            "when should I charge the car",
+            "når bør jeg lade bilen",
+        ] {
+            assert!(
+                matches!(parse(question), Intent::Power(crate::power::PowerQuery::Window { .. })),
+                "{question}: {:?}",
+                parse(question)
+            );
+        }
+        // Reminders stay reminders.
+        assert!(matches!(parse("remind me to run the dishwasher in 3 hours"), Intent::Timer(_)));
+        for question in ["når går neste 37-buss", "next train from Oslo S", "when does bus 20 leave"] {
+            assert!(matches!(parse(question), Intent::Transit(_)), "{question}: {:?}", parse(question));
+        }
         assert_eq!(parse("Good morning!"), Intent::Briefing);
         assert_eq!(parse("god morgen"), Intent::Briefing);
         assert_eq!(parse("give me my morning briefing"), Intent::Briefing);

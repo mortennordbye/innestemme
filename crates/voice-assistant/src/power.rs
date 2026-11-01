@@ -34,6 +34,126 @@ pub enum PowerQuery {
     Tomorrow,
     Cheapest(When),
     Dearest(When),
+    /// "The cheapest 3 hours", "when should I run the dishwasher": the cheapest stretch of whole
+    /// hours in a row. `None` is from now on, over every price known, so it crosses midnight once
+    /// tomorrow's prices are out.
+    Window {
+        hours: u8,
+        when: Option<When>,
+    },
+    /// "Cheapest in the next 3 hours", "billigst de neste tre timene": the cheapest hour within
+    /// that time from now.
+    CheapestWithin(u8),
+}
+
+/// Appliances people time by the price, and how long a run of each takes.
+const APPLIANCES: &[(&str, u8)] = &[
+    ("dishwasher", 3),
+    ("oppvaskmaskin", 3),
+    ("oppvaskmaskinen", 3),
+    ("oppvasken", 3),
+    ("washer", 2),
+    ("vaskemaskin", 2),
+    ("vaskemaskinen", 2),
+    ("klesvasken", 2),
+    ("dryer", 2),
+    ("tørketrommel", 2),
+    ("tørketrommelen", 2),
+];
+/// Charging the car takes longer than a wash.
+const CAR_HOURS: u8 = 4;
+/// Longest stretch asked for: a day of prices has 24 hours.
+const MOST_HOURS: u8 = 12;
+/// Hours after a number. English "time" is not an hour ("cheapest time"); Norwegian "time" is,
+/// but only after "en"/"ett" (`hours_said`).
+const HOUR_WORDS: &[&str] = &["hours", "hour", "timer", "timene", "timers"];
+/// Words before "timer" that make it a kitchen timer, not Norwegian hours: "set a timer".
+const TIMER_LEAD: &[&str] = &["a", "the", "my", "set", "start", "kitchen", "en", "sett", "starte"];
+const NUMBER_WORDS: &[(&str, u8)] = &[
+    ("one", 1),
+    ("two", 2),
+    ("three", 3),
+    ("four", 4),
+    ("five", 5),
+    ("six", 6),
+    ("seven", 7),
+    ("eight", 8),
+    ("nine", 9),
+    ("ten", 10),
+    ("eleven", 11),
+    ("twelve", 12),
+    ("to", 2),
+    ("tre", 3),
+    ("fire", 4),
+    ("fem", 5),
+    ("seks", 6),
+    ("sju", 7),
+    ("syv", 7),
+    ("åtte", 8),
+    ("ni", 9),
+    ("ti", 10),
+    ("elleve", 11),
+    ("tolv", 12),
+];
+/// Verbs for starting an appliance: "when should I run the dishwasher".
+const RUN_WORDS: &[&str] = &[
+    "run", "start", "use", "put", "charge", "wash", "kjøre", "kjøra", "starte", "sette", "bruke", "skru", "lade",
+    "vaske",
+];
+/// Words that make a sentence a reminder or a timer, which a stretch of hours must not take:
+/// "remind me to run the dishwasher in 3 hours".
+const REMINDER_WORDS: &[&str] = &["remind", "reminder", "minn", "påminnelse", "alarm", "vekkerklokke"];
+
+/// How many hours are asked for ("3 hours", "tre timer", "an hour", "en time"), and whether they
+/// are counted from now ("in the next 3 hours", "de neste tre timene"). Every hour word is tried:
+/// "best time to run the dishwasher for two hours".
+fn hours_said(words: &[String]) -> Option<(u8, bool)> {
+    (1..words.len()).find_map(|at| {
+        let unit = words[at].as_str();
+        let before = words[at - 1].as_str();
+        let hours = match unit {
+            "hour" if ["a", "an", "one", "1"].contains(&before) => 1,
+            "time" | "timen" if ["en", "ett", "1"].contains(&before) => 1,
+            _ if HOUR_WORDS.contains(&unit) && !(unit == "timer" && TIMER_LEAD.contains(&before)) => before
+                .parse::<u8>()
+                .ok()
+                .or_else(|| NUMBER_WORDS.iter().find(|(w, _)| *w == before).map(|&(_, n)| n))?,
+            _ => return None,
+        };
+        let from_now = at >= 2 && ["next", "neste"].contains(&words[at - 2].as_str());
+        (1..=MOST_HOURS).contains(&hours).then_some((hours, from_now))
+    })
+}
+
+/// A reminder or a timer, which a price question must not take.
+fn is_reminder(words: &[String]) -> bool {
+    words.iter().any(|w| REMINDER_WORDS.contains(&w.as_str()))
+        || words.windows(2).any(|p| p[1] == "timer" && TIMER_LEAD.contains(&p[0].as_str()))
+}
+
+/// Whether the request asks when it is cheap: "cheapest", "best time", "when should I",
+/// "når bør jeg". "Best way to clean the dishwasher" and "when does the dryer start" do not.
+fn asks_when_cheap(words: &[String]) -> bool {
+    let has = |w: &str| words.iter().any(|x| x == w);
+    let pair = |a: &str, b: &str| words.windows(2).any(|p| p[0] == a && p[1] == b);
+    let cheap = words.iter().any(|w| CHEAP_WORDS.contains(&w.as_str()));
+    let best_time = pair("best", "time") || pair("beste", "tidspunkt") || pair("beste", "tid") || has("lurest");
+    let should = ["should", "to", "bør", "skal", "lurt"].iter().any(|w| has(w));
+    let run = words.iter().any(|w| RUN_WORDS.contains(&w.as_str()));
+    cheap || best_time || ((has("when") || has("når")) && should && run)
+}
+
+/// The run length of an appliance the request names.
+fn appliance_hours(words: &[String]) -> Option<u8> {
+    let has = |w: &str| words.iter().any(|x| x == w);
+    let pair = |a: &str, b: &str| words.windows(2).any(|p| p[0] == a && p[1] == b);
+    if pair("washing", "machine") || pair("tumble", "dryer") {
+        Some(2)
+    } else if (has("charge") || has("lade")) && (has("car") || has("bilen") || has("elbilen")) {
+        Some(CAR_HOURS)
+    } else {
+        APPLIANCES.iter().find(|(w, _)| has(w)).map(|&(_, h)| h)
+    }
 }
 
 const POWER_WORDS: &[&str] = &[
@@ -55,20 +175,40 @@ const DEAR_WORDS: &[&str] = &["expensive", "dearest", "highest", "dyr", "dyrest"
 pub fn parse(text: &str) -> Option<PowerQuery> {
     let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
     let has = |w: &str| words.iter().any(|x| x == w);
+    let pair = |a: &str, b: &str| words.windows(2).any(|p| p[0] == a && p[1] == b);
+    let said_when = if has("tomorrow") || has("imorgen") || pair("i", "morgen") {
+        Some(When::Tomorrow)
+    } else if has("tonight") || has("night") || pair("i", "kveld") || pair("i", "natt") || has("natt") {
+        Some(When::Tonight)
+    } else if has("today") || pair("i", "dag") {
+        Some(When::Today)
+    } else {
+        None
+    };
+    let reminder = is_reminder(&words);
+    let said_hours = hours_said(&words);
+    // "When should I run the dishwasher" names no power word; the machine says how long.
+    if let (false, true, Some(hours)) = (reminder, asks_when_cheap(&words), appliance_hours(&words)) {
+        // "In the next 5 hours" bounds when, not how long the machine runs.
+        let hours = match said_hours {
+            Some((said, false)) => said,
+            _ => hours,
+        };
+        return Some(PowerQuery::Window { hours, when: said_when });
+    }
     let power = words.iter().any(|w| POWER_WORDS.contains(&w.as_str()))
         || ((has("power") || has("energy")) && words.iter().any(|w| PRICE_WORDS.contains(&w.as_str())));
     if !power {
         return None;
     }
-    let pair = |a: &str, b: &str| words.windows(2).any(|p| p[0] == a && p[1] == b);
-    let when = if has("tomorrow") || has("imorgen") || pair("i", "morgen") {
-        When::Tomorrow
-    } else if has("tonight") || has("night") || pair("i", "kveld") || pair("i", "natt") || has("natt") {
-        When::Tonight
-    } else {
-        When::Today
-    };
-    if words.iter().any(|w| CHEAP_WORDS.contains(&w.as_str())) || pair("best", "time") {
+    let when = said_when.unwrap_or(When::Today);
+    let cheap = words.iter().any(|w| CHEAP_WORDS.contains(&w.as_str())) || pair("best", "time");
+    match (cheap && !reminder, said_hours) {
+        (true, Some((hours, true))) => return Some(PowerQuery::CheapestWithin(hours)),
+        (true, Some((hours, false))) => return Some(PowerQuery::Window { hours, when: said_when }),
+        _ => {}
+    }
+    if cheap {
         return Some(PowerQuery::Cheapest(when));
     }
     // "How expensive is power", "er strømmen dyr" ask the price; "when is it most expensive" the dearest.
@@ -123,7 +263,11 @@ impl Power {
     }
 
     pub fn answer(&mut self, query: PowerQuery, lang: Lang) -> Result<String> {
-        let now = Zoned::now();
+        self.answer_at(query, lang, &Zoned::now())
+    }
+
+    /// The answer as of `now`, which the tests fix.
+    fn answer_at(&mut self, query: PowerQuery, lang: Lang, now: &Zoned) -> Result<String> {
         let today = now.date();
         let no = lang == Lang::Norwegian;
         let vat = if self.area == "NO4" { 1.0 } else { 1.25 };
@@ -245,6 +389,121 @@ impl Power {
                     (true, false) => format!("{word} er klokka {}, {}.", at(pick), price_of(pick)),
                 })
             }
+            PowerQuery::Window { hours, when } => {
+                let tomorrow = today.checked_add(1.day())?;
+                let tz = now.time_zone().clone();
+                let midnight = |date: Date| date.to_zoned(tz.clone()).map(|z| z.timestamp());
+                let (from, to) = match when {
+                    None => (now.timestamp(), Timestamp::MAX),
+                    Some(When::Today) => (now.timestamp(), midnight(tomorrow)?),
+                    Some(When::Tonight) => {
+                        (now.timestamp(), tomorrow.at(NIGHT_ENDS, 0, 0, 0).to_zoned(tz.clone())?.timestamp())
+                    }
+                    Some(When::Tomorrow) => (midnight(tomorrow)?, midnight(tomorrow.checked_add(1.day())?)?),
+                };
+                let mut intervals: Vec<Interval> = Vec::new();
+                if when != Some(When::Tomorrow) {
+                    intervals.extend(self.day(today)?.unwrap_or_default());
+                }
+                let mut tomorrow_missing = false;
+                if when != Some(When::Today) {
+                    match self.day(tomorrow)? {
+                        Some(day) => intervals.extend(day),
+                        None => tomorrow_missing = true,
+                    }
+                }
+                let published = if no {
+                    "Morgendagens strømpriser kommer rundt klokka ett."
+                } else {
+                    "Tomorrow's prices come out around one in the afternoon."
+                };
+                if tomorrow_missing && when == Some(When::Tomorrow) {
+                    return Ok(published.into());
+                }
+                let minutes = i64::from(hours) * 60;
+                let Some(found) = cheapest_window(&intervals, from, to, minutes, price) else {
+                    // Fewer hours left today than asked: tomorrow's prices will tell, not "yet".
+                    return Ok(match (no, tomorrow_missing) {
+                        (false, true) => format!("There aren't {hours} hours of prices left today. {published}"),
+                        (true, true) => format!("Det er ikke {hours} timer med priser igjen i dag. {published}"),
+                        (false, false) => format!("I don't know the prices for {hours} hours in a row."),
+                        (true, false) => format!("Jeg kjenner ikke prisene for {hours} timer i strekk."),
+                    });
+                };
+                // Without a day said, a cheaper stretch may still come tonight once tomorrow is out.
+                let not_out = match (tomorrow_missing && when.is_none(), no) {
+                    (false, _) => "",
+                    (true, false) => " Tomorrow's prices aren't out yet.",
+                    (true, true) => " Morgendagens priser er ikke ute ennå.",
+                };
+                let clock = |t: Timestamp| t.to_zoned(tz.clone()).strftime("%H:%M").to_string();
+                let starts = if found.start <= now.timestamp() {
+                    if no {
+                        "nå".to_string()
+                    } else {
+                        "now".to_string()
+                    }
+                } else if no {
+                    format!("klokka {}", clock(found.start))
+                } else {
+                    format!("at {}", clock(found.start))
+                };
+                // A start in tomorrow's day says so; the small hours read as tonight. Not when tomorrow
+                // was asked for.
+                let start_day = found.start.to_zoned(tz.clone());
+                let next_day = start_day.date() == tomorrow && start_day.hour() >= 6 && when != Some(When::Tomorrow);
+                let day = match (next_day, no) {
+                    (false, _) => "",
+                    (true, false) => " tomorrow",
+                    (true, true) => " i morgen",
+                };
+                let ends = clock(found.end);
+                let average = format!("{} {}", format_price(found.average, lang), per_kwh(lang));
+                let said = match (no, hours) {
+                    // The window, then the price: the first sentence has a bounded shape, rendered
+                    // ahead after each refresh (`DATA_QUESTIONS`), and "It costs" is kept as well.
+                    (false, 1) => {
+                        format!("The cheapest hour starts {starts}{day} and ends at {ends}. On average, it costs {average}.")
+                    }
+                    (false, n) => format!(
+                        "The cheapest {n} hours start {starts}{day} and end at {ends}. On average, it costs {average}."
+                    ),
+                    (true, 1) => {
+                        format!(
+                            "Den billigste timen starter {starts}{day} og slutter klokka {ends}, i snitt {average}."
+                        )
+                    }
+                    (true, n) => format!(
+                        "De billigste {n} timene starter {starts}{day} og slutter klokka {ends}, i snitt {average}."
+                    ),
+                };
+                Ok(format!("{said}{not_out}"))
+            }
+            PowerQuery::CheapestWithin(hours) => {
+                let tomorrow = today.checked_add(1.day())?;
+                let from = now.timestamp();
+                let to = from + jiff::SignedDuration::from_hours(i64::from(hours));
+                let mut intervals = self.day(today)?.unwrap_or_default();
+                intervals.extend(self.day(tomorrow)?.unwrap_or_default());
+                let pick = intervals
+                    .iter()
+                    .filter(|i| i.time_end > from && i.time_start < to)
+                    .min_by(|a, b| price(a).total_cmp(&price(b)));
+                let Some(pick) = pick else { bail!("no prices in the next {hours} hours") };
+                let started = pick.time_start <= from;
+                Ok(match (no, started) {
+                    (false, true) => {
+                        format!("Cheapest in the next {hours} hours is right now. It costs {}.", price_of(pick))
+                    }
+                    (false, false) => {
+                        format!("Cheapest in the next {hours} hours is at {}. It costs {}.", at(pick), price_of(pick))
+                    }
+                    (true, true) => format!("Billigst de neste {hours} timene er akkurat nå, {}.", price_of(pick)),
+                    (true, false) => {
+                        format!("Billigst de neste {hours} timene er klokka {}, {}.", at(pick), price_of(pick))
+                    }
+                })
+            }
         }
     }
 
@@ -265,6 +524,8 @@ impl Power {
             PowerQuery::Tomorrow
                 | PowerQuery::Cheapest(When::Tonight | When::Tomorrow)
                 | PowerQuery::Dearest(When::Tonight | When::Tomorrow)
+                | PowerQuery::Window { when: None | Some(When::Tonight | When::Tomorrow), .. }
+                | PowerQuery::CheapestWithin(_)
         );
         kept(today) && (!tomorrow || today.tomorrow().is_ok_and(kept))
     }
@@ -288,6 +549,55 @@ impl Power {
         self.days.push((date, prices.clone(), Instant::now()));
         Ok(prices)
     }
+}
+
+/// The cheapest stretch found: from, to and its average price.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Stretch {
+    start: Timestamp,
+    end: Timestamp,
+    average: f64,
+}
+
+/// The cheapest `minutes` of prices in a row between `from` and `to`, averaged by time (prices
+/// come per hour or per quarter hour). It starts either at `from` itself, counting only what is
+/// left of the price under way, or at a later price's start: never back in time. `None` when the
+/// known prices hold no stretch that long, or have a gap in it.
+fn cheapest_window(
+    intervals: &[Interval],
+    from: Timestamp,
+    to: Timestamp,
+    minutes: i64,
+    price: impl Fn(&Interval) -> f64,
+) -> Option<Stretch> {
+    let mut sorted: Vec<&Interval> = intervals.iter().filter(|i| i.time_end > from && i.time_start < to).collect();
+    sorted.sort_by_key(|i| i.time_start);
+    sorted.dedup_by_key(|i| i.time_start);
+    let wanted = minutes * 60;
+    let mut best: Option<Stretch> = None;
+    for first in 0..sorted.len() {
+        let start = sorted[first].time_start.max(from);
+        let (mut covered, mut cost, mut end) = (0i64, 0.0, start);
+        for interval in &sorted[first..] {
+            // Each price picks up where the last one ended; the first may be partly over.
+            if interval.time_start > end || interval.time_end <= end || covered >= wanted {
+                break;
+            }
+            let seconds = (interval.time_end.as_second() - end.as_second()).min(wanted - covered);
+            covered += seconds;
+            cost += price(interval) * seconds as f64;
+            end += jiff::SignedDuration::from_secs(seconds);
+        }
+        if covered < wanted || end > to {
+            continue;
+        }
+        let average = cost / covered as f64;
+        // The earliest of equally cheap stretches.
+        if best.is_none_or(|b| average < b.average - 1e-9) {
+            best = Some(Stretch { start, end, average });
+        }
+    }
+    best
 }
 
 fn english_word(cheapest: bool, when: When) -> &'static str {
@@ -374,6 +684,157 @@ mod tests {
         assert_eq!(parse("is electricity expensive now"), Some(PowerQuery::Now));
         assert_eq!(parse("when is electricity most expensive"), Some(PowerQuery::Dearest(When::Today)));
         assert_eq!(parse("what's the weather"), None);
+    }
+
+    #[test]
+    fn stretches_of_hours() {
+        let window = |hours, when| Some(PowerQuery::Window { hours, when });
+        assert_eq!(parse("when is power cheapest for 3 hours"), window(3, None));
+        assert_eq!(parse("what are the cheapest three hours of electricity tomorrow"), window(3, Some(When::Tomorrow)));
+        assert_eq!(parse("når er strømmen billigst i tre timer i natt"), window(3, Some(When::Tonight)));
+        assert_eq!(parse("billigste fire timer med strøm"), window(4, None));
+        assert_eq!(parse("when should I run the dishwasher"), window(3, None));
+        assert_eq!(parse("best time to run the washing machine tonight"), window(2, Some(When::Tonight)));
+        assert_eq!(parse("når bør jeg kjøre oppvaskmaskinen"), window(3, None));
+        assert_eq!(parse("when is it cheapest to charge the car"), window(4, None));
+        assert_eq!(parse("when should I charge the car"), window(4, None));
+        assert_eq!(parse("når bør jeg lade bilen"), window(4, None));
+        assert_eq!(parse("when should I run the dishwasher for two hours"), window(2, None));
+        // Every hour word is tried, and English "time" is not one.
+        assert_eq!(parse("best time to run the dishwasher for two hours"), window(2, None));
+        assert_eq!(parse("cheapest time for 3 hours of electricity"), window(3, None));
+        assert_eq!(parse("cheapest stretch of an hour of electricity"), window(1, None));
+        // Within the next hours is the cheapest hour in that time.
+        assert_eq!(parse("when is electricity cheapest in the next 3 hours"), Some(PowerQuery::CheapestWithin(3)));
+        assert_eq!(parse("når er strømmen billigst de neste tre timene"), Some(PowerQuery::CheapestWithin(3)));
+        // One hour and the cheapest hour stay what they were.
+        assert_eq!(parse("when is power cheapest"), Some(PowerQuery::Cheapest(When::Today)));
+        assert_eq!(parse("what's the cheapest hour of electricity"), Some(PowerQuery::Cheapest(When::Today)));
+        assert_eq!(parse("what's the cheapest time for electricity"), Some(PowerQuery::Cheapest(When::Today)));
+        // About the machine, a reminder or a timer, not a stretch of prices.
+        assert_eq!(parse("when is the dishwasher done"), None);
+        assert_eq!(parse("turn on the dishwasher"), None);
+        assert_eq!(parse("when does the dryer start"), None);
+        assert_eq!(parse("should I use the dryer or hang the clothes"), None);
+        assert_eq!(parse("best way to clean the dishwasher"), None);
+        assert_eq!(parse("remind me to run the dishwasher in 3 hours"), None);
+        assert_eq!(parse("minn meg på å kjøre oppvaskmaskinen om tre timer"), None);
+        assert_eq!(
+            parse("set a timer for 2 hours when electricity is cheapest"),
+            Some(PowerQuery::Cheapest(When::Today))
+        );
+    }
+
+    fn interval(start: Timestamp, minutes: i64, nok: f64) -> Interval {
+        Interval { nok_per_kwh: nok, time_start: start, time_end: start + jiff::SignedDuration::from_mins(minutes) }
+    }
+
+    /// Hourly prices from `start`, one per hour.
+    fn hours_from(start: Timestamp, prices: &[f64]) -> Vec<Interval> {
+        prices
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| interval(start + jiff::SignedDuration::from_hours(i as i64), 60, p))
+            .collect()
+    }
+
+    #[test]
+    fn the_cheapest_stretch_is_found() {
+        let start: Timestamp = "2026-11-01T18:00:00Z".parse().unwrap();
+        let prices = hours_from(start, &[1.0, 0.2, 0.9, 0.3, 0.3, 0.4, 1.0]);
+        let same = |i: &Interval| i.nok_per_kwh;
+        // A single cheap hour does not win over three cheap ones in a row.
+        let found = cheapest_window(&prices, start, Timestamp::MAX, 180, same).unwrap();
+        assert_eq!(found.start, start + jiff::SignedDuration::from_hours(3));
+        assert_eq!(found.end, start + jiff::SignedDuration::from_hours(6));
+        assert!((found.average - 1.0 / 3.0).abs() < 1e-9);
+        // Too short a stretch of prices, and a gap in them.
+        assert_eq!(cheapest_window(&prices, start, Timestamp::MAX, 8 * 60, same), None);
+        let mut gap = prices.clone();
+        gap.remove(4);
+        let after_gap = start + jiff::SignedDuration::from_hours(1);
+        assert_eq!(cheapest_window(&gap, start, Timestamp::MAX, 180, same).map(|f| f.start), Some(after_gap));
+        // Half way through an hour: from now, with only the half hour left of it, never from the
+        // start of the hour already under way.
+        let from = start + jiff::SignedDuration::from_mins(3 * 60 + 30);
+        let found = cheapest_window(&prices, from, Timestamp::MAX, 180, same).unwrap();
+        assert_eq!((found.start, found.end), (from, from + jiff::SignedDuration::from_hours(3)));
+        assert!((found.average - (0.15 + 0.3 + 0.4 + 0.5) / 3.0).abs() < 1e-9);
+        let from = start + jiff::SignedDuration::from_hours(4);
+        assert_eq!(cheapest_window(&prices, from, Timestamp::MAX, 180, same).unwrap().start, from);
+        // Quarter hours are averaged by time, like hours.
+        let quarters: Vec<Interval> = (0..12)
+            .map(|q| interval(start + jiff::SignedDuration::from_mins(q * 15), 15, if q < 4 { 1.0 } else { 0.5 }))
+            .collect();
+        let found = cheapest_window(&quarters, start, Timestamp::MAX, 60, same).unwrap();
+        assert_eq!(found.start, start + jiff::SignedDuration::from_hours(1));
+        // Within the end of the window asked for.
+        let to = start + jiff::SignedDuration::from_hours(5);
+        let found = cheapest_window(&prices, start, to, 180, same).unwrap();
+        assert!(found.end <= to);
+    }
+
+    #[test]
+    fn stretches_cross_midnight_and_wait_for_tomorrow() {
+        // A fixed day without a daylight saving change, in the home's time zone.
+        let now: Zoned = "2026-11-02T15:00:00+01:00[Europe/Oslo]".parse().unwrap();
+        let tz = now.time_zone().clone();
+        let today = now.date();
+        let tomorrow = today.tomorrow().unwrap();
+        let midnight = |d: Date| d.to_zoned(tz.clone()).unwrap().timestamp();
+        let mut power = Power::new("test", "NO1");
+        // Today dear all day; tomorrow cheap from 01:00 to 04:00.
+        power.days.push((today, Some(hours_from(midnight(today), &[2.0; 24])), Instant::now()));
+        let mut tomorrows = [2.0; 24];
+        tomorrows[1..4].fill(0.4);
+        power.days.push((tomorrow, Some(hours_from(midnight(tomorrow), &tomorrows)), Instant::now()));
+        let window = |hours, when| PowerQuery::Window { hours, when };
+        let ask = |power: &mut Power, query, lang| power.answer_at(query, lang, &now).unwrap();
+        assert_eq!(
+            ask(&mut power, window(3, None), Lang::English),
+            "The cheapest 3 hours start at 01:00 and end at 04:00. On average, it costs 50 øre per kilowatt hour."
+        );
+        assert_eq!(
+            ask(&mut power, window(3, Some(When::Tomorrow)), Lang::Norwegian),
+            "De billigste 3 timene starter klokka 01:00 og slutter klokka 04:00, i snitt 50 øre per kilowattime."
+        );
+        assert_eq!(
+            ask(&mut power, PowerQuery::CheapestWithin(3), Lang::English),
+            "Cheapest in the next 3 hours is right now. It costs 2.50 kroner per kilowatt hour."
+        );
+        // A start in tomorrow's daytime says so.
+        tomorrows = [2.0; 24];
+        tomorrows[13] = 0.4;
+        power.days[1].1 = Some(hours_from(midnight(tomorrow), &tomorrows));
+        assert_eq!(
+            ask(&mut power, window(1, None), Lang::English),
+            "The cheapest hour starts at 13:00 tomorrow and ends at 14:00. On average, it costs 50 øre per kilowatt \
+             hour."
+        );
+        // Tomorrow not out: tomorrow's stretch waits for it, and one found today says so.
+        power.days[1].1 = None;
+        power.days[0].1.as_mut().unwrap()[18].nok_per_kwh = 0.4;
+        assert_eq!(
+            ask(&mut power, window(3, Some(When::Tomorrow)), Lang::English),
+            "Tomorrow's prices come out around one in the afternoon."
+        );
+        assert_eq!(
+            ask(&mut power, window(1, None), Lang::English),
+            "The cheapest hour starts at 18:00 and ends at 19:00. On average, it costs 50 øre per kilowatt hour. \
+             Tomorrow's prices aren't out yet."
+        );
+        // Fewer hours left today than asked.
+        assert_eq!(
+            ask(&mut power, window(12, None), Lang::English),
+            "There aren't 12 hours of prices left today. Tomorrow's prices come out around one in the afternoon."
+        );
+        for sentence in [
+            "The cheapest 3 hours start at 01:00 and end at 04:00.",
+            "The cheapest hour starts now and ends at 14:00.",
+            "On average, it costs 50 øre per kilowatt hour.",
+        ] {
+            assert!(crate::speech_cache::CachedTts::cacheable(sentence), "{sentence}");
+        }
     }
 
     #[test]
