@@ -131,9 +131,8 @@ impl Worker {
         // last party's snapshot is still the look from before it.
         let restore_called_off = self.party_restore.take().is_some_and(PendingRestore::cancel);
         if let Some(ha) = &self.home_assistant {
-            // The worker's own state first: the lockdown's scene is written behind and may not be
-            // there yet. Home Assistant's scene counts after an engine restart.
-            let locked_down = self.locked_down || house::locked_down(ha);
+            let locked_down = house::lockdown_on(ha, self.locked_down);
+            self.locked_down = locked_down;
             // Left set by a lockdown that was stood down elsewhere, or one Home Assistant forgot.
             self.party_under_lockdown &= locked_down;
             let party_on = self.config.party.mode().is_some() || restore_called_off;
@@ -153,6 +152,10 @@ impl Worker {
         };
         if let Err(error) = self.config.party.start(mode) {
             warn!(error = format!("{error:#}"), "party mode did not start");
+            // The last party's lights were never put back: no new party will do it.
+            if restore_called_off {
+                self.spawn_party_restore(PARTY_RELEASE);
+            }
             return if no {
                 "Beklager, jeg fikk ikke startet festmodus."
             } else {
@@ -180,38 +183,41 @@ impl Worker {
         }
         self.config.party.stop();
         self.forget_light_undo();
-        let locked_here = self.locked_down;
-        if let Some((url, token)) = self.config.home_assistant.clone() {
-            // On a thread of its own: the bridge lets go of the lights after the stream's last frame.
-            let restore = PendingRestore::spawn(PARTY_RELEASE, move || {
-                let ha = HomeAssistant::new(&url, &token);
-                let put_back = match after_party(locked_here || house::locked_down(&ha)) {
-                    // Red again; the party's snapshot stays for standing down.
-                    AfterParty::LockdownRed => house::lockdown(&ha).map(|_| true),
-                    AfterParty::PartyScene => house::party_restore(&ha),
-                };
-                if let Err(error) = put_back {
-                    warn!(error = format!("{error:#}"), "party mode: could not put the lights back");
-                }
-            });
-            match restore {
-                Ok(pending) => self.party_restore = Some(pending),
-                Err(error) => warn!(%error, "party mode: could not put the lights back"),
-            }
-        }
+        self.spawn_party_restore(PARTY_RELEASE);
         true
     }
 
-    /// Ends party mode for a lockdown, keeping its snapshot for standing down: put back now, it
-    /// would land on the lockdown's red lights, and the lockdown's own snapshot would hold the
-    /// party's colours. Waits until the bridge has let go of the lights. A party ended a moment
-    /// ago whose lights are not back yet counts too. Whether it was on.
+    /// Puts party mode's lights back after `wait`, on a thread of its own: the bridge lets go of
+    /// the lights after the stream's last frame.
+    pub(super) fn spawn_party_restore(&mut self, wait: Duration) {
+        let Some((url, token)) = self.config.home_assistant.clone() else { return };
+        let locked_here = self.locked_down;
+        let restore = PendingRestore::spawn(wait, move || {
+            let ha = HomeAssistant::new(&url, &token);
+            let put_back = match after_party(house::lockdown_on(&ha, locked_here)) {
+                // Red again; the party's snapshot stays for standing down.
+                AfterParty::LockdownRed => house::lockdown(&ha).map(|_| true),
+                AfterParty::PartyScene => house::party_restore(&ha),
+            };
+            if let Err(error) = put_back {
+                warn!(error = format!("{error:#}"), "party mode: could not put the lights back");
+            }
+        });
+        match restore {
+            Ok(pending) => self.party_restore = Some(pending),
+            Err(error) => warn!(%error, "party mode: could not put the lights back"),
+        }
+    }
+
+    /// Ends party mode for a lockdown without putting its lights back: put back now, they would
+    /// land on the lockdown's red lights, and the lockdown's own snapshot would hold the party's
+    /// colours. Waits until the bridge has let go of the lights. A party ended a moment ago whose
+    /// lights are not back yet counts too. Whether there was one; the lockdown takes its snapshot
+    /// over with [`Self::party_kept_for_lockdown`], or puts it back if it fails.
     pub(super) fn party_off_for_lockdown(&mut self) -> bool {
         if let Some(pending) = self.party_restore.take() {
             let stopped = pending.stopped;
             if pending.cancel() {
-                // The restore never ran: the party's snapshot is still the look to go back to.
-                self.party_under_lockdown = true;
                 std::thread::sleep(PARTY_RELEASE.saturating_sub(stopped.elapsed()));
                 return true;
             }
@@ -220,9 +226,19 @@ impl Worker {
             return false;
         }
         self.config.party.stop();
-        self.party_under_lockdown = true;
         std::thread::sleep(PARTY_RELEASE);
         true
+    }
+
+    /// After [`Self::party_off_for_lockdown`]: the lockdown is on and the party's snapshot (the
+    /// lights from before both) is kept for standing down; or it failed, and the lights from before
+    /// the party go back now, the bridge having let go of them already.
+    pub(super) fn party_kept_for_lockdown(&mut self, locked_down: bool) {
+        if locked_down {
+            self.party_under_lockdown = true;
+        } else {
+            self.spawn_party_restore(Duration::ZERO);
+        }
     }
 
     /// Before standing down: a party started during the lockdown lets go of the lights first, or

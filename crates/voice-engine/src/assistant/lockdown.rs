@@ -71,11 +71,16 @@ impl Worker {
                 .into();
         }
         // Its red lights and the party's stream would fight over the same lights.
-        if self.party_off_for_lockdown() {
+        let party = self.party_off_for_lockdown();
+        if party {
             info!("party mode ended for the lockdown");
         }
+        let locked = house::lockdown(self.home_assistant.as_ref().expect("checked above"));
+        if party {
+            self.party_kept_for_lockdown(locked.is_ok());
+        }
         let ha = self.home_assistant.as_ref().expect("checked above");
-        match house::lockdown(ha) {
+        match locked {
             Ok(red) => {
                 info!(red = red.len(), "lockdown");
                 self.locked_down = true;
@@ -182,8 +187,8 @@ impl Worker {
                 .into();
         };
         // Only with a lockdown to end: "stand down" without one leaves a party and its restore be.
-        // The worker's own state first, Home Assistant's scene after an engine restart.
-        let locked_down = self.locked_down || house::locked_down(ha);
+        // Home Assistant's scene decides; what this engine knows only when it can't be asked.
+        let locked_down = house::lockdown_on(ha, self.locked_down);
         if locked_down {
             self.party_off_for_stand_down();
         }

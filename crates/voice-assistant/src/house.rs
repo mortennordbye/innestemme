@@ -1420,6 +1420,17 @@ pub fn locked_down(ha: &HomeAssistant) -> bool {
     ha.state(&format!("scene.{LOCKDOWN_SCENE}")).is_ok()
 }
 
+/// Whether a lockdown is on: Home Assistant's snapshot scene once the calls queued so far have
+/// been made, and `known_here` (what this engine started and has not stood down) only when Home
+/// Assistant cannot be asked. A scene lost to a Home Assistant restart or deleted ends it.
+pub fn lockdown_on(ha: &HomeAssistant, known_here: bool) -> bool {
+    lockdown_answer(ha.exists(&format!("scene.{LOCKDOWN_SCENE}")).ok(), known_here)
+}
+
+fn lockdown_answer(scene: Option<bool>, known_here: bool) -> bool {
+    scene.unwrap_or(known_here)
+}
+
 /// "Okay, the lights are off. The music is paused." for a routine; `except` names the room left lit.
 pub fn switched_answer(switched: &Switched, except: Option<&str>, lang: Lang) -> String {
     let no = lang == Lang::Norwegian;
@@ -1447,6 +1458,17 @@ pub fn switched_answer(switched: &Switched, except: Option<&str>, lang: Lang) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_assistant_decides_whether_a_lockdown_is_on() {
+        // The scene lost to a Home Assistant restart ends a lockdown this engine started.
+        assert!(!lockdown_answer(Some(false), true));
+        // One started before an engine restart.
+        assert!(lockdown_answer(Some(true), false));
+        // Home Assistant unreachable: what this engine knows.
+        assert!(lockdown_answer(None, true));
+        assert!(!lockdown_answer(None, false));
+    }
 
     #[test]
     fn routine_answers_are_rendered_ahead() {

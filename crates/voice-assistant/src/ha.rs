@@ -500,6 +500,23 @@ impl HomeAssistant {
         self.get(&format!("/api/states/{entity_id}"))
     }
 
+    /// Whether Home Assistant has the entity, after the calls queued so far: `Err` only when it
+    /// could not be asked, so a missing entity and an unreachable server are told apart.
+    pub fn exists(&self, entity_id: &str) -> Result<bool> {
+        self.flush();
+        let path = format!("/api/states/{entity_id}");
+        match self
+            .agent
+            .get(&format!("{}{path}", self.base))
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .call()
+        {
+            Ok(_) => Ok(true),
+            Err(ureq::Error::StatusCode(404)) => Ok(false),
+            Err(e) => Err(anyhow::anyhow!("Home Assistant request to {path} failed: {e}")),
+        }
+    }
+
     /// Media players that are playing: those in `area`, and any of `also` (a Music Assistant player
     /// has no area of its own).
     pub fn playing(&self, area: Option<&str>, also: &[String]) -> Result<Vec<Playing>> {
