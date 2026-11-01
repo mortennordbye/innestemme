@@ -350,7 +350,7 @@ pub const SKILLS: &[Skill] = &[
             "Play music by Ghost",
             "Play the album Rumours",
             "Play jazz in the kitchen",
-            "Play Hello by Adele next",
+            "Play Hello by Adele after this song",
             "Add Rumours to the queue",
             "What's next?",
             "Move the music to the bedroom",

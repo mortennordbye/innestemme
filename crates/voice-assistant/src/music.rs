@@ -158,6 +158,12 @@ impl Player {
         Ok((entry, entity))
     }
 
+    /// The player for a room as said, if it has one.
+    pub fn room_player(&self, ha: &HomeAssistant, room: &str) -> Option<String> {
+        let players = speakers(ha).ok()?;
+        in_room(&players, room).map(|p| p.id.clone())
+    }
+
     /// Music Assistant and the player a command is for: a room's, else the speaker's.
     fn target(&mut self, ha: &HomeAssistant, on: Option<On>) -> Result<(String, String)> {
         let (entry, entity) = self.resolve(ha)?;
@@ -189,8 +195,24 @@ impl Player {
                 info!(room, player = speaker.id, "music in a room");
                 self.dispatch(ha, inner, no, Some(On { entity: &speaker.id, room }))
             }
-            MusicCommand::MoveTo(room) => self.move_to(ha, room, no),
+            // One room at a time: grouping players is not done.
+            MusicCommand::InRooms(rooms, inner) => {
+                let first = MusicCommand::InRoom(rooms[0].clone(), inner.clone());
+                let answer = self.dispatch(ha, &first, no, on)?;
+                Ok(if no {
+                    format!("{answer} Jeg kan bare spille i ett rom om gangen.")
+                } else {
+                    format!("{answer} I can only play in one room at a time.")
+                })
+            }
+            MusicCommand::MoveTo(to, from) => self.move_to(ha, to, from.as_deref(), no),
             MusicCommand::UpNext => self.up_next(ha, on, no),
+            MusicCommand::Queue(inner, _) if **inner == MusicCommand::Resume => Ok(if no {
+                "Si hva som skal i køen, for eksempel legg til Kygo i køen."
+            } else {
+                "Say what to queue, like queue up Hello by Adele."
+            }
+            .into()),
             MusicCommand::Queue(inner, next) => {
                 self.start(ha, inner, no, on, if *next { Enqueue::Next } else { Enqueue::Add })
             }
@@ -480,18 +502,27 @@ impl Player {
 
     /// Moves the music's queue to a room's speaker, from the player that has it: the speaker's,
     /// else any other that plays or holds paused music.
-    fn move_to(&mut self, ha: &HomeAssistant, room: &str, no: bool) -> Result<String> {
+    fn move_to(&mut self, ha: &HomeAssistant, room: &str, source: Option<&str>, no: bool) -> Result<String> {
         let (_, here) = self.resolve(ha)?;
         let players = speakers(ha)?;
         let Some(to) = in_room(&players, room) else {
             return Ok(no_speaker(room, &players, no));
+        };
+        // A room said to move from is where the music is, playing or not.
+        let named = match source {
+            Some(source) => match in_room(&players, source) {
+                Some(player) => Some(player.id.clone()),
+                None => return Ok(no_speaker(source, &players, no)),
+            },
+            None => None,
         };
         let has_music = |id: &str| {
             ha.state(id).is_ok_and(|s| matches!(s["state"].as_str(), Some("playing" | "paused")))
                 || (id == here && self.held)
         };
         let others = players.iter().map(|p| p.id.as_str()).filter(|id| *id != here);
-        let Some(from) = std::iter::once(here.as_str()).chain(others).find(|id| has_music(id)) else {
+        let found = named.as_deref().or_else(|| std::iter::once(here.as_str()).chain(others).find(|id| has_music(id)));
+        let Some(from) = found else {
             return Ok(if no { "Ingenting spilles." } else { "Nothing is playing." }.into());
         };
         if from == to.id {
@@ -558,23 +589,29 @@ fn in_room<'a>(players: &'a [Speaker], room: &str) -> Option<&'a Speaker> {
 
 /// No speaker in the room asked for: which rooms have one.
 fn no_speaker(room: &str, players: &[Speaker], no: bool) -> String {
+    let lang = if no { Lang::Norwegian } else { Lang::English };
     let mut rooms: Vec<String> = Vec::new();
     for player in players {
-        let place = if player.area.is_empty() { room_of_name(&player.name) } else { player.area.to_lowercase() };
+        let place = if player.area.is_empty() { room_of_name(&player.name) } else { player.area.clone() };
+        // In the answer's language when it is a room people name ("Stue" is "the living room").
+        let place = match crate::ha::room_name(&place, lang) {
+            Some(name) if no => name.to_owned(),
+            Some(name) => format!("the {name}"),
+            None if no => place.to_lowercase(),
+            None => place,
+        };
         if !place.is_empty() && !rooms.contains(&place) {
             rooms.push(place);
         }
     }
-    let lang = if no { Lang::Norwegian } else { Lang::English };
     match (rooms.is_empty(), no) {
         (true, false) => format!("I can't find a speaker in the {room}."),
         (true, true) => format!("Jeg finner ingen høyttaler på {room}."),
         (false, false) => {
-            let rooms: Vec<String> = rooms.iter().map(|r| format!("the {r}")).collect();
             format!("I can't find a speaker in the {room}. There are speakers in {}.", crate::house::join(&rooms, lang))
         }
         (false, true) => {
-            format!("Jeg finner ingen høyttaler på {room}. Det er høyttalere i {}.", crate::house::join(&rooms, lang))
+            format!("Jeg finner ingen høyttaler på {room}. Det er høyttalere på {}.", crate::house::join(&rooms, lang))
         }
     }
 }
@@ -771,11 +808,17 @@ mod tests {
         assert_eq!(id("bathroom"), None);
         assert_eq!(
             no_speaker("bathroom", &players, false),
-            "I can't find a speaker in the bathroom. There are speakers in the stue, the kitchen and the bedroom."
+            "I can't find a speaker in the bathroom. There are speakers in the living room, the kitchen and the bedroom."
         );
+        // Rooms in the answer's language, whatever Home Assistant calls them.
         assert_eq!(
             no_speaker("badet", &players, true),
-            "Jeg finner ingen høyttaler på badet. Det er høyttalere i stue, kitchen og bedroom."
+            "Jeg finner ingen høyttaler på badet. Det er høyttalere på stua, kjøkkenet og soverommet."
+        );
+        let odd = [Speaker { id: "media_player.x".into(), name: "X".into(), area: "Loft".into() }];
+        assert_eq!(
+            no_speaker("bathroom", &odd, false),
+            "I can't find a speaker in the bathroom. There are speakers in Loft."
         );
         assert_eq!(no_speaker("bathroom", &[], false), "I can't find a speaker in the bathroom.");
     }

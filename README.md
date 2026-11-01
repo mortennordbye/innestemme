@@ -30,7 +30,7 @@ focus; Norwegian works with Whisper and Piper.
 |---|---|
 | Lights | "turn off the kitchen lights", "dim the living room to 30 percent", "make the bedroom red", "which lights are on?", "undo" |
 | Scenes and scripts | "set the living room to relax", "I want to relax", "run movie time" |
-| Music | "play my liked songs", "play Hello by Adele", "next song", "volume 40 percent", "play jazz in the kitchen", "play Hello next", "what's next?", "move the music to the bedroom" (Music Assistant) |
+| Music | "play my liked songs", "play Hello by Adele", "next song", "volume 40 percent", "play jazz in the kitchen", "play Hello after this song", "what's next?", "move the music to the bedroom" (Music Assistant) |
 | Timers, reminders and alarms | "set a pasta timer for 8 minutes", "remind me in 20 minutes to check the oven", "remind me at 5 to call mum", "wake me up at 7", "snooze" |
 | TV and its screen | "turn off the TV", "put Netflix on the TV", "put on Exit on NRK", "next episode of The Office on Plex", "show the weather on the TV" |
 | Routines | "I'm leaving", "I'm home", "good night" |

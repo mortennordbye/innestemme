@@ -771,6 +771,19 @@ pub fn is_room_phrase(phrase: &str) -> bool {
     room_group(&normalize_phrase(phrase)).is_some()
 }
 
+/// [`ROOMS`]' rooms as said in Norwegian after "på", in the same order.
+const NORWEGIAN_ROOMS: &[&str] =
+    &["stua", "kjøkkenet", "soverommet", "kontoret", "gangen", "badet", "spisestua", "barnerommet"];
+
+/// A room people name, in a language's words: "Stue" is "living room", and "stua" in Norwegian.
+pub fn room_name(phrase: &str, lang: crate::lang::Lang) -> Option<&'static str> {
+    let group = room_group(&normalize_phrase(phrase))?;
+    match lang {
+        crate::lang::Lang::English => Some(ROOMS[group][0]),
+        crate::lang::Lang::Norwegian => NORWEGIAN_ROOMS.get(group).copied(),
+    }
+}
+
 /// The room group a phrase belongs to, if any.
 fn room_group(phrase: &str) -> Option<usize> {
     ROOMS.iter().position(|names| names.contains(&phrase))

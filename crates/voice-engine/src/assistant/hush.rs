@@ -28,6 +28,12 @@ fn players_to_hush(players: Vec<Playing>, music: &[String]) -> Vec<Playing> {
     players.into_iter().filter(|p| !(assistant_plays && p.sonos)).collect()
 }
 
+/// Whether music paused for a request still plays on after the request stopped `player` (a
+/// room's): not when that is the speaker or one of the players paused.
+pub(super) fn resumes_after(hushed: &Hushed, speaker: Option<&str>, player: &str) -> bool {
+    speaker != Some(player) && !hushed.players.iter().any(|p| p.id == player)
+}
+
 impl Worker {
     /// Music Assistant's player is playing.
     pub(super) fn music_playing(&mut self) -> bool {
@@ -91,6 +97,19 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_room_paused_by_name_is_not_resumed() {
+        let now = Instant::now();
+        let playing = |id: &str| Playing { id: id.into(), sonos: false, content: String::new() };
+        let hushed = Hushed { players: vec![playing("media_player.tv")], at: now, last_heard: now };
+        let speaker = Some("media_player.living_room_2");
+        // "Pause the music in the living room", said there.
+        assert!(!resumes_after(&hushed, speaker, "media_player.living_room_2"));
+        assert!(!resumes_after(&hushed, speaker, "media_player.tv"));
+        // Another room's: what was paused here plays on.
+        assert!(resumes_after(&hushed, speaker, "media_player.kitchen"));
+    }
 
     #[test]
     fn hushes_music_assistant_not_the_speaker_under_it() {

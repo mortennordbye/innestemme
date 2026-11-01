@@ -73,7 +73,9 @@ query and the token as a bearer header:
 It answers `202` once the text is queued: it is spoken after whatever the assistant is saying, where answers play
 (`answer-player`, else the satellite), as an announcement over the music. `room` and `player` need
 `answer-player`, whose Home Assistant plays them. More than 5 announcements in a minute get `429`, so an
-automation that loops cannot talk over everything.
+automation that loops cannot talk over everything. A request without the right token gets `401` before anything
+else is checked, and after 10 of those in a minute every request gets `429` until the minute has passed. The
+text is synthesized fresh each time and never kept in the speech cache.
 
 In Home Assistant, a `rest_command` in `configuration.yaml`, with the token in `secrets.yaml`:
 

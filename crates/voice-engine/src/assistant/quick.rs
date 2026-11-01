@@ -83,6 +83,9 @@ pub(super) fn complete_at_once(intent: &Intent) -> bool {
         }
         // Small talk is a whole short phrase; a bare "hey" is often a request still to come.
         Intent::SmallTalk(chat) => *chat != voice_assistant::smalltalk::Chat::Hello,
+        // Like the lights: "pause the music" may go on "in the kitchen", and a room said ends it.
+        Intent::Music(MusicCommand::InRoom(_, inner)) => complete_command(&Intent::Music((**inner).clone())),
+        Intent::Music(_) => false,
         _ => complete_command(intent),
     }
 }
@@ -169,7 +172,14 @@ mod tests {
         assert!(heard_by_itself(&parse("next song")));
         assert!(!heard_by_itself(&parse("turn it up")));
         assert!(heard_by_itself(&parse("play some music")));
-        assert!(complete_at_once(&parse("pause the music")));
+        // May go on "in the kitchen".
+        assert!(!complete_at_once(&parse("pause the music")));
+        assert!(!complete_at_once(&parse("next song")));
+        assert!(!complete_at_once(&parse("volume 30")));
+        assert!(!complete_at_once(&parse("what's playing")));
+        assert!(complete_at_once(&parse("pause the music in the kitchen")));
+        assert!(complete_at_once(&parse("next song in the bedroom")));
+        assert!(!complete_at_once(&parse("play jazz in the kitchen")));
         assert!(complete_at_once(&parse("what time is it")));
         assert!(!complete_at_once(&parse("what day is it")));
         assert!(!complete_at_once(&parse("turn off the lights")));

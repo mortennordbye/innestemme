@@ -419,7 +419,6 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
     })
 }
 
-/// Removes `<think>...</think>` blocks some models emit, and markdown a speaker cannot say.
 /// A room as the model writes it ("the Kitchen"), as the parser has it ("kitchen").
 fn normalize_room(room: &str) -> String {
     let words: Vec<String> =
@@ -427,6 +426,7 @@ fn normalize_room(room: &str) -> String {
     words.join(" ")
 }
 
+/// Removes `<think>...</think>` blocks some models emit, and markdown a speaker cannot say.
 fn strip_thinking(text: &str) -> String {
     let mut out = text.to_owned();
     while let (Some(start), Some(end)) = (out.find("<think>"), out.find("</think>")) {

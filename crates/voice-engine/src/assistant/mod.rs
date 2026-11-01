@@ -1035,11 +1035,24 @@ impl Worker {
                         | MusicCommand::Song(_)
                         | MusicCommand::Artist(_)
                         | MusicCommand::Album(_)
-                        | MusicCommand::MoveTo(_)
+                        | MusicCommand::MoveTo(..)
                 ) {
                     self.hushed = None;
                 }
-                if command == MusicCommand::Stop {
+                // "Pause the music in the living room" said in the living room: that room's music
+                // must not start again after the answer.
+                if let MusicCommand::InRoom(room, inner) = &command {
+                    if matches!(**inner, MusicCommand::Pause | MusicCommand::Stop | MusicCommand::Mute(true)) {
+                        self.hushed = self.hushed.take().filter(|hushed| {
+                            let Some(ha) = &self.home_assistant else { return true };
+                            let Some(player) = self.player.room_player(ha, room) else { return true };
+                            let speaker = self.player.check(ha).ok();
+                            hush::resumes_after(hushed, speaker.as_deref(), &player)
+                        });
+                    }
+                }
+                let stops = |c: &MusicCommand| *c == MusicCommand::Stop;
+                if stops(&command) || matches!(&command, MusicCommand::InRoom(_, inner) if stops(inner)) {
                     self.party_off();
                 }
                 self.player.paused_for_request(self.hushed.is_some());

@@ -134,11 +134,18 @@ impl Worker {
         self.announce_on(text, chime, lang, timer_ring, AnnounceOn::Device);
     }
 
+    /// Text from outside (Home Assistant's) goes through `speak_live`, never into the speech
+    /// cache: it is anything at all, and each one would stay on disk.
     fn announce_on(&mut self, text: &str, chime: Vec<i16>, lang: Lang, timer_ring: bool, on: AnnounceOn) {
         // Deaf while it plays, like an answer.
         self.busy.store(true, Relaxed);
         let mut audio = chime;
-        if let Err(error) = self.tts.speak(text, lang, &mut |pcm| audio.extend_from_slice(pcm)) {
+        let mut sink = |pcm: &[i16]| audio.extend_from_slice(pcm);
+        let spoken = match on {
+            AnnounceOn::Device => self.tts.speak(text, lang, &mut sink),
+            AnnounceOn::AnswerPlayer | AnnounceOn::Player(_) => self.tts.speak_live(text, lang, &mut sink),
+        };
+        if let Err(error) = spoken {
             warn!(%error, "speech synthesis failed");
         }
         push(&mut self.reply, &audio);
@@ -165,7 +172,7 @@ impl Worker {
             },
             _ => AnnounceOn::AnswerPlayer,
         };
-        info!(text = announcement.text, ?on, "announcement from Home Assistant");
+        info!(text = crate::web::one_line(&announcement.text), ?on, "announcement from Home Assistant");
         self.announce_on(&announcement.text, Vec::new(), announcement.lang, false, on);
     }
 

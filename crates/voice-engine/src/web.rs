@@ -56,15 +56,56 @@ pub struct Web {
     /// The bearer token Home Assistant sends with `/api/announce`; without one there is no such page.
     announce_token: Option<String>,
     /// When the last announcements were taken, for [`ANNOUNCE_RATE`].
-    announced: std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>,
+    announced: Recent,
+    /// When the last wrong or missing tokens came, for [`REFUSED_RATE`].
+    refused: Recent,
 }
+
+type Recent = std::sync::Mutex<std::collections::VecDeque<std::time::Instant>>;
 
 /// Announcements taken per [`ANNOUNCE_WINDOW`]; more are refused, so an automation that loops
 /// cannot talk over everything.
 const ANNOUNCE_RATE: usize = 5;
+/// Wrong tokens per [`ANNOUNCE_WINDOW`] before every request is refused, so the token cannot be
+/// guessed at speed.
+const REFUSED_RATE: usize = 10;
 const ANNOUNCE_WINDOW: Duration = Duration::from_secs(60);
-/// The longest text spoken, about 20 seconds of speech: more is a mistake in the automation.
+/// The longest text spoken, about 20 seconds of speech: more is a mistake in the automation. In
+/// bytes too, so the encoded text and the headers fit the request head (`metrics::serve_http`).
 const ANNOUNCE_MAX: usize = 300;
+const ANNOUNCE_MAX_BYTES: usize = 1200;
+/// The longest request typed into the page's "hear" and "plan" boxes.
+const TYPED_MAX: usize = 300;
+
+/// Takes one more within the window, unless `max` are taken already.
+fn take(recent: &Recent, max: usize) -> bool {
+    let mut recent = recent.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = std::time::Instant::now();
+    while recent.front().is_some_and(|at| now.duration_since(*at) > ANNOUNCE_WINDOW) {
+        recent.pop_front();
+    }
+    let room = recent.len() < max;
+    if room {
+        recent.push_back(now);
+    }
+    room
+}
+
+/// Whether as many as `max` are in the window already.
+fn full(recent: &Recent, max: usize) -> bool {
+    let recent = recent.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = std::time::Instant::now();
+    recent.iter().filter(|at| now.duration_since(**at) <= ANNOUNCE_WINDOW).count() >= max
+}
+
+/// Text from outside on one log line.
+pub(crate) fn one_line(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
+fn too_many(reason: String) -> Response {
+    ("429 Too Many Requests", "application/json", json!({ "reason": reason }).to_string().into_bytes())
+}
 
 /// Status, content type and body.
 pub type Response = (&'static str, &'static str, Vec<u8>);
@@ -88,6 +129,7 @@ impl Web {
             learned: None,
             announce_token: None,
             announced: Default::default(),
+            refused: Default::default(),
         }
     }
 
@@ -105,35 +147,31 @@ impl Web {
         let query = target.strip_prefix("/api/announce")?;
         let query = if query.is_empty() { "" } else { query.strip_prefix('?')? };
         let token = self.announce_token.as_deref()?;
-        let Some(assistant) = &self.assistant else {
-            return Some(bad_request("This engine has no assistant."));
-        };
-        if !post {
-            return Some(bad_request("POST"));
+        // The token first: nothing about the request is told to a caller without it.
+        if full(&self.refused, REFUSED_RATE) {
+            return Some(too_many("Too many wrong tokens; try again in a minute.".into()));
         }
         if !bearer(head).is_some_and(|given| same(given.as_bytes(), token.as_bytes())) {
+            take(&self.refused, REFUSED_RATE);
             let body = json!({ "reason": "Send Authorization: Bearer <announce-token>." }).to_string();
             return Some(("401 Unauthorized", "application/json", body.into_bytes()));
         }
+        if !post {
+            return Some(bad_request("POST"));
+        }
+        let Some(assistant) = &self.assistant else {
+            return Some(bad_request("This engine has no assistant."));
+        };
         let announcement = match announcement(query) {
             Ok(announcement) => announcement,
             Err(reason) => return Some(bad_request(reason)),
         };
-        {
-            let mut taken = self.announced.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let now = std::time::Instant::now();
-            while taken.front().is_some_and(|at| now.duration_since(*at) > ANNOUNCE_WINDOW) {
-                taken.pop_front();
-            }
-            if taken.len() >= ANNOUNCE_RATE {
-                let body = json!({ "reason": format!("At most {ANNOUNCE_RATE} announcements a minute.") });
-                return Some(("429 Too Many Requests", "application/json", body.to_string().into_bytes()));
-            }
-            taken.push_back(now);
+        if !take(&self.announced, ANNOUNCE_RATE) {
+            return Some(too_many(format!("At most {ANNOUNCE_RATE} announcements a minute.")));
         }
         tracing::info!(
-            text = announcement.text,
-            room = announcement.room,
+            text = one_line(&announcement.text),
+            room = announcement.room.as_deref().map(one_line),
             player = announcement.player,
             "announcement taken"
         );
@@ -299,6 +337,9 @@ impl Web {
     pub async fn hear(&self, target: &str) -> Option<Response> {
         let query = target.strip_prefix("/api/hear?")?;
         let text = query.split('&').find_map(|pair| pair.strip_prefix("q=")).map(decode).unwrap_or_default();
+        if text.chars().count() > TYPED_MAX {
+            return Some(json_response(&json!({ "reason": "That is longer than any spoken request." })));
+        }
         let Some(assistant) = &self.assistant else {
             return Some(json_response(&json!({ "reason": "This engine has no assistant to answer." })));
         };
@@ -319,6 +360,9 @@ impl Web {
     pub async fn plan(&self, target: &str) -> Option<Response> {
         let query = target.strip_prefix("/api/plan?")?;
         let text = query.split('&').find_map(|pair| pair.strip_prefix("q=")).map(decode).unwrap_or_default();
+        if text.chars().count() > TYPED_MAX {
+            return Some(json_response(&json!({ "reason": "That is longer than any spoken request." })));
+        }
         let Some(assistant) = &self.assistant else {
             return Some(json_response(&json!({ "reason": "This engine has no assistant." })));
         };
@@ -432,7 +476,7 @@ fn announcement(query: &str) -> Result<Announcement, &'static str> {
     if text.is_empty() {
         return Err("`text` is what to say.");
     }
-    if text.chars().count() > ANNOUNCE_MAX {
+    if text.chars().count() > ANNOUNCE_MAX || text.len() > ANNOUNCE_MAX_BYTES {
         return Err("`text` is over 300 characters.");
     }
     let player = value("player").filter(|p| !p.is_empty());
@@ -550,6 +594,34 @@ mod tests {
             assert_eq!(call("/api/announce?text=hi", &head("secret")), Some("202 Accepted"));
         }
         assert_eq!(call("/api/announce?text=hi", &head("secret")), Some("429 Too Many Requests"));
+    }
+
+    #[test]
+    fn announce_checks_the_token_first_and_slows_guessing() {
+        let (handle, _announced) = AssistantHandle::for_tests();
+        let web = Web::new(WakeWord::new("Jarvis"), json!({}), Some(handle), Arc::default(), None)
+            .with_announce_token(Some("secret".into()));
+        let head = |token: &str| format!("POST /api/announce HTTP/1.1\r\nAuthorization: bearer {token}\r\n\r\n");
+        let status = |post, target: &str, head: &str| web.announce(post, target, head).map(|r| r.0);
+        // Without the token, nothing about the request is told: a GET or a bad text is still 401.
+        assert_eq!(status(false, "/api/announce?text=hi", &head("nope")), Some("401 Unauthorized"));
+        assert_eq!(status(true, "/api/announce?text=", "POST / HTTP/1.1\r\n\r\n"), Some("401 Unauthorized"));
+        for _ in 2..REFUSED_RATE {
+            assert_eq!(status(true, "/api/announce?text=hi", &head("guess")), Some("401 Unauthorized"));
+        }
+        // Too many wrong tokens: even the right one waits out the minute.
+        assert_eq!(status(true, "/api/announce?text=hi", &head("secret")), Some("429 Too Many Requests"));
+        assert_eq!(one_line("Someone\nis at\r\nthe door"), "Someone is at  the door");
+    }
+
+    #[tokio::test]
+    async fn typed_requests_are_capped() {
+        let long = format!("/api/hear?q={}", "a+".repeat(TYPED_MAX + 1));
+        let body: serde_json::Value = serde_json::from_slice(&web().hear(&long).await.unwrap().2).unwrap();
+        assert_eq!(body["reason"], "That is longer than any spoken request.");
+        let long = long.replace("/api/hear", "/api/plan");
+        let body: serde_json::Value = serde_json::from_slice(&web().plan(&long).await.unwrap().2).unwrap();
+        assert_eq!(body["reason"], "That is longer than any spoken request.");
     }
 
     #[test]
