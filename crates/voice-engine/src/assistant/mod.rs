@@ -607,10 +607,10 @@ impl Worker {
         }
         // A question waiting for "yes" only takes a yes or a no: other words without the name are the room.
         let confirming = self.pending_confirm.is_some() && confirmation(&request).is_some();
-        // "Which one?" takes a short answer ("the first one"): a longer sentence still faces the
-        // room-talk filter.
-        let timers_asked =
-            self.timers.awaiting_duration() && !(self.timers.choosing() && request.split_whitespace().count() > 5);
+        // A "Which one?" left unanswered goes; one still open takes only an answer ("the first
+        // one"), so other words without the name still face the room-talk filter.
+        self.timers.forget_stale(Instant::now());
+        let timers_asked = self.timers.takes_answer(&request);
         let pending = self.pending_lights.is_some() || confirming || timers_asked || self.list_is_open();
         // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
         // for murdering his barn it 40 stop" set the volume.

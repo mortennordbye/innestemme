@@ -774,7 +774,10 @@ fn music(words: &[String]) -> Option<MusicCommand> {
         "kampen",
     ];
     let about_when = words.iter().any(|w| WHEN_WORDS.contains(&w.trim_end_matches("'s")));
-    if has("skip") || ((has("next") || has("neste")) && !about_when && (about_music || words.len() <= 3)) {
+    // "Kan du hoppe til neste", "ta neste": a skip verb with it is music too.
+    let skip_verb = ["hopp", "hoppe", "ta", "gå", "go", "skip"].iter().any(|w| has(w));
+    let next = has("next") || has("neste");
+    if has("skip") || (next && !about_when && (about_music || skip_verb || words.len() <= 3)) {
         return Some(MusicCommand::Next);
     }
     if has("previous") || has("forrige") {
@@ -1428,6 +1431,14 @@ fn rules(text: &str) -> Intent {
         }
         return Intent::Unknown;
     }
+    // "Next week" has no forecast day of its own: not today's weather, so the language model or a
+    // "Sorry" takes it.
+    let next_week = words
+        .windows(2)
+        .any(|p| ["next", "neste"].contains(&p[0].as_str()) && ["week", "uke", "uka"].contains(&p[1].as_str()));
+    if next_week {
+        return Intent::Unknown;
+    }
     Intent::Weather { place: place_of(&words), day: day_of(&words), focus: focus_of(&words) }
 }
 
@@ -1914,6 +1925,14 @@ mod tests {
         // Of a day or a week, "next" is not the next song, even short.
         for text in ["og neste helg", "neste uke da", "and next weekend", "next week", "neste kamp"] {
             assert_ne!(parse(text), Intent::Music(MusicCommand::Next), "{text}");
+        }
+        // A week has no weather day of its own: not today's weather either.
+        for text in ["hva blir været neste uke", "what's the weather next week"] {
+            assert!(!matches!(parse(text), Intent::Weather { day: Day::Today, .. }), "{text}");
+        }
+        // A skip verb with "neste" is the next song.
+        for text in ["kan du hoppe til neste", "kan du ta neste", "hopp til neste"] {
+            assert_eq!(parse(text), Intent::Music(MusicCommand::Next), "{text}");
         }
     }
 
