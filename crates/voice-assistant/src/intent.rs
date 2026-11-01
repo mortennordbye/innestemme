@@ -2085,6 +2085,119 @@ mod tests {
         }
     }
 
+    /// Phrases a review found the notes taking from other skills: each parses as it did before
+    /// the notes (main at 57dc051).
+    #[test]
+    fn notes_take_nothing_from_other_skills() {
+        let before: &[(&str, &str)] = &[
+            (r#"remember to take the bins out"#, r#"Unknown"#),
+            (r#"remember to buy milk"#, r#"Unknown"#),
+            (r#"remember to add milk to the shopping list"#, r#"Unknown"#),
+            (
+                r#"remind me to call mum at 5"#,
+                r#"Timer(Remind { when: Some(At(Clock { hour: 5, minute: 0, pm: None, tomorrow: false })), message: Some("call mum") })"#,
+            ),
+            (r#"remember me"#, r#"Unknown"#),
+            (r#"remember the milk"#, r#"Unknown"#),
+            (r#"remember the time we went to Bergen"#, r#"Unknown"#),
+            (r#"remember when we went to Bergen"#, r#"Unknown"#),
+            (r#"remember that song"#, r#"Unknown"#),
+            (r#"husk å kjøpe melk"#, r#"Unknown"#),
+            (r#"husk på å ringe mamma"#, r#"Unknown"#),
+            (r#"husk melk"#, r#"Unknown"#),
+            (r#"forget it, turn off the lights"#, r#"Lights { on: false, target: "forget it, turn off the lights" }"#),
+            (r#"forget it"#, r#"Cancel"#),
+            (r#"forget about it"#, r#"Cancel"#),
+            (r#"forget that"#, r#"Cancel"#),
+            (
+                r#"forget the timer"#,
+                r#"Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (
+                r#"forget the pasta timer"#,
+                r#"Timer(Remaining(Which { name: Some("pasta"), seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (
+                r#"forget my alarm"#,
+                r#"Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: false, alarm: true }))"#,
+            ),
+            (
+                r#"forget the reminder"#,
+                r#"Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: true, alarm: false }))"#,
+            ),
+            (r#"forget milk from the shopping list"#, r#"Unknown"#),
+            (r#"forget the shopping list"#, r#"Cancel"#),
+            (
+                r#"delete the timer"#,
+                r#"Timer(Cancel(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (r#"delete milk from the shopping list"#, r#"ShoppingList(Remove(["Milk"]))"#),
+            (
+                r#"delete my alarm"#,
+                r#"Timer(Cancel(Which { name: None, seconds: None, all: false, reminder: false, alarm: true }))"#,
+            ),
+            (
+                r#"slett timeren"#,
+                r#"Timer(Cancel(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (r#"slett melk fra handlelisten"#, r#"ShoppingList(Remove(["Melk"]))"#),
+            (
+                r#"glem timeren"#,
+                r#"Timer(Remaining(Which { name: Some("glem"), seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (r#"glem det, skru av lyset"#, r#"Lights { on: false, target: "glem det, skru av lyset" }"#),
+            (r#"glem handlelisten"#, r#"Cancel"#),
+            (r#"do you know what time it is"#, r#"Time"#),
+            (
+                r#"do you know what the weather is tomorrow"#,
+                r#"Weather { place: None, day: Tomorrow, focus: General }"#,
+            ),
+            (r#"do you know where Ingrid is"#, r#"Unknown"#),
+            (r#"do you remember what time it is"#, r#"Unknown"#),
+            (r#"do you know what's on the shopping list"#, r#"ShoppingList(Read)"#),
+            (r#"vet du hva klokka er"#, r#"Unknown"#),
+            (r#"vet du hvor Ingrid er"#, r#"Unknown"#),
+            (r#"husker du hva klokka er"#, r#"Unknown"#),
+            (r#"what do you know about Edvard Munch"#, r#"Lookup("Edvard Munch")"#),
+            (r#"what do you know about Bergen"#, r#"Lookup("Bergen")"#),
+            (r#"hva vet du om Edvard Munch"#, r#"Unknown"#),
+            (r#"what did you say"#, r#"Unknown"#),
+            (r#"what did you say about the weather"#, r#"Weather { place: None, day: Today, focus: General }"#),
+            (
+                r#"what did you say about the timer"#,
+                r#"Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (r#"what's the weather tomorrow"#, r#"Weather { place: None, day: Tomorrow, focus: General }"#),
+            (r#"what time is it"#, r#"Time"#),
+            (r#"set a timer for 10 minutes"#, r#"Timer(Start { seconds: Some(600), name: None })"#),
+            (r#"add milk to the shopping list"#, r#"ShoppingList(Add(["Milk"]))"#),
+            (r#"where is Ingrid"#, r#"WhereIs { name: "ingrid", zone: None, arriving: false }"#),
+            (r#"where's my phone"#, r#"House(FindPhone(None))"#),
+            (r#"where is my phone"#, r#"House(FindPhone(None))"#),
+            (r#"where is Bergen"#, r#"WhereIs { name: "bergen", zone: None, arriving: false }"#),
+            (r#"who is Edvard Munch"#, r#"Lookup("Edvard Munch")"#),
+            (r#"play Remember the Time"#, r#"Music(Song("remember the time"))"#),
+            (r#"note that down"#, r#"Unknown"#),
+            (r#"make a note"#, r#"Unknown"#),
+            (
+                r#"cancel the timer"#,
+                r#"Timer(Cancel(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))"#,
+            ),
+            (
+                r#"remind me in 10 minutes to check the oven"#,
+                r#"Timer(Remind { when: Some(In(600)), message: Some("check the oven") })"#,
+            ),
+            (r#"don't let me forget the laundry in half an hour"#, r#"Unknown"#),
+            (r#"what's on the shopping list"#, r#"ShoppingList(Read)"#),
+        ];
+        let changed: Vec<String> = before
+            .iter()
+            .filter(|(said, was)| format!("{:?}", parse(said)) != *was)
+            .map(|(said, was)| format!("{said}: {:?}, was {was}", parse(said)))
+            .collect();
+        assert!(changed.is_empty(), "{changed:#?}");
+    }
+
     #[test]
     fn notes_take_their_words_and_leave_the_rest() {
         use crate::memory::MemoryCommand;

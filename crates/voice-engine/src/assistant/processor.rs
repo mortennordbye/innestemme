@@ -172,6 +172,8 @@ impl AssistantProcessor {
             pending_confirm: None,
             timers,
             memory,
+            notes_said: Vec::new(),
+            previewing: false,
             persona: None,
             render: None,
             lead_turn: 0,

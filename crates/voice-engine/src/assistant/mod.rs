@@ -307,6 +307,12 @@ struct Worker {
     timers: Timers,
     /// Notes: "remember that the spare key is in the kitchen drawer".
     memory: Memory,
+    /// The notes in the answer being given, lowercased: their sentences are synthesized however the
+    /// persona words them, never taken from or added to the speech cache.
+    notes_said: Vec<String>,
+    /// A request answered for the web page's preview or rendered ahead: questions waiting for an
+    /// answer are neither taken nor asked.
+    previewing: bool,
     persona: Option<Persona>,
     /// Renders speech ahead of time, when there is a speech cache.
     render: Option<RenderAhead>,
@@ -613,16 +619,13 @@ impl Worker {
         }
         // A question waiting for "yes" only takes a yes or a no: other words without the name are the room.
         let confirming =
-            (self.pending_confirm.is_some() || self.memory.asked_forget_all()) && confirmation(&request).is_some();
+            (self.pending_confirm.is_some() || self.memory.asked_to_forget()) && confirmation(&request).is_some();
         // A "Which one?" left unanswered goes; one still open takes only an answer ("the first
         // one"), so other words without the name still face the room-talk filter.
         self.timers.forget_stale(Instant::now());
         let timers_asked = self.timers.takes_answer(&request);
-        let pending = self.pending_lights.is_some()
-            || confirming
-            || timers_asked
-            || self.list_is_open()
-            || self.memory.asked_what();
+        // "Remember what?" is answered like any request: its answer still faces the filters.
+        let pending = self.pending_lights.is_some() || confirming || timers_asked || self.list_is_open();
         // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
         // for murdering his barn it 40 stop" set the volume.
         // A wake word without the name is as unsure as the follow-up window: the TV's "just because
@@ -713,6 +716,14 @@ impl Worker {
             Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
             _ => answer,
         };
+        // A note as the persona says it ("Your bike is in the shed, sir.") is still a note.
+        for sentence in answer.split_inclusive(['.', '?', '!']).map(str::trim) {
+            let lower = sentence.to_lowercase();
+            if self.notes_said.iter().any(|note| lower.contains(note.as_str())) {
+                self.live.insert(sentence.to_owned());
+            }
+        }
+        self.notes_said.clear();
         if lead.is_none() {
             self.emit(AssistantEvent::Answer { text: answer.clone() });
         }
@@ -776,16 +787,18 @@ impl Worker {
             }
         }
         // "Forget everything I remember?" "Yes." / "Remember what?" "The bins go out on Tuesday."
-        let (asked_what, asked_forget_all) = (self.memory.asked_what(), self.memory.asked_forget_all());
-        self.memory.clear_questions();
-        if asked_forget_all {
-            if let Some(yes) = confirmation(text) {
-                return Some(self.memory.answer_forget_all(yes, lang));
+        // A preview from the web page neither takes nor drops them.
+        if !self.previewing {
+            let (asked_what, asked_to_forget) = (self.memory.asked_what(), self.memory.asked_to_forget());
+            if asked_to_forget {
+                if let Some(yes) = confirmation(text) {
+                    return Some(self.memory.answer_forget(yes, lang));
+                }
             }
-        }
-        if asked_what && matches!(intent, Intent::Unknown | Intent::Lookup(_)) {
-            let answer = self.memory.remember(text, lang);
-            return Some(answer);
+            self.memory.clear_question();
+            if asked_what && matches!(intent, Intent::Unknown | Intent::Lookup(_)) {
+                return Some(self.memory.remember(text, lang));
+            }
         }
         if let Some((command, at)) = self.pending_confirm.take() {
             match confirmation(text) {
@@ -804,8 +817,9 @@ impl Worker {
                 return Some(self.scene(&format!("{scene} in {text}"), lang));
             }
         }
-        // "Where is the spare key": a note about it, before people and places.
-        if let Some(note) = self.memory.where_is(text) {
+        // "Where is the spare key": a note about it, unless a person, a zone, a phone or a known place
+        // is meant ("where's my phone" still rings it).
+        if let Some(note) = self.memory.where_is(text).filter(|_| !self.where_is_elsewhere(&intent)) {
             self.keep_live(&note);
             return Some(note);
         }
@@ -850,10 +864,31 @@ impl Worker {
         self.act(intent, lang)
     }
 
-    /// Sentences of changing text (a note, an article) are synthesized, not kept by the speech cache.
+    /// A note's sentences are synthesized, never kept by the speech cache: here as they are, and in
+    /// `answer` again as the persona words them.
     fn keep_live(&mut self, text: &str) {
-        let sentences = text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty());
-        self.live.extend(sentences.map(str::to_owned));
+        let sentences: Vec<&str> =
+            text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()).collect();
+        self.live.extend(sentences.iter().map(|s| (*s).to_owned()));
+        let cores =
+            sentences.iter().map(|s| s.trim_end_matches(['.', '?', '!']).to_lowercase()).filter(|s| !s.is_empty());
+        self.notes_said.extend(cores);
+    }
+
+    /// Whether "where is X" means a person, a zone, a phone or a known place rather than a note.
+    fn where_is_elsewhere(&self, intent: &Intent) -> bool {
+        match intent {
+            Intent::House(HouseCommand::FindPhone(_) | HouseCommand::PhoneBattery(_)) => true,
+            Intent::WhereIs { name, .. } => {
+                if voice_assistant::geo::known(name, self.home_location.as_ref()).is_some() {
+                    return true;
+                }
+                let people = self.home_assistant.as_ref().and_then(|ha| ha.people().ok()).unwrap_or_default();
+                voice_assistant::people::find(&people, name).is_some()
+                    || people.iter().any(|p| p.state.eq_ignore_ascii_case(name))
+            }
+            _ => false,
+        }
     }
 
     fn unhandled(&self, reason: Reason, heard: &str, answer: Option<&str>) {
