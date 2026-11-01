@@ -1232,8 +1232,18 @@ fn mood(words: &[String]) -> Option<&'static str> {
 }
 
 pub fn parse(text: &str) -> Intent {
+    parse_with(text, true)
+}
+
+/// As the other skills take the words, leaving notes out: for "what did I tell you about the
+/// timer" or "forget the milk" when no note is about them.
+pub fn parse_without_notes(text: &str) -> Intent {
+    parse_with(text, false)
+}
+
+fn parse_with(text: &str, notes: bool) -> Intent {
     // A lookup only when no skill takes the words: "what is the weather" stays the weather.
-    match rules(text) {
+    match rules(text, notes) {
         Intent::Unknown => crate::lookup::topic(text).map_or(Intent::Unknown, Intent::Lookup),
         intent => intent,
     }
@@ -1289,7 +1299,7 @@ fn corrected(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-fn rules(text: &str) -> Intent {
+fn rules(text: &str, notes: bool) -> Intent {
     let text = &*corrected(text);
     let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
     // Whole short phrases only, so it takes nothing from the skills ("how are the lights" is not it).
@@ -1298,7 +1308,7 @@ fn rules(text: &str) -> Intent {
     }
     // Before the sums, timers and shopping list: a note holds any words ("remember that the timer
     // is in the drawer", "my locker is number 12").
-    if let Some(command) = crate::memory::parse(text) {
+    if let Some(command) = crate::memory::parse(text).filter(|_| notes) {
         return Intent::Memory(command);
     }
     if let Some((said, _)) = crate::calc::parse(text) {
@@ -2189,6 +2199,14 @@ mod tests {
             ),
             (r#"don't let me forget the laundry in half an hour"#, r#"Unknown"#),
             (r#"what's on the shopping list"#, r#"ShoppingList(Read)"#),
+            (r#"where did I put my phone"#, r#"House(FindPhone(None))"#),
+            (r#"where did I leave my phone"#, r#"House(FindPhone(None))"#),
+            (r#"where did I put my phone?"#, r#"House(FindPhone(None))"#),
+            (r#"hvor la jeg telefonen"#, r#"House(FindPhone(None))"#),
+            (r#"hvor la jeg mobilen min"#, r#"House(FindPhone(None))"#),
+            (r#"hvor har jeg lagt telefonen"#, r#"House(FindPhone(None))"#),
+            (r#"where is Ingrid's bike"#, r#"WhereIs { name: "ingrid bike", zone: None, arriving: false }"#),
+            (r#"where is Ola's jacket"#, r#"WhereIs { name: "ola jacket", zone: None, arriving: false }"#),
         ];
         let changed: Vec<String> = before
             .iter()
@@ -2196,6 +2214,25 @@ mod tests {
             .map(|(said, was)| format!("{said}: {:?}, was {was}", parse(said)))
             .collect();
         assert!(changed.is_empty(), "{changed:#?}");
+    }
+
+    /// When no note is about it, the engine asks the other skills, which take it as on main.
+    #[test]
+    fn without_notes_the_other_skills_take_it() {
+        for (said, was) in [
+            (
+                "what did I tell you about the timer",
+                "Timer(Remaining(Which { name: None, seconds: None, all: false, reminder: false, alarm: false }))",
+            ),
+            ("forget the milk", "Cancel"),
+            ("glem melka", "Cancel"),
+            ("forget the lights", "Cancel"),
+        ] {
+            assert!(matches!(parse(said), Intent::Memory(_)), "{said}");
+            assert_eq!(format!("{:?}", parse_without_notes(said)), was, "{said}");
+        }
+        // A note, though main set an alarm: the words say to keep it.
+        assert!(matches!(parse("remember the alarm is at 7"), Intent::Memory(_)));
     }
 
     #[test]

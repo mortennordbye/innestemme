@@ -174,6 +174,7 @@ impl AssistantProcessor {
             memory,
             notes_said: Vec::new(),
             previewing: false,
+            request_addressed: false,
             persona: None,
             render: None,
             lead_turn: 0,

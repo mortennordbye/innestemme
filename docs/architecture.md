@@ -150,13 +150,15 @@ after "put"/"la" ("I put my bike in the shed"), or parking ("I parked on level 3
 one only when both are about the same thing and say the same kind of thing (where, when, or something else), so
 "the dentist is on Friday" and "the dentist is Dr Hansen" are both kept. Recall is "what did I say about ...",
 "what do you remember (about ...)", "where did I put/park ...", "hva sa jeg om ...", "hvor la jeg ..."; "where is
-X" is answered from a note about X only when no person, zone, phone or known town is meant ("where's my phone"
-still rings it). "Forget X" (forget/glem only, never with a timer, alarm, reminder or list word, and not "forget
+X" is answered from a note about X only when no person (by the whole name), zone, phone or known town is meant
+("where's my phone" and "where did I put my phone" still ring it; "where is Ingrid's bike" is about the bike), and
+a note of where it is comes first. A recall or a forget that finds no note goes to the other skills as before ("what
+did I tell you about the timer", "forget the milk"). A note is said back in its own language. "Forget X" (forget/glem only, never with a timer, alarm, reminder or list word, and not "forget
 it") matches what notes are about, and asks first when several match; "forget everything" always asks. At most
 50 notes, kept in `memory-file` (default `memory.json` next to `unhandled-log`), written aside, synced and
 renamed; an entry that does not read loses only itself, a damaged file is set aside under a numbered name, and a
 file that cannot be read is left alone and not saved over. Passwords, PINs, codes, Wi-Fi keys, card numbers and
-lock numbers are refused, since anyone in the room can ask for a note. Notes are never in the speech cache, in
+lock, safe, alarm or key box numbers (digits said apart too; not times or years) are refused, since anyone in the room can ask for a note. Notes are never in the speech cache, in
 whatever words the persona says them; "Remember what?" takes the next request only if it gets past the usual
 follow-up filters, and the web page's preview leaves such questions alone.
 

@@ -175,12 +175,23 @@ pub fn parse(text: &str) -> Option<MemoryCommand> {
                 && before.iter().any(|x| ["i", "jeg"].contains(x));
             (said && about + 1 < w.len()).then(|| MemoryCommand::Recall(rest(about + 1)))
         }
-        // From the verb on: "where did I park" is about parking.
-        ["where", "did", "i", "put" | "leave" | "park" | "hide", ..] => Some(MemoryCommand::Recall(rest(3))),
-        ["hvor", "la" | "satte" | "gjemte" | "parkerte", "jeg", ..] => Some(MemoryCommand::Recall(rest(1))),
-        ["hvor", "har", "jeg", "lagt" | "satt" | "gjemt" | "parkert", ..] => Some(MemoryCommand::Recall(rest(3))),
+        // From the verb on: "where did I park" is about parking. A lost phone is rung instead.
+        ["where", "did", "i", "put" | "leave" | "park" | "hide", ..] => recall_unless_phone(rest(3)),
+        ["hvor", "la" | "satte" | "gjemte" | "parkerte", "jeg", ..] => recall_unless_phone(rest(1)),
+        ["hvor", "har", "jeg", "lagt" | "satt" | "gjemt" | "parkert", ..] => recall_unless_phone(rest(3)),
         _ => None,
     }
+}
+
+/// What a phone is called: "where did I put my phone" rings it, as before notes.
+const PHONES: &[&str] = &["phone", "mobile", "iphone", "telefon", "mobil", "mobiltelefon", "telefonen", "mobilen"];
+
+/// A recall, unless what is looked for is the phone itself ("where did I leave my phone"); "my phone
+/// charger" is a thing of its own.
+fn recall_unless_phone(about: String) -> Option<MemoryCommand> {
+    let words = subject_words(&about);
+    let phone = words.last().is_some_and(|w| PHONES.contains(&w.as_str()) || PHONES.contains(&stem(w).as_str()));
+    (!phone).then_some(MemoryCommand::Recall(about))
 }
 
 fn rest_from(tokens: &[&str], from: usize) -> String {
@@ -413,9 +424,22 @@ fn subject_of(note: &str) -> (Vec<String>, Kind) {
     (subject_words(note), Kind::Other)
 }
 
+/// Words only a Norwegian note has: the note's own language decides how it is said back, whatever
+/// language the request was heard in.
+/// ("min" is left out: "10 min" is English too.)
+const NORWEGIAN: &[&str] = &[
+    "jeg", "er", "ligger", "står", "henger", "mitt", "på", "til", "ikke", "og", "det", "den", "har", "skal", "vi",
+    "meg", "hos", "bak", "ved", "sin", "sitt", "hjemme",
+];
+
+fn looks_norwegian(note: &str) -> bool {
+    note.chars().any(|c| "æøåÆØÅ".contains(c))
+        || note.split_whitespace().map(normalize).any(|w| NORWEGIAN.contains(&w.as_str()))
+}
+
 /// The note said back to the person: "my bike is in the shed" becomes "Your bike is in the shed.".
-fn said_back(note: &str, lang: Lang) -> String {
-    let swap: &[(&str, &str)] = if lang == Lang::Norwegian {
+fn said_back(note: &str) -> String {
+    let swap: &[(&str, &str)] = if looks_norwegian(note) {
         &[
             ("jeg", "du"),
             ("meg", "deg"),
@@ -502,28 +526,68 @@ const SECRET: &[&str] = &[
 /// Norwegian compounds that end in a code or a password ("garasjekoden").
 const SECRET_ENDINGS: &[&str] = &["kode", "koden", "koder", "kodene", "passord", "passordet"];
 
+/// Things that open with a number: "the gate opens with 4512", "the safe is 4 5 1 2".
+const LOCKS: &[&str] = &[
+    "lock",
+    "locks",
+    "gate",
+    "door",
+    "opens",
+    "safe",
+    "alarm",
+    "keybox",
+    "opener",
+    "disarm",
+    "disarms",
+    "lås",
+    "låsen",
+    "porten",
+    "døra",
+    "døren",
+    "åpner",
+    "safen",
+    "alarmen",
+    "nøkkelboks",
+    "nøkkelboksen",
+    "garasjeport",
+    "garasjeporten",
+];
+/// Words before a number that make it a time or a year, not a code: "at 1630", "in 1998".
+const TIME_BEFORE: &[&str] =
+    &["at", "kl", "klokka", "klokken", "by", "before", "after", "until", "from", "til", "fra", "etter", "før"];
+const YEAR_BEFORE: &[&str] = &["in", "i", "since", "siden", "fra", "from"];
+
 /// A password or code: kept out of the notes.
 pub fn is_secret(text: &str) -> bool {
-    let words: Vec<String> = text
-        .split_whitespace()
-        .map(normalize)
-        .map(|w| w.trim_end_matches("'s").trim_end_matches('\'').to_owned())
-        .filter(|w| !w.is_empty())
-        .collect();
+    let raw: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<String> =
+        raw.iter().map(|t| normalize(t).trim_end_matches("'s").trim_end_matches('\'').to_owned()).collect();
     let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
     let named = words.iter().any(|w| {
         SECRET.contains(&w.as_str()) || SECRET_ENDINGS.iter().any(|end| w.ends_with(end) && w.len() > end.len() + 2)
     });
-    // "The wifi key", "card number".
+    // "The wifi key", "card number", "the key box".
     let wifi_key =
         has(&["key", "nøkkel", "nøkkelen"]) && has(&["wifi", "wi", "network", "router", "nettverk", "ruter"]);
-    let card = words
-        .windows(2)
-        .any(|p| ["card", "kort"].contains(&p[0].as_str()) && ["number", "nummer"].contains(&p[1].as_str()));
-    // "The gate opens with 4512", "the bike lock is 4512".
-    let lock = has(&["lock", "gate", "door", "opens", "lås", "låsen", "porten", "døra", "åpner"]);
-    let digits = words.iter().any(|w| w.chars().filter(char::is_ascii_digit).count() >= 4);
-    named || wifi_key || card || (lock && digits)
+    let numbered =
+        |a: &[&str], b: &[&str]| words.windows(2).any(|p| a.contains(&p[0].as_str()) && b.contains(&p[1].as_str()));
+    let card_number = numbered(&["card", "kort"], &["number", "nummer"]) || has(&["kortnummer", "kortnummeret"]);
+    let card = has(&["card", "kort", "visa", "mastercard", "master"]);
+    let key_box = numbered(&["key"], &["box", "safe"]);
+    // Digits said together or apart ("4512", "4 5 1 2"), leaving out times and years.
+    let digits: usize = words
+        .iter()
+        .enumerate()
+        .filter(|(i, w)| {
+            let before = i.checked_sub(1).map(|b| words[b].as_str()).unwrap_or_default();
+            let time = TIME_BEFORE.contains(&before) || raw[*i].contains(':');
+            let year = w.len() == 4 && (w.starts_with("19") || w.starts_with("20")) && YEAR_BEFORE.contains(&before);
+            !time && !year
+        })
+        .map(|(_, w)| w.chars().filter(char::is_ascii_digit).count())
+        .sum();
+    let lock = has(LOCKS) || key_box;
+    named || wifi_key || card_number || ((card || lock) && digits >= 4) || (key_box && digits > 0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -656,10 +720,28 @@ impl Memory {
         }
     }
 
-    /// The note a "where is" question is about, said back; `None` when none is about it.
+    /// The note a "where is" question is about, said back; `None` when none is about it. A note of
+    /// where it is comes before one of when or who ("the dentist is on Friday").
     pub fn where_is(&self, text: &str) -> Option<String> {
         let asked = subject_words(&where_subject(text)?);
-        self.notes.iter().rev().find(|n| covers(&asked, &n.subject)).map(|n| n.text.clone())
+        let about = || self.notes.iter().rev().filter(|n| covers(&asked, &n.subject));
+        about().find(|n| n.kind == Kind::Place).or_else(|| about().next()).map(|n| n.text.clone())
+    }
+
+    /// Whether a recall or a forget finds a note; when it does not, the request is likely another
+    /// skill's ("what did I tell you about the timer", "forget the milk").
+    pub fn finds(&self, command: &MemoryCommand) -> bool {
+        match command {
+            MemoryCommand::Recall(about) => {
+                let asked = subject_words(about);
+                self.notes.iter().any(|n| covers(&asked, &n.subject) || covers(&asked, &subject_words(&n.text)))
+            }
+            MemoryCommand::Forget(about) => {
+                let asked = subject_words(about);
+                self.notes.iter().any(|n| covers(&asked, &n.subject))
+            }
+            _ => true,
+        }
     }
 
     /// Runs a command; the spoken answer.
@@ -747,7 +829,7 @@ impl Memory {
             .into();
         }
         let (subject, kind) = subject_of(note);
-        let text = said_back(note, lang);
+        let text = said_back(note);
         let same = self.notes.iter().position(|n| n.subject == subject && n.kind == kind);
         let fresh = Note { text, subject, kind, norwegian: no, saved: jiff::Timestamp::now() };
         let answer = match same {
@@ -873,6 +955,47 @@ mod tests {
     }
 
     #[test]
+    fn a_lost_phone_is_rung() {
+        for said in [
+            "where did I put my phone",
+            "where did I leave my phone",
+            "hvor la jeg telefonen",
+            "hvor la jeg mobilen min",
+            "hvor har jeg lagt telefonen",
+        ] {
+            assert_eq!(parse(said), None, "{said}");
+        }
+        assert_eq!(parse("where did I put my phone charger"), Some(Recall("put my phone charger".into())));
+    }
+
+    #[test]
+    fn where_is_prefers_where_it_is() {
+        let mut memory = Memory::default();
+        let en = Lang::English;
+        memory.run(Remember("the dentist is in Storgata".into()), en);
+        memory.run(Remember("the dentist is on Friday".into()), en);
+        assert_eq!(memory.len(), 2);
+        assert_eq!(memory.where_is("where is the dentist").as_deref(), Some("The dentist is in Storgata."));
+        assert!(memory.finds(&Recall("the dentist".into())));
+        assert!(!memory.finds(&Recall("the timer".into())));
+        assert!(!memory.finds(&Forget("the milk".into())));
+        // Forgetting goes by what a note is about, not words it mentions.
+        assert!(!memory.finds(&Forget("Storgata".into())));
+    }
+
+    #[test]
+    fn a_note_is_said_back_in_its_own_language() {
+        let mut memory = Memory::default();
+        // Heard as English, said in Norwegian: "i" is "in", not "I".
+        memory.run(Remember("nøkkelen ligger i skuffen".into()), Lang::English);
+        assert_eq!(memory.where_is("hvor er nøkkelen").as_deref(), Some("Nøkkelen ligger i skuffen."));
+        memory.run(Remember("jeg parkerte på plan 3".into()), Lang::English);
+        assert_eq!(memory.run(Recall("parkerte".into()), Lang::English), "Du parkerte på plan 3.");
+        memory.run(Remember("I left my bike at the station".into()), Lang::Norwegian);
+        assert_eq!(memory.run(Recall("bike".into()), Lang::Norwegian), "You left your bike at the station.");
+    }
+
+    #[test]
     fn where_questions_name_their_subject() {
         assert_eq!(where_subject("Where is the spare key?").as_deref(), Some("the spare key?"));
         assert_eq!(where_subject("where are my glasses").as_deref(), Some("my glasses"));
@@ -988,6 +1111,14 @@ mod tests {
             "my login is ola",
             "garasjekoden er 1234",
             "passordet til ruteren er abc",
+            "the gate opens with 4 5 1 2",
+            "the safe is 4512",
+            "the alarm is 9 8 7 6",
+            "the key box is 1234",
+            "nøkkelboksen er 4321",
+            "the garage opener is 7788",
+            "it disarms with 2468",
+            "my visa is 4111 1111",
         ] {
             let answer = memory.run(Remember(said.into()), Lang::English);
             assert!(answer.starts_with("I don't keep passwords or codes."), "{said}: {answer}");
@@ -997,6 +1128,11 @@ mod tests {
         assert!(!is_secret("the barcode is on the box"));
         assert!(!is_secret("the passport is in the drawer"));
         assert!(!is_secret("the dentist is at 1430"));
+        assert!(!is_secret("the alarm is at 0900"));
+        assert!(!is_secret("the door man comes at 1630"));
+        assert!(!is_secret("the gate was built in 1998"));
+        assert!(!is_secret("the alarm is at 7"));
+        assert!(!is_secret("the safe is behind the painting"));
     }
 
     #[test]
