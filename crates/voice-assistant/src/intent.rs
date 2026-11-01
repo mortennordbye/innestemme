@@ -2100,6 +2100,8 @@ mod tests {
             "when is it cheapest to charge the car",
             "billigste fire timer med strøm",
             "when should I start the dryer",
+            "when should I charge the car",
+            "når bør jeg lade bilen",
         ] {
             assert!(
                 matches!(parse(question), Intent::Power(crate::power::PowerQuery::Window { .. })),
@@ -2107,7 +2109,9 @@ mod tests {
                 parse(question)
             );
         }
-        for question in ["når går neste 37-buss", "next train from Oslo S", "when does the 20 leave"] {
+        // Reminders stay reminders.
+        assert!(matches!(parse("remind me to run the dishwasher in 3 hours"), Intent::Timer(_)));
+        for question in ["når går neste 37-buss", "next train from Oslo S", "when does bus 20 leave"] {
             assert!(matches!(parse(question), Intent::Transit(_)), "{question}: {:?}", parse(question));
         }
         assert_eq!(parse("Good morning!"), Intent::Briefing);

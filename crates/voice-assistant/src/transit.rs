@@ -24,6 +24,50 @@ const MAX_WALK_MINUTES: u32 = 15;
 const DEPARTURES: u32 = 40;
 /// For one line, or one named stop that may be a busy hub.
 const MORE_DEPARTURES: u32 = 120;
+/// Stops the geocoder returns for a name, to pick one serving the mode asked for.
+const STOP_CANDIDATES: &str = "5";
+/// Trips asked for when only those riding one line count.
+const LINE_TRIP_PATTERNS: u32 = 8;
+
+/// Entur's venue categories for each mode.
+fn stop_categories(mode: Mode) -> &'static [&'static str] {
+    match mode {
+        Mode::Any => &[],
+        Mode::Bus => &["onstreetBus", "busStation", "coachStation"],
+        Mode::Tram => &["onstreetTram", "tramStation"],
+        Mode::Metro => &["metroStation"],
+        Mode::Rail => &["railStation"],
+        Mode::Ferry => &["ferryStop", "ferryPort", "harbourPort"],
+    }
+}
+
+/// From the geocoder's answer, the first stop serving `mode`, else the first: id, name and
+/// coordinates.
+fn pick_stop(found: &serde_json::Value, asked: &str, mode: Mode) -> Option<(String, String, f64, f64)> {
+    let features = found["features"].as_array()?;
+    let serves = |f: &serde_json::Value| {
+        f["properties"]["category"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c.as_str().is_some_and(|c| stop_categories(mode).contains(&c))))
+    };
+    let feature = features.iter().find(|f| serves(f)).or(features.first())?;
+    let props = &feature["properties"];
+    let [lon, lat] = [&feature["geometry"]["coordinates"][0], &feature["geometry"]["coordinates"][1]];
+    Some((
+        props["id"].as_str()?.to_owned(),
+        props["name"].as_str().unwrap_or(asked).to_owned(),
+        lat.as_f64()?,
+        lon.as_f64()?,
+    ))
+}
+
+/// Whether a trip rides the line: "31", "n12".
+fn rides(pattern: &Pattern, line: &str) -> bool {
+    pattern.legs.iter().any(|leg| {
+        leg.mode != "foot"
+            && leg.line.as_ref().and_then(|l| l.public_code.as_deref()).is_some_and(|c| c.eq_ignore_ascii_case(line))
+    })
+}
 const WINDOW_SECONDS: u32 = 3 * 3600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -86,8 +130,11 @@ const MODES: &[(&str, Mode)] = &[
     ("buss", Mode::Bus),
     ("bussen", Mode::Bus),
     ("busser", Mode::Bus),
+    ("bussene", Mode::Bus),
     ("tram", Mode::Tram),
     ("trams", Mode::Tram),
+    ("trikker", Mode::Tram),
+    ("trikkene", Mode::Tram),
     ("streetcar", Mode::Tram),
     ("trikk", Mode::Tram),
     ("trikken", Mode::Tram),
@@ -101,10 +148,15 @@ const MODES: &[(&str, Mode)] = &[
     ("tbanen", Mode::Metro),
     ("train", Mode::Rail),
     ("trains", Mode::Rail),
+    ("togene", Mode::Rail),
     ("tog", Mode::Rail),
     ("toget", Mode::Rail),
     ("ferry", Mode::Ferry),
     ("boat", Mode::Ferry),
+    ("boats", Mode::Ferry),
+    ("ferries", Mode::Ferry),
+    ("båter", Mode::Ferry),
+    ("båtene", Mode::Ferry),
     ("ferje", Mode::Ferry),
     ("ferja", Mode::Ferry),
     ("ferga", Mode::Ferry),
@@ -127,16 +179,134 @@ const DESTINATION_FILLER: &[&str] = &[
 const FROM: &[&str] = &["from", "fra"];
 /// "From home" is the default, not a stop.
 const HOME_WORDS: &[&str] = &["home", "here", "hjemme", "hjem", "hjemmefra", "her"];
-/// Words just before a line number: "the next 31", "bus 31", "linje 37".
-const LINE_LEAD: &[&str] = &["next", "neste", "the", "line", "linje", "linjen", "number", "nummer", "route", "rute"];
-/// Words after a number that make it a count or a time, not a line: "the next 3 days".
+/// "From the stop", "fra holdeplassen": the stop near home, not one called that.
+const GENERIC_STOPS: &[&str] = &[
+    "stop",
+    "the stop",
+    "bus stop",
+    "station",
+    "the station",
+    "platform",
+    "holdeplassen",
+    "holdeplass",
+    "bussholdeplassen",
+    "stoppet",
+    "stoppestedet",
+    "stasjonen",
+    "perrongen",
+    "plattformen",
+];
+/// Words just before a number that make it a line whatever follows: "line 31", "linje 37".
+const LINE_WORDS: &[&str] = &["line", "linje", "linjen", "number", "nummer", "route", "rute"];
+/// Modes said for several vehicles: after "the next 2" they make a count, not a line.
+const PLURAL_MODES: &[&str] = &[
+    "buses", "busser", "bussene", "trams", "trikker", "trikkene", "trains", "togene", "ferries", "boats", "båter",
+    "båtene",
+];
+/// Words after a number that make it a count, a time or a date, not a line: "the next 3 days",
+/// "the next 10 mins", "the 17 May parade".
 const NOT_A_LINE: &[&str] = &[
-    "minute", "minutes", "minutt", "minutter", "second", "seconds", "sekunder", "hour", "hours", "time", "timer",
-    "timene", "day", "days", "dag", "dager", "dagene", "week", "weeks", "uke", "uker", "song", "songs", "sang",
-    "sanger", "track", "tracks", "times", "percent", "prosent", "degrees", "grader", "o'clock", "am", "pm", "of",
+    "min",
+    "mins",
+    "minute",
+    "minutes",
+    "minutt",
+    "minutter",
+    "second",
+    "seconds",
+    "secs",
+    "sekunder",
+    "hour",
+    "hours",
+    "time",
+    "timer",
+    "timene",
+    "day",
+    "days",
+    "dag",
+    "dager",
+    "dagene",
+    "night",
+    "nights",
+    "netter",
+    "morning",
+    "mornings",
+    "evening",
+    "evenings",
+    "kvelder",
+    "week",
+    "weeks",
+    "uke",
+    "uker",
+    "month",
+    "months",
+    "måneder",
+    "year",
+    "years",
+    "år",
+    "event",
+    "events",
+    "song",
+    "songs",
+    "sang",
+    "sanger",
+    "track",
+    "tracks",
+    "times",
+    "percent",
+    "prosent",
+    "degrees",
+    "grader",
+    "o'clock",
+    "am",
+    "pm",
+    "of",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "januar",
+    "februar",
+    "mars",
+    "mai",
+    "juni",
+    "juli",
+    "oktober",
+    "desember",
 ];
 /// A request about music, where "skip the next 2" is not a line.
 const MUSIC_WORDS: &[&str] = &["skip", "song", "songs", "track", "play", "spill", "sang", "låt", "hopp"];
+
+/// Where a line's number is said, from a strong cue only, so counts and times stay what they
+/// are: "line 31", "bus 31", "the 31 bus", "37-buss", "next 31 bus" (one bus, so a line; "the
+/// next 2 buses" is a count), "neste 37", and a code with letters ("N12") after next. `clock`
+/// marks the words that were times of day in the raw text ("8:15").
+fn line_at(words: &[String], clock: &[bool]) -> Option<usize> {
+    (0..words.len()).find(|&i| {
+        let word = words[i].as_str();
+        let after = words.get(i + 1).map(String::as_str);
+        let before = i.checked_sub(1).map(|b| words[b].as_str());
+        if clock[i] || !line_code(word) || after.is_some_and(|a| NOT_A_LINE.contains(&a)) {
+            return false;
+        }
+        let after_next = before.is_some_and(|b| b == "next" || b == "neste");
+        let lettered = word.chars().any(|c| c.is_ascii_alphabetic());
+        before.is_some_and(|b| LINE_WORDS.contains(&b) || is_mode(b))
+            || after.is_some_and(|a| is_mode(a) && !PLURAL_MODES.contains(&a))
+            || (after_next && lettered)
+            // "Når går neste 37": nothing after it but the way it goes.
+            || (before == Some("neste")
+                && after.is_none_or(|a| TOWARDS.contains(&a) || FROM.contains(&a) || WHEN_WORDS.contains(&a)))
+    })
+}
 
 /// A line's public code as the transcriber writes it: "31", "n12", "re10", "31e".
 fn line_code(word: &str) -> bool {
@@ -156,27 +326,29 @@ pub fn parse(text: &str) -> Option<TransitQuery> {
     // "t-bane" loses its hyphen in `normalize`; "t bane" is two words.
     let joined = text.to_lowercase().replace("t-bane", "tbane").replace("t bane", "tbane");
     let mut words: Vec<String> = Vec::new();
-    for word in joined.split_whitespace().map(normalize).filter(|w| !w.is_empty()) {
+    // Times of day, seen before `normalize` drops the colon: "the 8:15 train" is no line 815.
+    let mut clock: Vec<bool> = Vec::new();
+    for raw in joined.split_whitespace() {
+        let word = normalize(raw);
+        if word.is_empty() {
+            continue;
+        }
+        let time = raw.trim_matches(|c: char| !c.is_ascii_digit()).contains([':', '.']);
         // "37-buss" loses its hyphen too: the line, then the mode.
         let digits = word.chars().take_while(char::is_ascii_digit).count();
         if digits > 0 && is_mode(&word[digits..]) {
             words.push(word[..digits].to_owned());
             words.push(word[digits..].to_owned());
+            clock.extend([time, false]);
         } else {
             words.push(word);
+            clock.push(time);
         }
     }
     let mode = words.iter().find_map(|w| MODES.iter().find(|(m, _)| m == w).map(|&(_, mode)| mode));
     let departures = words.iter().any(|w| DEPARTURE_WORDS.contains(&w.as_str()));
     let music = mode.is_none() && words.iter().any(|w| MUSIC_WORDS.contains(&w.as_str()));
-    let line_at = (0..words.len()).find(|&i| {
-        let after = words.get(i + 1).map(String::as_str);
-        let before = i.checked_sub(1).map(|b| words[b].as_str());
-        !music
-            && line_code(&words[i])
-            && !after.is_some_and(|a| NOT_A_LINE.contains(&a))
-            && (after.is_some_and(is_mode) || before.is_some_and(|b| LINE_LEAD.contains(&b) || is_mode(b)))
-    });
+    let line_at = if music { None } else { line_at(&words, &clock) };
     if mode.is_none() && !departures && line_at.is_none() {
         return None;
     }
@@ -205,7 +377,7 @@ pub fn parse(text: &str) -> Option<TransitQuery> {
         .iter()
         .position(|w| FROM.contains(&w.as_str()))
         .and_then(|at| phrase(at + 1, TOWARDS))
-        .filter(|stop| !HOME_WORDS.contains(&stop.as_str()));
+        .filter(|stop| !HOME_WORDS.contains(&stop.as_str()) && !GENERIC_STOPS.contains(&stop.as_str()));
     Some(TransitQuery { mode: mode.unwrap_or(Mode::Any), destination, line: line_at.map(|at| words[at].clone()), from })
 }
 
@@ -380,18 +552,20 @@ impl Transit {
         if stop.starts_with("NSR:") {
             return Ok(Some(NearStop { id: stop.to_owned(), name: stop.to_owned(), walk: 0 }));
         }
-        Ok(self.find_stop(stop)?.map(|(id, name, ..)| NearStop { id, name, walk: 0 }))
+        Ok(self.find_stop(stop, Mode::Any)?.map(|(id, name, ..)| NearStop { id, name, walk: 0 }))
     }
 
-    /// A stop by (possibly misheard) name, nearest the home first: id, name, coordinates.
-    fn find_stop(&self, name: &str) -> Result<Option<(String, String, f64, f64)>> {
+    /// A stop by (possibly misheard) name, nearest the home first: id, name, coordinates. With a
+    /// mode, a stop that serves it beats a closer name match ("next train from Lysaker" is the
+    /// station, not the bus stop of that name).
+    fn find_stop(&self, name: &str, mode: Mode) -> Result<Option<(String, String, f64, f64)>> {
         let mut call = self
             .agent
             .get("https://api.entur.io/geocoder/v1/autocomplete")
             .header("ET-Client-Name", ENTUR_CLIENT)
             .query("text", name)
             .query("layers", "venue")
-            .query("size", "1")
+            .query("size", STOP_CANDIDATES)
             .query("lang", "no");
         if let Some(home) = &self.home {
             call = call
@@ -399,23 +573,16 @@ impl Transit {
                 .query("focus.point.lon", home.longitude.to_string());
         }
         let found: serde_json::Value = call.call().context("stop lookup (Entur geocoder)")?.body_mut().read_json()?;
-        let feature = &found["features"][0];
-        let props = &feature["properties"];
-        let [lon, lat] = [&feature["geometry"]["coordinates"][0], &feature["geometry"]["coordinates"][1]];
-        Ok(match (props["id"].as_str(), lat.as_f64(), lon.as_f64()) {
-            (Some(id), Some(lat), Some(lon)) => {
-                Some((id.to_owned(), props["name"].as_str().unwrap_or(name).to_owned(), lat, lon))
-            }
-            _ => None,
-        })
+        Ok(pick_stop(&found, name, mode))
     }
 
-    /// "Next tram to Majorstuen": trips from home, like ruter-cli's.
-    fn trip(&self, destination: &str, mode: Mode, lang: Lang) -> Result<String> {
+    /// "Next tram to Majorstuen": trips from home, like ruter-cli's. With a line, only trips that
+    /// ride it.
+    fn trip(&self, destination: &str, mode: Mode, line: Option<&str>, lang: Lang) -> Result<String> {
         let home = self.home.as_ref().context("a trip needs the home address")?;
         // "Into town" is the home town's centre.
         let wanted = if centre(destination) { home.label.as_str() } else { destination };
-        let Some((_, name, lat, lon)) = self.find_stop(wanted)? else {
+        let Some((_, name, lat, lon)) = self.find_stop(wanted, Mode::Any)? else {
             return Ok(match lang {
                 Lang::English => format!("I couldn't find a stop called {destination}."),
                 Lang::Norwegian => format!("Jeg fant ingen holdeplass som heter {destination}."),
@@ -432,15 +599,28 @@ impl Transit {
         let modes: Vec<String> = modes.split(' ').map(|m| format!("{{transportMode: {m}}}")).collect();
         let data = self.graphql(&format!(
             "{{ trip(from: {{coordinates: {{latitude: {}, longitude: {}}}}}, to: {{coordinates: {{latitude: {lat}, longitude: {lon}}}}}, \
-             numTripPatterns: 3, maxAccessEgressDurationForMode: [{{streetMode: foot, duration: \"PT{MAX_WALK_MINUTES}M\"}}], \
+             numTripPatterns: {}, maxAccessEgressDurationForMode: [{{streetMode: foot, duration: \"PT{MAX_WALK_MINUTES}M\"}}], \
              modes: {{accessMode: foot, egressMode: foot, transportModes: [{}]}}) {{ tripPatterns {{ expectedStartTime \
              legs {{ mode expectedStartTime fromPlace {{ name }} line {{ publicCode transportMode }} }} }} }} }}",
             home.latitude,
             home.longitude,
+            // The line's own trips may be a few patterns down.
+            if line.is_some() { LINE_TRIP_PATTERNS } else { 3 },
             modes.join(", ")
         ))?;
         let patterns: Vec<Pattern> = serde_json::from_value(data["trip"]["tripPatterns"].clone())?;
-        Ok(trip_answer(&patterns, &name, mode, jiff::Timestamp::now(), lang))
+        let Some(line) = line else {
+            return Ok(trip_answer(&patterns, &name, mode, jiff::Timestamp::now(), lang));
+        };
+        let riding: Vec<Pattern> = patterns.into_iter().filter(|p| rides(p, line)).collect();
+        if riding.is_empty() {
+            let line = line.to_uppercase();
+            return Ok(match lang {
+                Lang::English => format!("I couldn't find line {line} towards {name} in the next few hours."),
+                Lang::Norwegian => format!("Jeg fant ikke linje {line} mot {name} de neste timene."),
+            });
+        }
+        Ok(trip_answer(&riding, &name, mode, jiff::Timestamp::now(), lang))
     }
 
     /// The spoken answer.
@@ -448,10 +628,10 @@ impl Transit {
         if let Some(from) = &query.from {
             return self.departures_at_stop(from, query, lang);
         }
-        // A line named with a destination is that line's departures towards it, not a trip that may
-        // take another line.
-        if let (Some(destination), Some(_), None) = (&query.destination, &self.home, &query.line) {
-            return self.trip(destination, query.mode, lang);
+        // A destination is a trip from home, kept to the line when one is named: the sign shows the
+        // end of the line, which says nothing about the stops on the way.
+        if let (Some(destination), Some(_)) = (&query.destination, &self.home) {
+            return self.trip(destination, query.mode, query.line.as_deref(), lang);
         }
         // One line among a busy stop's departures needs more of them.
         let count = if query.line.is_some() { MORE_DEPARTURES } else { DEPARTURES };
@@ -466,7 +646,7 @@ impl Transit {
 
     /// "Next train from Nationaltheatret": the departures from a stop found by name.
     fn departures_at_stop(&self, name: &str, query: &TransitQuery, lang: Lang) -> Result<String> {
-        let Some((id, found_name, ..)) = self.find_stop(name)? else {
+        let Some((id, found_name, ..)) = self.find_stop(name, query.mode)? else {
             return Ok(match lang {
                 Lang::English => format!("I couldn't find a stop called {name}."),
                 Lang::Norwegian => format!("Jeg fant ingen holdeplass som heter {name}."),
@@ -584,11 +764,7 @@ fn when_at(minutes: i64, clock: &str, lang: Lang) -> String {
 /// "The next bus is the 31 to Snarøya, from Wessels plass. It leaves in 4 minutes. The one after
 /// leaves in 12 minutes."
 fn answer(stops: &[Stop], query: &TransitQuery, now: jiff::Timestamp, lang: Lang) -> String {
-    let mut found = departures(stops, query, now);
-    // The sign may name the end of the line, not the stop asked for: a line's departures then do.
-    if found.is_empty() && query.line.is_some() && query.destination.is_some() {
-        found = departures(stops, &TransitQuery { destination: None, ..query.clone() }, now);
-    }
+    let found = departures(stops, query, now);
     let what = query.mode.word(lang);
     let Some(first) = found.first() else {
         // "bus 31", "line 31" ("linje 31").
@@ -765,11 +941,57 @@ mod tests {
         );
         assert_eq!(parse("neste buss fra Jernbanetorget"), q(Mode::Bus, None, Some("jernbanetorget"), None));
         assert_eq!(parse("next bus from home"), q(Mode::Bus, None, None, None));
-        // Numbers that are counts, times or songs.
+        assert_eq!(parse("line 31, when does it leave"), q(Mode::Any, Some("31"), None, None));
+        assert_eq!(parse("when does the 31 bus come"), q(Mode::Bus, Some("31"), None, None));
+        // "From the stop" is the stop near home, not one called that.
+        assert_eq!(parse("neste buss fra holdeplassen"), q(Mode::Bus, None, None, None));
+        assert_eq!(parse("next train from the station"), q(Mode::Rail, None, None, None));
+        // Counts of vehicles are plain mode questions.
+        assert_eq!(parse("when are the next 2 buses"), q(Mode::Bus, None, None, None));
+        assert_eq!(parse("the next 3 trains to Lillestrøm"), q(Mode::Rail, None, None, Some("lillestrøm")));
+        assert_eq!(parse("next 2 trams"), q(Mode::Tram, None, None, None));
+        assert_eq!(parse("når går de neste 2 bussene"), q(Mode::Bus, None, None, None));
+        // A time of day is never a line.
+        assert_eq!(parse("when does the 8:15 train leave"), q(Mode::Rail, None, None, None));
+        assert_eq!(parse("is the 8.15 bus on time"), None);
+        // Numbers that are counts, times, dates or songs, with no mode said.
         assert_eq!(parse("what's the weather the next 3 days"), None);
         assert_eq!(parse("skip the next 2"), None);
         assert_eq!(parse("when is the next 5 minutes"), None);
+        assert_eq!(parse("what about the next 10 mins"), None);
+        assert_eq!(parse("next 20 min"), None);
+        assert_eq!(parse("the next 5 nights"), None);
+        assert_eq!(parse("what are the next 3 events"), None);
+        assert_eq!(parse("when is the 17 May parade"), None);
+        assert_eq!(parse("when's the next 31"), None);
         assert_eq!(parse("I took the 31 to work"), None);
+    }
+
+    #[test]
+    fn stops_by_mode_and_trips_by_line() {
+        let found = json!({ "features": [
+            { "properties": { "id": "NSR:StopPlace:1", "name": "Lysaker", "category": ["onstreetBus"] },
+              "geometry": { "coordinates": [10.63, 59.91] } },
+            { "properties": { "id": "NSR:StopPlace:2", "name": "Lysaker stasjon", "category": ["railStation"] },
+              "geometry": { "coordinates": [10.64, 59.92] } },
+        ]});
+        assert_eq!(pick_stop(&found, "lysaker", Mode::Rail).unwrap().0, "NSR:StopPlace:2");
+        assert_eq!(pick_stop(&found, "lysaker", Mode::Bus).unwrap().0, "NSR:StopPlace:1");
+        assert_eq!(pick_stop(&found, "lysaker", Mode::Any).unwrap().0, "NSR:StopPlace:1");
+        assert_eq!(pick_stop(&found, "lysaker", Mode::Ferry).unwrap().0, "NSR:StopPlace:1");
+        assert_eq!(pick_stop(&json!({ "features": [] }), "nowhere", Mode::Any), None);
+        let leg = |line: &str| {
+            json!({ "mode": "bus", "expectedStartTime": "2026-09-24T18:05:00Z", "fromPlace": { "name": "Wessels plass" },
+                    "line": { "publicCode": line, "transportMode": "bus" } })
+        };
+        let patterns: Vec<Pattern> = serde_json::from_value(json!([
+            { "expectedStartTime": "2026-09-24T18:00:00Z", "legs": [leg("20")] },
+            { "expectedStartTime": "2026-09-24T18:10:00Z", "legs": [leg("N12"), leg("31")] },
+        ]))
+        .unwrap();
+        assert!(!rides(&patterns[0], "31"));
+        assert!(rides(&patterns[1], "31"));
+        assert!(rides(&patterns[1], "n12"));
     }
 
     #[test]
@@ -785,9 +1007,12 @@ mod tests {
             "The next departure is bus 31 to Snarøya, from Wessels plass. It leaves in 4 minutes. The one after \
              leaves in 9 minutes."
         );
-        // The sign names the end of the line: the line's departures still answer.
+        // Towards a place the signs don't name: no departure of the line in some other direction.
         let towards = TransitQuery { line: Some("20".into()), destination: Some("majorstuen".into()), ..line.clone() };
-        assert!(answer(&stops, &towards, now, Lang::English).contains("bus 20 to Skøyen"));
+        assert_eq!(
+            answer(&stops, &towards, now, Lang::English),
+            "I found no line 20 towards majorstuen in the next three hours."
+        );
         let missing = TransitQuery { line: Some("37".into()), ..Default::default() };
         assert_eq!(
             answer(&stops, &missing, now, Lang::English),
