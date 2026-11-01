@@ -40,6 +40,7 @@ focus; Norwegian works with Whisper and Piper.
 | Phones | "where's my phone?" (rings it, even on silent), "how much battery does my phone have?" |
 | Guest Wi-Fi, camera, alarm | "turn on the guest Wi-Fi", "turn on privacy mode", "arm the alarm" (never disarmed by voice) |
 | Weather, departures, power | "will it rain in Bergen tomorrow?", "when's the next bus?", "when is the next 31 from Nationaltheatret?", "when is electricity cheapest?", "when should I run the dishwasher?" (Yr, Entur, hvakosterstrommen.no) |
+| Notes | "remember that the spare key is in the kitchen drawer", "where is the spare key?", "what do you remember?", "forget the spare key" |
 | Everyday | "good morning" (a briefing), "what's the latest news?", "who is Jonas Gahr Støre?", "15 percent of 80", "how many grams in a pound?", "how far is Tokyo?", "tell me a joke", "what time is it?" |
 | Shopping list | "add milk to the shopping list", then "brunost", "rømme og egg", "remove the milk", "that's all" (items one after the other, written in Norwegian with `norwegian-groceries`), "what's on the list?" |
 | Small talk | "do you love me?", "you're useless" (it has comebacks), "will you marry me?", "what's the meaning of life?", "open the pod bay doors"; "shut up" just stops it |

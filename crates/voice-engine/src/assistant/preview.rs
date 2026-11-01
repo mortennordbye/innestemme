@@ -5,6 +5,7 @@ use voice_assistant::ha::{self, Light};
 use voice_assistant::house::{self, HouseCommand, Routine, Switch};
 use voice_assistant::intent::{self, Intent};
 use voice_assistant::lang::Lang;
+use voice_assistant::memory::MemoryCommand;
 use voice_assistant::party::PartyCommand;
 use voice_assistant::shopping::ListCommand;
 use voice_assistant::{plan, tv};
@@ -36,6 +37,7 @@ impl Worker {
                 | Intent::WhosHome(_)
                 | Intent::WhereIs { .. }
                 | Intent::Convert(_)
+                | Intent::Memory(MemoryCommand::Recall(_) | MemoryCommand::List)
                 | Intent::Briefing
                 | Intent::News
                 | Intent::Lookup(_)

@@ -85,6 +85,10 @@ pub enum Intent {
     },
     /// "Convert 10 miles to kilometres", "how many grams in a pound".
     Convert(crate::units::Conversion),
+    /// Personal notes: "remember that the spare key is in the kitchen drawer", "what did I say
+    /// about the spare key", "forget the spare key". "Where is the spare key" is answered from a
+    /// note when there is one, before people and places.
+    Memory(crate::memory::MemoryCommand),
     /// "Good morning": the time, the weather at home and the shopping list in a few sentences.
     Briefing,
     /// "What's the news?": the latest headlines.
@@ -1292,6 +1296,11 @@ fn rules(text: &str) -> Intent {
     if let Some(chat) = crate::smalltalk::parse(&words) {
         return Intent::SmallTalk(chat);
     }
+    // Before the sums, timers and shopping list: a note holds any words ("remember that the timer
+    // is in the drawer", "my locker is number 12").
+    if let Some(command) = crate::memory::parse(text) {
+        return Intent::Memory(command);
+    }
     if let Some((said, _)) = crate::calc::parse(text) {
         return Intent::Calculate(said);
     }
@@ -2074,6 +2083,24 @@ mod tests {
         ] {
             assert!(matches!(parse(said), Intent::Convert(_)), "{said} -> {:?}", parse(said));
         }
+    }
+
+    #[test]
+    fn notes_take_their_words_and_leave_the_rest() {
+        use crate::memory::MemoryCommand;
+        let note = |s: &str| Intent::Memory(MemoryCommand::Remember(s.into()));
+        // Words other skills would take: a timer, a sum, the shopping list.
+        assert_eq!(parse("remember that the timer is in the top drawer"), note("the timer is in the top drawer"));
+        assert_eq!(parse("remember that my locker is number 12"), note("my locker is number 12"));
+        assert_eq!(parse("remember that we need milk on Friday"), note("we need milk on Friday"));
+        assert_eq!(parse("forget the spare key"), Intent::Memory(MemoryCommand::Forget("the spare key".into())));
+        // Still "never mind", reminders and people.
+        assert_eq!(parse("forget it"), Intent::Cancel);
+        assert_eq!(parse("glem det"), Intent::Cancel);
+        assert!(matches!(parse("remind me in 10 minutes to check the oven"), Intent::Timer(_)));
+        assert!(matches!(parse("don't let me forget the laundry in half an hour"), Intent::Timer(_) | Intent::Unknown));
+        assert!(matches!(parse("where is Ingrid"), Intent::WhereIs { .. }));
+        assert!(matches!(parse("play Remember the Time"), Intent::Music(_)));
     }
 
     #[test]

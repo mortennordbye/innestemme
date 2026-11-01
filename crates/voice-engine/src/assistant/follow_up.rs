@@ -45,6 +45,9 @@ const REQUEST_OPENINGS: &[&str] = &[
     "next",
     "previous",
     "remind",
+    "remember",
+    "forget",
+    "note",
     "wake",
     "snooze",
     "find",
@@ -99,6 +102,8 @@ const REQUEST_OPENINGS: &[&str] = &[
     "vis",
     "fortell",
     "legg",
+    "husk",
+    "glem",
     "hva",
     "hvor",
     "hvem",
@@ -230,5 +235,8 @@ mod tests {
         assert!(!room_talk("And the kitchen too."));
         assert!(!room_talk("Turn on all the lights in the living room and the kitchen."));
         assert!(!room_talk("What is the temperature in the bedroom right now, please?"));
+        // A note is a long sentence of its own.
+        assert!(!room_talk("Remember that the spare key is in the kitchen drawer by the sink."));
+        assert!(!room_talk("Husk at reservenøkkelen ligger i den øverste skuffen på kjøkkenet."));
     }
 }

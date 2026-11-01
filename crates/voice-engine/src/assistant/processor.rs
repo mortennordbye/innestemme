@@ -12,6 +12,7 @@ use voice_assistant::ha::HomeAssistant;
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::lookup::Lookup;
+use voice_assistant::memory::Memory;
 use voice_assistant::music::Player;
 use voice_assistant::news::News;
 use voice_assistant::persona::Persona;
@@ -128,6 +129,7 @@ impl AssistantProcessor {
             None => ShoppingList::default(),
         };
         let timers = config.timers_file.clone().map_or_else(Timers::default, Timers::kept_in);
+        let memory = config.memory_file.clone().map_or_else(Memory::default, Memory::kept_in);
         let mut worker = Worker {
             events: events.clone(),
             reply: reply_tx,
@@ -169,6 +171,7 @@ impl AssistantProcessor {
             pending_scene: None,
             pending_confirm: None,
             timers,
+            memory,
             persona: None,
             render: None,
             lead_turn: 0,

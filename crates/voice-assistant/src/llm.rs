@@ -397,6 +397,16 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 None => return Err(anyhow!("cannot convert {said:?}")),
             }
         }
+        "notes" => {
+            use crate::memory::MemoryCommand;
+            let fact = text("fact").unwrap_or_default();
+            Decision::Act(Intent::Memory(match text("action").as_deref() {
+                Some("remember") => MemoryCommand::Remember(fact),
+                Some("forget") => MemoryCommand::Forget(fact),
+                _ if fact.is_empty() => MemoryCommand::List,
+                _ => MemoryCommand::Recall(fact),
+            }))
+        }
         "ignore" => Decision::Ignore,
         other => return Err(anyhow!("the language model called an unknown tool {other:?}")),
     })
@@ -555,6 +565,14 @@ pub fn tools() -> Value {
             "to": { "type": "string" }
         } })
         ),
+        tool(
+            "notes",
+            "Remember something the user tells you, or say back or forget what they told you.",
+            json!({ "type": "object", "required": ["action"], "properties": {
+            "action": { "type": "string", "enum": ["remember", "recall", "forget"] },
+            "fact": { "type": "string", "description": "What to remember, or what it is about" }
+        } })
+        ),
         tool("joke", "Tell a joke.", none.clone()),
         tool("news", "Latest news headlines.", none.clone()),
         tool(
@@ -584,7 +602,7 @@ pub fn system_prompt(name: &str, home: Option<&str>, room: Option<&str>, today: 
         "You are {name}, a voice assistant that controls a home.{home}{room} Today is {today}.\n\
          Rule 1: for the weather, lights, brightness or colour, a light scene or mood, music, the TV, a \
          timer or reminder, the shopping list, departures, electricity prices, who is home, a lost phone, the \
-         temperature indoors, the house, batteries or leaks, a unit conversion, or something funny, call the matching tool. Do not describe the action; the tool does it and speaks.\n\
+         temperature indoors, the house, batteries or leaks, a unit conversion, a note to remember or recall, or something funny, call the matching tool. Do not describe the action; the tool does it and speaks.\n\
          Rule 2: if the words were addressed to another person or are background talk, call ignore.\n\
          Rule 3: otherwise answer from your own knowledge in one short spoken sentence, no markdown. \
          Never say you did something without calling a tool.\n\
@@ -602,6 +620,18 @@ mod tests {
     #[test]
     fn tool_calls_become_skills() {
         let call = |name: &str, args: &str| json!({ "tool_calls": [{ "type": "function", "function": { "name": name, "arguments": args } }] });
+        assert_eq!(
+            parse_reply(&call("notes", r#"{"action":"remember","fact":"the bins go out on Tuesday"}"#)).unwrap(),
+            Decision::Act(Intent::Memory(crate::memory::MemoryCommand::Remember("the bins go out on Tuesday".into())))
+        );
+        assert_eq!(
+            parse_reply(&call("notes", r#"{"action":"recall","fact":"bins"}"#)).unwrap(),
+            Decision::Act(Intent::Memory(crate::memory::MemoryCommand::Recall("bins".into())))
+        );
+        assert_eq!(
+            parse_reply(&call("notes", r#"{"action":"recall"}"#)).unwrap(),
+            Decision::Act(Intent::Memory(crate::memory::MemoryCommand::List))
+        );
         assert_eq!(
             parse_reply(&call("weather", r#"{"place":"Bergen","day":"tomorrow"}"#)).unwrap(),
             Decision::Act(Intent::Weather { place: Some("Bergen".into()), day: Day::Tomorrow, focus: Focus::General })

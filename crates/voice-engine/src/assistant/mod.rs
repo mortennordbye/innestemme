@@ -43,6 +43,7 @@ use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
 use voice_assistant::llm::{self, Decision, Llm, Turn};
 use voice_assistant::lookup::Lookup;
+use voice_assistant::memory::Memory;
 use voice_assistant::music::Player;
 use voice_assistant::news::News;
 use voice_assistant::persona::Persona;
@@ -143,6 +144,9 @@ pub struct AssistantConfig {
     /// Where timers, reminders and alarms are kept, so they survive a restart; in memory only
     /// without it.
     pub timers_file: Option<std::path::PathBuf>,
+    /// Where the notes ("remember that ...") are kept, so they survive a restart; in memory only
+    /// without it.
+    pub memory_file: Option<std::path::PathBuf>,
     /// The TV's media player entity; default: the media player that is a TV.
     pub tv: Option<String>,
     /// The Plex server for "play <title> on Plex".
@@ -301,6 +305,8 @@ struct Worker {
     /// A camera or alarm change waiting for "yes": a misheard request must not switch them.
     pending_confirm: Option<(HouseCommand, Instant)>,
     timers: Timers,
+    /// Notes: "remember that the spare key is in the kitchen drawer".
+    memory: Memory,
     persona: Option<Persona>,
     /// Renders speech ahead of time, when there is a speech cache.
     render: Option<RenderAhead>,
@@ -606,12 +612,17 @@ impl Worker {
             }
         }
         // A question waiting for "yes" only takes a yes or a no: other words without the name are the room.
-        let confirming = self.pending_confirm.is_some() && confirmation(&request).is_some();
+        let confirming =
+            (self.pending_confirm.is_some() || self.memory.asked_forget_all()) && confirmation(&request).is_some();
         // A "Which one?" left unanswered goes; one still open takes only an answer ("the first
         // one"), so other words without the name still face the room-talk filter.
         self.timers.forget_stale(Instant::now());
         let timers_asked = self.timers.takes_answer(&request);
-        let pending = self.pending_lights.is_some() || confirming || timers_asked || self.list_is_open();
+        let pending = self.pending_lights.is_some()
+            || confirming
+            || timers_asked
+            || self.list_is_open()
+            || self.memory.asked_what();
         // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
         // for murdering his barn it 40 stop" set the volume.
         // A wake word without the name is as unsure as the follow-up window: the TV's "just because
@@ -764,6 +775,18 @@ impl Worker {
                 }
             }
         }
+        // "Forget everything I remember?" "Yes." / "Remember what?" "The bins go out on Tuesday."
+        let (asked_what, asked_forget_all) = (self.memory.asked_what(), self.memory.asked_forget_all());
+        self.memory.clear_questions();
+        if asked_forget_all {
+            if let Some(yes) = confirmation(text) {
+                return Some(self.memory.answer_forget_all(yes, lang));
+            }
+        }
+        if asked_what && matches!(intent, Intent::Unknown | Intent::Lookup(_)) {
+            let answer = self.memory.remember(text, lang);
+            return Some(answer);
+        }
         if let Some((command, at)) = self.pending_confirm.take() {
             match confirmation(text) {
                 Some(true) if at.elapsed() < CONFIRM_WINDOW => return Some(self.house(&command, lang)),
@@ -780,6 +803,11 @@ impl Worker {
             if intent == Intent::Unknown {
                 return Some(self.scene(&format!("{scene} in {text}"), lang));
             }
+        }
+        // "Where is the spare key": a note about it, before people and places.
+        if let Some(note) = self.memory.where_is(text) {
+            self.keep_live(&note);
+            return Some(note);
         }
         if let Some(parts) = intent::split_commands(text) {
             return self.several(&parts, lang);
@@ -820,6 +848,12 @@ impl Worker {
             }
         }
         self.act(intent, lang)
+    }
+
+    /// Sentences of changing text (a note, an article) are synthesized, not kept by the speech cache.
+    fn keep_live(&mut self, text: &str) {
+        let sentences = text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty());
+        self.live.extend(sentences.map(str::to_owned));
     }
 
     fn unhandled(&self, reason: Reason, heard: &str, answer: Option<&str>) {
@@ -947,6 +981,12 @@ impl Worker {
             Intent::WhosHome(name) => self.whos_home(name.as_deref(), lang),
             Intent::WhereIs { name, zone, arriving } => self.where_is(&name, zone.as_deref(), arriving, lang),
             Intent::Convert(conversion) => voice_assistant::units::answer(&conversion, lang),
+            Intent::Memory(command) => {
+                let answer = self.memory.run(command, lang);
+                let notes: Vec<String> = self.memory.sentences().map(str::to_owned).collect();
+                notes.iter().for_each(|note| self.keep_live(note));
+                answer
+            }
             Intent::Briefing => self.briefing(lang),
             Intent::Lookup(topic) => match self.lookup.answer(&topic, lang) {
                 Ok(Some(answer)) => {
