@@ -153,7 +153,9 @@ impl Worker {
                 .into();
         };
         match ha.people() {
-            Ok(people) => voice_assistant::people::where_answer(&people, name, zone, arriving, lang),
+            Ok(people) => {
+                voice_assistant::people::where_answer(&people, name, zone, arriving, self.home_location.as_ref(), lang)
+            }
             Err(error) => unreachable(&error, no),
         }
     }

@@ -90,7 +90,13 @@ const UNITS: &[Unit] = &[
         ("desiliter", "desiliter"),
         &["decilitre", "decilitres", "deciliter", "deciliters", "desiliter", "dl"],
     ),
-    unit(Volume, 1000.0, ("litre", "litres"), ("liter", "liter"), &["litre", "litres", "liter", "liters", "literen"]),
+    unit(
+        Volume,
+        1000.0,
+        ("litre", "litres"),
+        ("liter", "liter"),
+        &["litre", "litres", "liter", "liters", "literen", "l"],
+    ),
     unit(Volume, 236.588, ("cup", "cups"), ("kopp", "kopper"), &["cup", "cups", "kopp", "kopper", "koppen"]),
     unit(
         Volume,
@@ -162,15 +168,39 @@ pub struct Conversion {
 // The value is always finite.
 impl Eq for Conversion {}
 
-/// Words as the transcriber writes them, with "10km" and "20°F" split and "1,5" as a decimal.
+/// "1,000" and "5,280": groups of three digits after a comma, as the transcriber writes English
+/// thousands. Anything else with a comma ("1,5", "0,250") is a decimal.
+fn thousands(word: &str) -> bool {
+    let mut groups = word.split(',');
+    let first = groups.next().unwrap_or_default().trim_start_matches('-');
+    let whole = |g: &str| g.chars().all(|c| c.is_ascii_digit());
+    word.contains(',')
+        && (1..=3).contains(&first.len())
+        && whole(first)
+        && !first.starts_with('0')
+        && groups.all(|g| g.split('.').next().is_some_and(|g| g.len() == 3 && whole(g)))
+}
+
+/// Words as the transcriber writes them, with "10km" and "20°F" split, "1,5" as a decimal and
+/// "1,000" as a thousand.
 fn tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for raw in text.split_whitespace() {
-        // Kept: decimal points and commas, minus signs and degree signs, which `normalize` drops.
-        let word: String =
-            raw.chars().filter(|c| c.is_alphanumeric() || "'.,-°".contains(*c)).flat_map(char::to_lowercase).collect();
-        let word = word.trim_matches(['.', ',']).replace(',', ".");
+        // Kept: decimal points and commas, minus signs, fraction slashes and degree signs, which
+        // `normalize` drops. A dash before a number is a minus too.
+        let word: String = raw
+            .chars()
+            .map(|c| if matches!(c, '–' | '−') { '-' } else { c })
+            .filter(|c| c.is_alphanumeric() || "'.,-/°".contains(*c))
+            .flat_map(char::to_lowercase)
+            .collect();
+        let word = word.trim_matches(['.', ',']);
+        let word = if thousands(word) { word.replace(',', "") } else { word.replace(',', ".") };
         if word.is_empty() {
+            continue;
+        }
+        if word.contains('/') {
+            out.push(word);
             continue;
         }
         let digits = word.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-').count();
@@ -206,11 +236,147 @@ fn unit_at(tokens: &[String], i: usize) -> Option<usize> {
     UNITS.iter().position(|u| u.said.contains(&word))
 }
 
+/// Small numbers as words, which the transcriber often writes. English only: Norwegian "to" (two)
+/// is also "to" between the units.
+const NUMBER_WORDS: &[&str] = &[
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+];
+
 fn number(token: &str) -> Option<f64> {
     if ONE.contains(&token) {
         return Some(1.0);
     }
+    if let Some(n) = NUMBER_WORDS.iter().position(|w| *w == token) {
+        return Some(n as f64);
+    }
+    // "1/2 cup".
+    if let Some((top, bottom)) = token.split_once('/') {
+        let (top, bottom) = (top.parse::<f64>().ok()?, bottom.parse::<f64>().ok()?);
+        return (bottom != 0.0).then(|| top / bottom).filter(|n| n.is_finite());
+    }
     token.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+/// A fraction said as a word: "half", "quarter", "halv".
+fn fraction_word(token: &str) -> Option<f64> {
+    match token {
+        "half" | "halves" | "halv" | "halvt" | "halve" => Some(0.5),
+        "quarter" | "quarters" => Some(0.25),
+        _ => None,
+    }
+}
+
+/// Past "of" and "a" after a fraction: "half (of) a cup", "a quarter of a pound".
+fn after_fraction(tokens: &[String], mut i: usize) -> usize {
+    if tokens.get(i).is_some_and(|t| t == "of") {
+        i += 1;
+    }
+    if tokens.get(i).is_some_and(|t| t == "a" || t == "an") {
+        i += 1;
+    }
+    i
+}
+
+/// "And a half", "og en halv" at `i`: the fraction and the index after it.
+fn and_a_fraction(tokens: &[String], i: usize) -> Option<(f64, usize)> {
+    let word = |at: usize| tokens.get(at).map(String::as_str);
+    if !matches!(word(i)?, "and" | "og") || !ONE.contains(&word(i + 1)?) {
+        return None;
+    }
+    Some((fraction_word(word(i + 2)?)?, i + 3))
+}
+
+/// The amount said at `i` and the index after it: "10", "minus 40", "half a", "a quarter of a",
+/// "en halv", "1/2", "one and a half", "1 1/2", "three quarters of a".
+fn value_at(tokens: &[String], i: usize) -> Option<(f64, usize)> {
+    let word = |at: usize| tokens.get(at).map(String::as_str);
+    // The rest of an amount begun before: "1 1/2", "one and a half", "half" after "a".
+    let continues = i > 0 && word(i - 1).is_some_and(|w| number(w).is_some() || w == "and" || w == "og");
+    let (sign, i) = match word(i)? {
+        "minus" | "negative" => (-1.0, i + 1),
+        _ => (1.0, i),
+    };
+    let first = word(i)?;
+    let fraction_next = word(i + 1).and_then(fraction_word);
+    // "Half a cup"; "a quarter cup", "en halv kopp".
+    if let Some(fraction) = fraction_word(first) {
+        return (!continues).then(|| (sign * fraction, after_fraction(tokens, i + 1)));
+    }
+    if ONE.contains(&first) {
+        if let Some(fraction) = fraction_next {
+            return (!continues).then(|| (sign * fraction, after_fraction(tokens, i + 2)));
+        }
+    }
+    let whole = number(first)?;
+    if continues && first.contains('/') {
+        return None;
+    }
+    // "Three quarters of a cup", "three quarter cup".
+    if let Some(fraction) = fraction_next {
+        return Some((sign * whole * fraction, after_fraction(tokens, i + 2)));
+    }
+    // "One and a half", "en og en halv".
+    if let Some((fraction, after)) = and_a_fraction(tokens, i + 1) {
+        return Some((sign * (whole + fraction), after));
+    }
+    // "1 1/2".
+    if let Some(part) = word(i + 1).filter(|w| w.contains('/')).and_then(number) {
+        return Some((sign * (whole + part), i + 2));
+    }
+    Some((sign * whole, i + 1))
+}
+
+/// The amount and unit at `i`, with any more of the same kind after it added: "5 feet 10
+/// inches", "2 pounds and 3 ounces". The index after them.
+fn amount_at(tokens: &[String], i: usize) -> Option<(f64, usize, usize)> {
+    let (mut value, after) = value_at(tokens, i)?;
+    let unit_index = skip_filler(tokens, after);
+    let unit = unit_at(tokens, unit_index)?;
+    let mut next = unit_index + 1;
+    // Temperatures do not add up.
+    if UNITS[unit].dimension == Temperature {
+        return Some((value, unit, next));
+    }
+    // "A mile and a half".
+    if let Some((fraction, after)) = and_a_fraction(tokens, next) {
+        value += fraction;
+        next = after;
+    }
+    loop {
+        let start = if tokens.get(next).is_some_and(|t| t == "and" || t == "og") { next + 1 } else { next };
+        let Some((more, after)) = value_at(tokens, start) else { break };
+        let Some(more_unit) = unit_at(tokens, after) else { break };
+        if UNITS[more_unit].dimension != UNITS[unit].dimension {
+            break;
+        }
+        // "5 feet 2 feet" says the amount twice or wrongly: not a guess at which.
+        if more_unit == unit {
+            return None;
+        }
+        value += more * UNITS[more_unit].factor / UNITS[unit].factor;
+        next = after + 1;
+    }
+    Some((value, unit, next))
 }
 
 /// The first non-filler token index at or after `i`.
@@ -256,24 +422,24 @@ pub fn parse(text: &str) -> Option<Conversion> {
         while tokens.get(i).is_some_and(|t| between.contains(&t.as_str())) {
             i += 1;
         }
-        let value = number(tokens.get(i)?)?;
-        let from_at = skip_filler(tokens, i + 1);
-        let from = unit_at(tokens, from_at)?;
-        if from_at + 1 != tokens.len() {
+        let (value, from, end) = amount_at(tokens, i)?;
+        if end != tokens.len() {
             return None;
         }
         let (from, to) = compatible(from, to)?;
         return Some(Conversion { value, from, to });
     }
     // "(Convert) 10 miles to kilometres", "what's 20 degrees Fahrenheit in Celsius".
-    (0..tokens.len()).find_map(|value_at| {
-        let value = number(&tokens[value_at])?;
-        let from_at = skip_filler(tokens, value_at + 1);
-        let from = unit_at(tokens, from_at)?;
-        if !tokens.get(from_at + 1).is_some_and(|t| INTO.contains(&t.as_str())) {
+    (0..tokens.len()).find_map(|at| {
+        // The second half of "5 feet 10 inches" is not the amount asked about.
+        if at > 0 && unit_at(tokens, at - 1).is_some() {
             return None;
         }
-        let to_at = skip_filler(tokens, from_at + 2);
+        let (value, from, end) = amount_at(tokens, at)?;
+        if !tokens.get(end).is_some_and(|t| INTO.contains(&t.as_str())) {
+            return None;
+        }
+        let to_at = skip_filler(tokens, end + 1);
         let to = unit_at(tokens, to_at)?;
         if to_at + 1 != tokens.len() {
             return None;
@@ -312,7 +478,8 @@ fn spoken_number(value: f64, temperature: bool, lang: Lang) -> String {
     } else if value.abs() >= 0.01 || value == 0.0 {
         2
     } else {
-        4
+        // Two significant digits, so a tiny result is not "0".
+        ((-value.abs().log10()).floor() as usize + 2).min(12)
     };
     let mut text = format!("{value:.decimals$}");
     if text.contains('.') {
@@ -333,7 +500,7 @@ fn spoken_number(value: f64, temperature: bool, lang: Lang) -> String {
 
 fn named(unit: &Unit, value: &str, lang: Lang) -> String {
     let (one, many) = if lang == Lang::Norwegian { unit.norwegian } else { unit.english };
-    format!("{value} {}", if value == "1" { one } else { many })
+    format!("{value} {}", if ["1", "minus 1"].contains(&value) { one } else { many })
 }
 
 /// "10 miles is 16.1 kilometres."
@@ -379,6 +546,55 @@ mod tests {
         assert_eq!(say("convert 1,5 litres to cups").as_deref(), Some("1.5 litres is 6.34 cups."));
         assert_eq!(say("10km in miles").as_deref(), Some("10 kilometres is 6.21 miles."));
         assert_eq!(say("how many inches is 30 centimetres").as_deref(), Some("30 centimetres is 11.8 inches."));
+    }
+
+    #[test]
+    fn reads_amounts_as_they_are_said() {
+        // English thousands, not "1 gram".
+        assert_eq!(say("convert 1,000 grams to pounds").as_deref(), Some("1000 grams is 2.2 pounds."));
+        assert_eq!(say("5,280 feet in miles").as_deref(), Some("5280 feet is 1 mile."));
+        assert_eq!(
+            say("minus 40 degrees celsius in fahrenheit").as_deref(),
+            Some("minus 40 degrees Celsius is minus 40 degrees Fahrenheit.")
+        );
+        assert_eq!(say("–5 c in f").as_deref(), Some("minus 5 degrees Celsius is 23 degrees Fahrenheit."));
+        assert_eq!(say("convert half a cup to millilitres").as_deref(), Some("0.5 cups is 118.3 millilitres."));
+        assert_eq!(say("a quarter of a pound in grams").as_deref(), Some("0.25 pounds is 113.4 grams."));
+        assert_eq!(say("convert 1/2 cup to ml").as_deref(), Some("0.5 cups is 118.3 millilitres."));
+        assert_eq!(say("convert ten miles to km").as_deref(), Some("10 miles is 16.1 kilometres."));
+        assert_eq!(say("1.5l to cups").as_deref(), Some("1.5 litres is 6.34 cups."));
+        assert_eq!(say("1 millimetre in miles").as_deref(), Some("1 millimetre is 0.00000062 miles."));
+        assert_eq!(
+            say("minus 1 degree celsius in fahrenheit").as_deref(),
+            Some("minus 1 degree Celsius is 30.2 degrees Fahrenheit.")
+        );
+    }
+
+    #[test]
+    fn adds_up_amounts_in_two_units() {
+        assert_eq!(say("5 feet 10 inches in centimetres").as_deref(), Some("5.83 feet is 177.8 centimetres."));
+        assert_eq!(say("2 pounds and 3 ounces in grams").as_deref(), Some("2.19 pounds is 992.2 grams."));
+        assert_eq!(say("how many centimetres in 5 feet 10 inches").as_deref(), Some("5.83 feet is 177.8 centimetres."));
+        // The same unit twice says nothing sure.
+        assert_eq!(parse("convert 5 feet 2 feet to metres"), None);
+    }
+
+    #[test]
+    fn reads_mixed_numbers() {
+        let value = |text: &str| parse(text).map(|c| c.value);
+        assert_eq!(value("convert one and a half cups to millilitres"), Some(1.5));
+        assert_eq!(value("convert 1 1/2 cups to millilitres"), Some(1.5));
+        assert_eq!(value("2 and a half pounds in kilograms"), Some(2.5));
+        assert_eq!(value("three quarter cup in millilitres"), Some(0.75));
+        assert_eq!(value("three quarters of a cup in millilitres"), Some(0.75));
+        assert_eq!(value("a quarter cup in millilitres"), Some(0.25));
+        assert_eq!(value("a mile and a half in kilometres"), Some(1.5));
+        assert_eq!(value("how many millilitres in a quarter cup"), Some(0.25));
+        assert_eq!(value("how many millilitres in one and a half cups"), Some(1.5));
+        assert_eq!(value("how many kilometres in a mile and a half"), Some(1.5));
+        assert_eq!(value("hva er en og en halv kopp i desiliter"), Some(1.5));
+        // A decimal comma before three digits, when the whole number is nought.
+        assert_eq!(value("convert 0,250 kg to grams"), Some(0.25));
     }
 
     #[test]

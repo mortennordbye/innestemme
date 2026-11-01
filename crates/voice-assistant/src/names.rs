@@ -83,7 +83,8 @@ pub fn similarity(a: &str, b: &str) -> f32 {
     1.0 - levenshtein(a, b) as f32 / longest as f32
 }
 
-fn levenshtein(a: &str, b: &str) -> usize {
+/// Letters to add, drop or change to get from one sound key to the other.
+pub fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     let mut row: Vec<usize> = (0..=b.len()).collect();

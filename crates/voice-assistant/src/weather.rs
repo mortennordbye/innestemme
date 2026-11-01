@@ -253,6 +253,8 @@ fn symbol_to_code(symbol: &str) -> u32 {
 /// The evening starts at this hour, and the night ends at this one.
 const EVENING: i8 = 18;
 const NIGHT_ENDS: i8 = 6;
+/// "Tonight" asked before this hour is the night it is now.
+const NIGHT_ASKED_UNTIL: i8 = 4;
 /// A rain question about today looks at least this many hours ahead, so late in the evening it
 /// still covers the night.
 const RAIN_HOURS: i64 = 6;
@@ -408,6 +410,19 @@ fn offsets(day: Day, today: Date) -> Vec<usize> {
         Day::Weekday(weekday) => vec![ahead(weekday)],
         Day::Weekend if today.weekday() == Weekday::Sunday => vec![0],
         Day::Weekend => vec![ahead(Weekday::Saturday), ahead(Weekday::Saturday) + 1],
+        Day::NextWeekday(weekday) => vec![match ahead(weekday) {
+            0 => 7,
+            n => n,
+        }],
+        // On a Saturday or Sunday, "next weekend" is the one after this.
+        Day::NextWeekend => {
+            let saturday = match today.weekday() {
+                Weekday::Saturday => 7,
+                Weekday::Sunday => 6,
+                _ => ahead(Weekday::Saturday),
+            };
+            vec![saturday, saturday + 1]
+        }
     }
 }
 
@@ -504,10 +519,11 @@ fn hours_between(f: &Forecast, from: DateTime, to: DateTime) -> Vec<&Hour> {
     f.hours.iter().filter(|h| h.time.saturating_add(hour) > from && h.time < to).collect()
 }
 
-/// From now, or from the evening when it is still day, until the night ends.
+/// From now, or from the evening when it is still day, until the night ends. After
+/// [`NIGHT_ASKED_UNTIL`] the night is nearly over: "tonight" then means the coming evening.
 fn night(now: DateTime) -> (DateTime, DateTime) {
     let date = now.date();
-    if now.hour() < NIGHT_ENDS {
+    if now.hour() < NIGHT_ASKED_UNTIL {
         return (now, date.at(NIGHT_ENDS, 0, 0, 0));
     }
     let morning = date.tomorrow().unwrap_or(date).at(NIGHT_ENDS, 0, 0, 0);
@@ -583,7 +599,9 @@ fn rain(name: &str, f: &Forecast, day: Day, lang: Lang) -> String {
         Lang::English => current(name, f.current.temperature_2m),
         Lang::Norwegian => format!("Det er {} i {name}.", degrees(f.current.temperature_2m, lang)),
     }];
-    if wet(f.current.weather_code) {
+    // "Will it rain tonight" asked in the afternoon: the rain now says nothing about the night,
+    // and when it stops is not when the night's window opens.
+    if wet(f.current.weather_code) && from <= f.now {
         let (_, ing, _) = Kind::of(f.current.weather_code).words();
         said.push(match (no, Kind::of(f.current.weather_code)) {
             (false, _) => format!("It's {ing} now."),
@@ -919,6 +937,13 @@ mod tests {
         assert_eq!(offsets(Day::Weekend, date("2026-09-26")), [0, 1]);
         assert_eq!(offsets(Day::Weekend, date("2026-09-27")), [0]);
         assert_eq!(offsets(Day::Weekday(Monday), date("2026-09-27")), [1]);
+        // "Next Monday" asked on a Monday is a week ahead; on a Sunday, tomorrow.
+        assert_eq!(offsets(Day::NextWeekday(Monday), date("2026-09-28")), [7]);
+        assert_eq!(offsets(Day::NextWeekday(Monday), date("2026-09-27")), [1]);
+        // "Next weekend" on a Thursday is the coming one, on a Saturday or Sunday the one after.
+        assert_eq!(offsets(Day::NextWeekend, date("2026-09-24")), [2, 3]);
+        assert_eq!(offsets(Day::NextWeekend, date("2026-09-26")), [7, 8]);
+        assert_eq!(offsets(Day::NextWeekend, date("2026-09-27")), [6, 7]);
     }
 
     #[test]
@@ -935,6 +960,20 @@ mod tests {
         // After midnight, the rest of the night.
         f.now = "2026-09-25T03:10".parse().unwrap();
         assert_eq!(say(&f, Day::Tonight), "Tonight in Oslo: mostly clear. Down to 5 degrees.");
+        // At half past five the night is over: tonight is the coming evening, past these hours.
+        f.now = "2026-09-25T05:30".parse().unwrap();
+        assert_eq!(night(f.now).0, "2026-09-25T18:00".parse::<DateTime>().unwrap());
+    }
+
+    #[test]
+    fn rain_tonight_asked_while_it_rains_in_the_day() {
+        let mut f = sample();
+        // Raining at 14:30, dry from 15:00, rain again at 21:00.
+        f.current.weather_code = 63;
+        f.hours = hours(&[14, 21]);
+        assert_eq!(rain(&f, Day::Tonight), "It's 12 degrees in Oslo. Rain is expected from around 21:00 to 22:00.");
+        f.hours = hours(&[14]);
+        assert_eq!(rain(&f, Day::Tonight), "It's 12 degrees in Oslo. It should stay dry tonight.");
     }
 
     fn rain(f: &Forecast, day: Day) -> String {

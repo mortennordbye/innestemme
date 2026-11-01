@@ -839,16 +839,67 @@ fn capitalize(text: &str) -> String {
 /// The sun's elevation in degrees below which it is dark: the end of civil twilight, as dusk.
 const DARK_BELOW: f64 = -6.0;
 
+const NORWEGIAN_MONTHS: [&str; 12] = [
+    "januar",
+    "februar",
+    "mars",
+    "april",
+    "mai",
+    "juni",
+    "juli",
+    "august",
+    "september",
+    "oktober",
+    "november",
+    "desember",
+];
+
+/// When it next gets light (`dark` now) or dark, at the -6 degree line: dawn or dusk. Far north
+/// the next one can be weeks away, or Home Assistant has none: then it says so, with the date.
+fn next_change(sun: &Value, dark: bool, lang: Lang) -> Result<String> {
+    let no = lang == Lang::Norwegian;
+    let (key, fallback) = if dark { ("next_dawn", "next_rising") } else { ("next_dusk", "next_setting") };
+    let Some(at) = sun["attributes"][key].as_str().or_else(|| sun["attributes"][fallback].as_str()) else {
+        return Ok(match (dark, no) {
+            (true, false) => "It doesn't get light for now.",
+            (false, false) => "It doesn't get dark for now.",
+            (true, true) => "Det blir ikke lyst med det første.",
+            (false, true) => "Det blir ikke mørkt med det første.",
+        }
+        .into());
+    };
+    let at = at.parse::<jiff::Timestamp>()?.to_zoned(jiff::tz::TimeZone::system());
+    let time = at.strftime("%H:%M").to_string();
+    if at.timestamp().duration_since(jiff::Timestamp::now()) > jiff::SignedDuration::from_hours(24) {
+        let month = at.month() as usize - 1;
+        return Ok(match (dark, no) {
+            (true, false) => format!("It doesn't get light for now. It next gets light on {}.", at.strftime("%B %-d")),
+            (false, false) => format!("It doesn't get dark for now. It next gets dark on {}.", at.strftime("%B %-d")),
+            (true, true) => {
+                format!("Det blir ikke lyst med det første. Neste gang er {}. {}.", at.day(), NORWEGIAN_MONTHS[month])
+            }
+            (false, true) => {
+                format!("Det blir ikke mørkt med det første. Neste gang er {}. {}.", at.day(), NORWEGIAN_MONTHS[month])
+            }
+        });
+    }
+    Ok(match (dark, no) {
+        (true, false) => format!("It gets light at about {time}."),
+        (false, false) => format!("It gets dark at about {time}."),
+        (true, true) => format!("Det blir lyst rundt {time}."),
+        (false, true) => format!("Det blir mørkt rundt {time}."),
+    })
+}
+
 /// "Sunset is at 18:19." from the `sun.sun` state.
 pub fn sun_answer(sun: &Value, event: SunEvent, lang: Lang) -> Result<String> {
+    let no = lang == Lang::Norwegian;
+    let elevation = sun["attributes"]["elevation"].as_f64();
     let key = match event {
         SunEvent::Sunrise => "next_rising",
         SunEvent::Sunset => "next_setting",
-        SunEvent::Dark => "next_dusk",
         SunEvent::IsDark(asked_dark) => {
-            let elevation = sun["attributes"]["elevation"].as_f64().context("no sun elevation in Home Assistant")?;
-            let dark = elevation < DARK_BELOW;
-            let no = lang == Lang::Norwegian;
+            let dark = elevation.context("no sun elevation in Home Assistant")? < DARK_BELOW;
             // Fixed wording on its own, the time in the next sentence.
             let now = match (dark, dark == asked_dark, no) {
                 (true, true, false) => "Yes, it's dark.",
@@ -860,16 +911,18 @@ pub fn sun_answer(sun: &Value, event: SunEvent, lang: Lang) -> Result<String> {
                 (false, true, true) => "Ja, det er lyst.",
                 (false, false, true) => "Nei, det er fortsatt lyst.",
             };
-            let next = sun_answer(sun, if dark { SunEvent::Sunrise } else { SunEvent::Dark }, lang)?;
-            return Ok(format!("{now} {next}"));
+            return Ok(format!("{now} {}", next_change(sun, dark, lang)?));
         }
+        // "When does it get dark" while it is light: the coming dusk, even after midnight in
+        // summer, never "already dark".
+        SunEvent::Dark if elevation.is_some_and(|e| e >= DARK_BELOW) => return next_change(sun, false, lang),
+        SunEvent::Dark => "next_dusk",
     };
     let at: jiff::Timestamp = sun["attributes"][key].as_str().context("no sun times in Home Assistant")?.parse()?;
     let at = at.to_zoned(jiff::tz::TimeZone::system());
     let today = jiff::Zoned::now().date();
     let time = at.strftime("%H:%M").to_string();
     let tomorrow = at.date() != today;
-    let no = lang == Lang::Norwegian;
     Ok(match (event, no, tomorrow) {
         (SunEvent::Sunset, false, false) => format!("Sunset is at {time}."),
         (SunEvent::Sunset, false, true) => format!("The sun has set. Tomorrow it sets at {time}."),
@@ -1559,16 +1612,55 @@ mod tests {
         assert_eq!(house("is it too dark in here"), None);
     }
 
+    fn in_hours(hours: i64) -> String {
+        jiff::Timestamp::now().checked_add(jiff::SignedDuration::from_hours(hours)).unwrap().to_string()
+    }
+
+    fn hhmm(at: &str) -> String {
+        at.parse::<jiff::Timestamp>().unwrap().to_zoned(jiff::tz::TimeZone::system()).strftime("%H:%M").to_string()
+    }
+
     #[test]
     fn says_whether_it_is_dark() {
-        let tomorrow = jiff::Zoned::now().checked_add(jiff::Span::new().days(1)).unwrap().timestamp().to_string();
-        let sun = |elevation: f64| json!({ "attributes": { "elevation": elevation, "next_rising": tomorrow, "next_dusk": tomorrow } });
+        let soon = in_hours(3);
+        let sun = |elevation: f64| json!({ "attributes": { "elevation": elevation, "next_rising": soon, "next_dusk": soon } });
         let answer =
             |elevation: f64, dark: bool| sun_answer(&sun(elevation), SunEvent::IsDark(dark), Lang::English).unwrap();
-        assert!(answer(-20.0, true).starts_with("Yes, it's dark. Sunrise is at "));
+        assert!(answer(-20.0, true).starts_with("Yes, it's dark. It gets light at about "));
         assert!(answer(-20.0, false).starts_with("No, it's still dark. "));
-        assert!(answer(15.0, true).starts_with("No, it's still light. "));
-        assert!(answer(-3.0, false).starts_with("Yes, it's light. "));
+        assert!(answer(15.0, true).starts_with("No, it's still light. It gets dark at about "));
+        assert!(answer(-3.0, false).starts_with("Yes, it's light. It gets dark at about "));
+        // Light comes at dawn, the -6 degree line, before sunrise.
+        let (rising, dawn) = (in_hours(5), in_hours(4));
+        let sun = json!({ "attributes": { "elevation": -20.0, "next_rising": rising, "next_dawn": dawn } });
+        assert_eq!(
+            sun_answer(&sun, SunEvent::IsDark(true), Lang::English).unwrap(),
+            format!("Yes, it's dark. It gets light at about {}.", hhmm(&dawn))
+        );
+    }
+
+    #[test]
+    fn when_it_gets_dark_while_light_at_night() {
+        // Light near midnight in June, with dusk after midnight (tomorrow's date): not "already dark".
+        let dusk = in_hours(1);
+        let sun = json!({ "attributes": { "elevation": -3.0, "next_dusk": dusk } });
+        assert_eq!(
+            sun_answer(&sun, SunEvent::Dark, Lang::English).unwrap(),
+            format!("It gets dark at about {}.", hhmm(&dusk))
+        );
+        // Weeks of light far north: the date of the next dusk.
+        let weeks = in_hours(24 * 20);
+        let sun = json!({ "attributes": { "elevation": 5.0, "next_dusk": weeks } });
+        let answer = sun_answer(&sun, SunEvent::Dark, Lang::English).unwrap();
+        assert!(answer.starts_with("It doesn't get dark for now. It next gets dark on "), "{answer}");
+        // No dusk at all.
+        let sun = json!({ "attributes": { "elevation": 5.0 } });
+        assert_eq!(sun_answer(&sun, SunEvent::Dark, Lang::English).unwrap(), "It doesn't get dark for now.");
+        let sun = json!({ "attributes": { "elevation": -10.0 } });
+        assert_eq!(
+            sun_answer(&sun, SunEvent::IsDark(true), Lang::Norwegian).unwrap(),
+            "Ja, det er mørkt. Det blir ikke lyst med det første."
+        );
     }
 
     #[test]

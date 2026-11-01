@@ -138,27 +138,92 @@ pub fn parse(words: &[String]) -> Option<SensorQuery> {
     let first = words.first().map(String::as_str).unwrap_or_default();
     let asks = ["is", "are", "any", "do", "does", "have", "has", "check", "er", "har", "lekker", "sjekk", "noen"]
         .contains(&first);
-    (asks && (has(LEAK_WORDS) || words.iter().any(|w| w.starts_with("lekkasje")))).then_some(SensorQuery::Leaks)
+    let leak = has(LEAK_WORDS) || words.iter().any(|w| w.starts_with("lekkasje"));
+    (asks && leak && !about_floods(words)).then_some(SensorQuery::Leaks)
+}
+
+/// "Are there any flood warnings", "is there flooding in Bergen": the weather or the news, not
+/// the water sensors.
+fn about_floods(words: &[String]) -> bool {
+    let flood = words.iter().any(|w| w.starts_with("flood"));
+    let other = ["leak", "leaks", "leaking", "leakage", "lekker"];
+    if !flood || words.iter().any(|w| other.contains(&w.as_str()) || w.contains("lekkasje")) {
+        return false;
+    }
+    let outside = [
+        "warning",
+        "warnings",
+        "alert",
+        "alerts",
+        "risk",
+        "forecast",
+        "river",
+        "rivers",
+        "road",
+        "roads",
+        "town",
+        "city",
+        "country",
+        "news",
+        "farevarsel",
+        "varsel",
+        "flom",
+    ];
+    let in_a_place = words.windows(2).any(|p| p[0] == "in" && crate::geo::is_known_place(&p[1]));
+    in_a_place || words.iter().any(|w| outside.contains(&w.as_str()))
 }
 
 /// A device's battery, one per device (some report it twice, through two integrations).
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 pub struct Battery {
     pub name: String,
-    pub level: f64,
+    /// Percent; `None` when the sensor has no number, as a dead battery's goes unavailable.
+    #[serde(default)]
+    pub level: Option<f64>,
+    /// A battery binary sensor's state, on meaning low; `None` for a level sensor or no state.
+    #[serde(default)]
+    pub low: Option<bool>,
     #[serde(default)]
     pub device: String,
     #[serde(default)]
     pub area: String,
+    /// The entity's state as Home Assistant has it: a level, on/off, "unavailable" or "unknown".
+    #[serde(default)]
+    pub state: String,
+    /// Kept by Home Assistant for an entity whose integration no longer provides it.
+    #[serde(default)]
+    pub restored: bool,
 }
 
-/// Battery sensors with a level, except the companion app's (phones).
-const BATTERY_TEMPLATE: &str = r#"{% set phones = integration_entities('mobile_app') %}[{% for s in states.sensor if s.attributes.device_class == 'battery' and s.state | is_number and s.entity_id not in phones %}{"name": {{ s.name | tojson }}, "level": {{ s.state | float }}, "device": {{ (device_id(s.entity_id) or s.entity_id) | tojson }}, "area": {{ (area_name(s.entity_id) or '') | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
+/// More silent batteries than this are counted, not named.
+const MOST_SILENT_NAMED: usize = 3;
+
+impl Battery {
+    /// Whether it says anything about the battery. "Unknown" is a sensor that has not reported
+    /// since a restart, and a restored entity is a leftover of a removed device: neither is a
+    /// dead battery.
+    fn counts(&self) -> bool {
+        self.reporting() || (self.state == "unavailable" && !self.restored)
+    }
+
+    fn is_low(&self) -> bool {
+        self.level.is_some_and(|l| l < LOW) || self.low == Some(true)
+    }
+
+    fn reporting(&self) -> bool {
+        self.level.is_some() || self.low.is_some()
+    }
+}
+
+/// Battery sensors and battery binary sensors (on is low, as Zigbee2MQTT and Ring report it),
+/// except the companion app's (phones). Sensors without a number are kept: a dead battery is the
+/// one that stops reporting.
+const BATTERY_TEMPLATE: &str = r#"{% set phones = integration_entities('mobile_app') %}{% set ns = namespace(out=[]) %}{% for s in states.sensor if s.attributes.device_class == 'battery' and s.entity_id not in phones %}{% set ns.out = ns.out + [{"name": s.name, "level": (s.state | float) if s.state | is_number else none, "state": s.state, "restored": s.attributes.restored or false, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}{% for s in states.binary_sensor if s.attributes.device_class == 'battery' and s.entity_id not in phones %}{% set ns.out = ns.out + [{"name": s.name, "low": (s.state == 'on') if s.state in ['on', 'off'] else none, "state": s.state, "restored": s.attributes.restored or false, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}{{ ns.out | tojson }}"#;
 
 pub fn batteries(ha: &HomeAssistant) -> Result<Vec<Battery>> {
     let all: Vec<Battery> =
         serde_json::from_str(&ha.template(BATTERY_TEMPLATE)?).context("parsing the battery sensors")?;
-    Ok(per_device(all))
+    Ok(per_device(all.into_iter().filter(Battery::counts).collect()))
 }
 
 /// One battery per device: the lowest level, under the shortest name.
@@ -168,7 +233,14 @@ fn per_device(all: Vec<Battery>) -> Vec<Battery> {
         battery.name = device_name(&battery.name);
         match out.iter_mut().find(|b| b.device == battery.device) {
             Some(seen) => {
-                seen.level = seen.level.min(battery.level);
+                seen.level = match (seen.level, battery.level) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+                seen.low = match (seen.low, battery.low) {
+                    (Some(a), Some(b)) => Some(a || b),
+                    (a, b) => a.or(b),
+                };
                 if battery.name.len() < seen.name.len() {
                     seen.name = battery.name;
                 }
@@ -182,7 +254,8 @@ fn per_device(all: Vec<Battery>) -> Vec<Battery> {
 /// "Kitchen Sink Leak Battery Level" is the kitchen sink leak.
 fn device_name(name: &str) -> String {
     let mut name = name.trim().to_lowercase();
-    for suffix in [" level", " battery", " batteri"] {
+    // "Smoke Alarm Battery Low" is a battery binary sensor's name.
+    for suffix in [" battery low", " low battery", " level", " battery", " batteri"] {
         if let Some(rest) = name.strip_suffix(suffix) {
             name = rest.trim_end().to_owned();
         }
@@ -209,12 +282,16 @@ fn word_matches(said: &str, name_word: &str) -> bool {
         || (said.len() >= 4 && name_word.starts_with(said))
 }
 
-/// The battery a name means: a sound-alike of its whole name, else the one sharing most words
-/// with it (its area and kind count).
-pub fn find<'a>(batteries: &'a [Battery], name: &str) -> Option<&'a Battery> {
+/// More devices than this sharing the best match say too little to list them all.
+const MOST_TIED: usize = 4;
+
+/// The batteries a name means: a sound-alike of its whole name, else those sharing most words
+/// with it (their area and kind count). Several when the name fits more than one equally ("the
+/// leak sensor" with two of them).
+pub fn find<'a>(batteries: &'a [Battery], name: &str) -> Vec<&'a Battery> {
     let names = Names::new(batteries.iter().map(|b| b.name.as_str()));
     if let Some(found) = names.best(name) {
-        return batteries.iter().find(|b| b.name == found.name);
+        return batteries.iter().filter(|b| b.name == found.name).take(1).collect();
     }
     let said: Vec<&str> = name.split_whitespace().collect();
     let score = |battery: &Battery| {
@@ -227,19 +304,31 @@ pub fn find<'a>(batteries: &'a [Battery], name: &str) -> Option<&'a Battery> {
         }
         said.iter().filter(|s| words.iter().any(|w| word_matches(s, w))).count()
     };
-    let best = batteries.iter().map(|b| (score(b), b)).max_by_key(|(s, _)| *s)?;
-    // A tie means the name does not say which.
-    let ties = batteries.iter().filter(|b| score(b) == best.0).count();
-    (best.0 > 0 && ties == 1).then_some(best.1)
+    let best = batteries.iter().map(score).max().unwrap_or(0);
+    if best == 0 {
+        return Vec::new();
+    }
+    let tied: Vec<&Battery> = batteries.iter().filter(|b| score(b) == best).collect();
+    if tied.len() > MOST_TIED {
+        return Vec::new();
+    }
+    tied
 }
 
-/// "The kitchen sink leak battery is at 15 percent."
+/// "The kitchen sink leak battery is at 15 percent.", or that it is low or not reporting when it
+/// has no level.
 pub fn level_sentence(battery: &Battery, lang: Lang) -> String {
-    let level = battery.level.round();
-    if lang == Lang::Norwegian {
-        format!("Batteriet i {} er på {level} prosent.", battery.name)
-    } else {
-        format!("The {} battery is at {level} percent.", battery.name)
+    let no = lang == Lang::Norwegian;
+    let name = &battery.name;
+    match (battery.level, battery.low, no) {
+        (Some(level), _, false) => format!("The {name} battery is at {} percent.", level.round()),
+        (Some(level), _, true) => format!("Batteriet i {name} er på {} prosent.", level.round()),
+        (None, Some(true), false) => format!("The {name} battery is low."),
+        (None, Some(true), true) => format!("Batteriet i {name} er lavt."),
+        (None, Some(false), false) => format!("The {name} battery is fine."),
+        (None, Some(false), true) => format!("Batteriet i {name} er i orden."),
+        (None, None, false) => format!("The {name} battery isn't reporting."),
+        (None, None, true) => format!("Batteriet i {name} svarer ikke."),
     }
 }
 
@@ -254,17 +343,32 @@ pub fn battery_answer(batteries: &[Battery], name: Option<&str>, lang: Lang) -> 
         };
     }
     if let Some(name) = name {
-        return match find(batteries, name) {
-            Some(battery) => level_sentence(battery, lang),
-            None if no => format!("Jeg finner ikke noe batteri for {name}."),
-            None => format!("I can't find a battery for the {name}."),
-        };
+        let found = find(batteries, name);
+        if found.is_empty() {
+            return if no {
+                format!("Jeg finner ikke noe batteri for {name}.")
+            } else {
+                format!("I can't find a battery for the {name}.")
+            };
+        }
+        return found.iter().map(|b| level_sentence(b, lang)).collect::<Vec<_>>().join(" ");
     }
-    let low: Vec<&Battery> = batteries.iter().filter(|b| b.level < LOW).collect();
-    if low.is_empty() {
-        return if no { "Ingen batterier er lave." } else { "No batteries are low." }.into();
+    let low: Vec<&Battery> = batteries.iter().filter(|b| b.is_low()).collect();
+    let silent: Vec<&Battery> = batteries.iter().filter(|b| !b.reporting()).collect();
+    let mut parts: Vec<String> = low.iter().map(|b| level_sentence(b, lang)).collect();
+    if parts.is_empty() {
+        parts.push(if no { "Ingen batterier er lave." } else { "No batteries are low." }.into());
     }
-    low.iter().map(|b| level_sentence(b, lang)).collect::<Vec<_>>().join(" ")
+    parts.extend(silent.iter().take(MOST_SILENT_NAMED).map(|b| level_sentence(b, lang)));
+    let more = silent.len().saturating_sub(MOST_SILENT_NAMED);
+    if more > 0 {
+        parts.push(if no {
+            format!("Og {more} til svarer ikke.")
+        } else {
+            format!("And {more} more aren't reporting.")
+        });
+    }
+    parts.join(" ")
 }
 
 /// A water sensor and whether it is reporting.
@@ -336,10 +440,20 @@ mod tests {
         assert_eq!(query("er det noen lekkasje"), Some(Leaks));
         assert_eq!(query("lekker det noe sted"), Some(Leaks));
         assert_eq!(query("play Leaks by the Beatles"), None);
+        assert_eq!(query("is the basement flooded"), Some(Leaks));
+        assert_eq!(query("are there any flood warnings"), None);
+        assert_eq!(query("is there flooding in Bergen"), None);
     }
 
     fn battery(name: &str, level: f64, device: &str, area: &str) -> Battery {
-        Battery { name: name.into(), level, device: device.into(), area: area.into() }
+        Battery {
+            name: name.into(),
+            level: Some(level),
+            low: None,
+            device: device.into(),
+            area: area.into(),
+            ..Default::default()
+        }
     }
 
     fn batteries() -> Vec<Battery> {
@@ -362,7 +476,10 @@ mod tests {
     #[test]
     fn finds_a_battery_by_what_it_is() {
         let all = batteries();
-        let name = |said: &str| find(&all, said).map(|b| b.name.as_str());
+        let name = |said: &str| match find(&all, said).as_slice() {
+            [one] => Some(one.name.as_str()),
+            _ => None,
+        };
         assert_eq!(name("leak"), Some("sink leak"));
         assert_eq!(name("water"), Some("sink leak"));
         assert_eq!(name("lekkasjesensoren"), Some("sink leak"));
@@ -381,9 +498,87 @@ mod tests {
             battery_answer(&all, Some("garage door"), Lang::English),
             "I can't find a battery for the garage door."
         );
-        let fine: Vec<Battery> = all.into_iter().filter(|b| b.level >= LOW).collect();
+        let fine: Vec<Battery> = all.into_iter().filter(|b| !b.is_low()).collect();
         assert_eq!(battery_answer(&fine, None, Lang::English), "No batteries are low.");
         assert_eq!(battery_answer(&fine, None, Lang::Norwegian), "Ingen batterier er lave.");
+    }
+
+    fn silent(name: &str, device: &str) -> Battery {
+        Battery { name: name.into(), device: device.into(), state: "unavailable".into(), ..Default::default() }
+    }
+
+    #[test]
+    fn dead_and_binary_batteries() {
+        let mut all = batteries();
+        // A dead battery's sensor goes unavailable: no number, but it is the one to change.
+        all.push(silent("door contact", "d5"));
+        // A battery binary sensor: on is low.
+        all.push(Battery { name: "smoke alarm".into(), low: Some(true), device: "d6".into(), ..Default::default() });
+        assert_eq!(
+            battery_answer(&all, None, Lang::English),
+            "The study vibration battery is at 12 percent. The smoke alarm battery is low. The door contact battery \
+             isn't reporting."
+        );
+        let quiet: Vec<Battery> = all.into_iter().filter(|b| !b.is_low()).collect();
+        assert_eq!(
+            battery_answer(&quiet, None, Lang::English),
+            "No batteries are low. The door contact battery isn't reporting."
+        );
+        // A device reporting through both a dead and a working sensor keeps the level.
+        let mut level = silent("Hall Battery Level", "d1");
+        level.level = Some(50.0);
+        let merged = per_device(vec![silent("Hall Battery", "d1"), level]);
+        assert_eq!(merged[0].level, Some(50.0));
+    }
+
+    #[test]
+    fn only_unavailable_batteries_are_silent() {
+        // "Unknown" since a restart, or a restored leftover of a removed device: not a dead battery.
+        let mut unknown = silent("hall", "d1");
+        unknown.state = "unknown".into();
+        let mut restored = silent("old remote", "d2");
+        restored.restored = true;
+        assert!(!unknown.counts());
+        assert!(!restored.counts());
+        assert!(silent("door", "d3").counts());
+        assert!(batteries().iter().all(Battery::counts));
+    }
+
+    #[test]
+    fn many_silent_batteries_are_counted() {
+        let all: Vec<Battery> = ["a", "b", "c", "d", "e"].iter().map(|n| silent(&format!("{n} sensor"), n)).collect();
+        assert_eq!(
+            battery_answer(&all, None, Lang::English),
+            "No batteries are low. The a sensor battery isn't reporting. The b sensor battery isn't reporting. The c \
+             sensor battery isn't reporting. And 2 more aren't reporting."
+        );
+    }
+
+    #[test]
+    fn a_low_battery_sensor_is_named_for_its_device() {
+        assert_eq!(device_name("Smoke Alarm Battery Low"), "smoke alarm");
+        assert_eq!(device_name("Front Door Low Battery"), "front door");
+    }
+
+    #[test]
+    fn names_every_battery_a_name_fits() {
+        let mut all = batteries();
+        all.push(battery("Bath Leak Battery", 40.0, "d7", "Bathroom"));
+        let all = per_device(all);
+        assert_eq!(
+            battery_answer(&all, Some("leak"), Lang::English),
+            "The sink leak battery is at 100 percent. The bath leak battery is at 40 percent."
+        );
+    }
+
+    #[test]
+    fn reads_the_template_output() {
+        let json = r#"[{"name": "Sink Leak Battery", "level": 80.0, "device": "d1", "area": "Kitchen"},
+            {"name": "Door Battery", "level": null, "device": "d2", "area": ""},
+            {"name": "Smoke Battery", "low": false, "device": "d3", "area": ""}]"#;
+        let all: Vec<Battery> = serde_json::from_str(json).unwrap();
+        assert_eq!(all[1].level, None);
+        assert_eq!(all[2].low, Some(false));
     }
 
     fn sensor(name: &str, state: &str) -> WaterSensor {
