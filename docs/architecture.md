@@ -78,6 +78,15 @@ sound-alike, then the geocoder's best match anywhere. A sound-alike also answers
 "Lerwick" is one letter off Larvik and ends up there. Places found or not are kept in memory. "Next Monday" asked
 on a Monday is a week ahead, and "tonight" asked after 04:00 is the coming evening.
 
+**Departures and power.** Departures come from the stops within a walk of home, by mode, by line ("the next 31
+bus", "når går neste 37") and by the sign's destination; a line named with a destination keeps to that line even
+when its sign shows the end of the line. "From Nationaltheatret" looks the stop up in Entur's geocoder and answers
+from it instead. A destination without a line is a trip from home, which also says when to leave. Electricity
+prices answer the price now, the cheapest or dearest hour, and the cheapest whole hours in a row ("the cheapest 3
+hours", "when should I run the dishwasher": 3 hours, 2 for the washing machine or dryer, 4 to charge the car),
+averaged by time over hourly or quarter-hour prices. Without "today", "tonight" or "tomorrow" the stretch runs
+over every price known, past midnight once tomorrow's prices are out (around 13:00).
+
 **Home Assistant.** REST only (`ha.rs`): one template call lists every light with its area, service calls do the
 rest. Writes that the answer does not depend on (lights, scenes, the lockdown, routines, ringing a phone, pausing
 and resuming music) go to a queue on a thread of their own and run in order, because Home Assistant answers a

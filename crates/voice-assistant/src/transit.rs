@@ -22,10 +22,13 @@ const WALK_METRES_PER_MINUTE: f64 = 80.0;
 const MAX_WALK_MINUTES: u32 = 15;
 /// Departures looked at per stop, and how far ahead.
 const DEPARTURES: u32 = 40;
+/// For one line, or one named stop that may be a busy hub.
+const MORE_DEPARTURES: u32 = 120;
 const WINDOW_SECONDS: u32 = 3 * 3600;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
+    #[default]
     Any,
     Bus,
     Tram,
@@ -65,12 +68,16 @@ impl Mode {
     }
 }
 
-/// "The next bus (to Sentrum)".
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// "The next bus (to Sentrum)", "the next 31", "next train from Nationaltheatret".
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TransitQuery {
     pub mode: Mode,
     /// Matched against the sign on the vehicle ("Jernbanetorget").
     pub destination: Option<String>,
+    /// The line's public code, as on the sign: "31", "n12", "re10".
+    pub line: Option<String>,
+    /// A stop named to leave from instead of the ones near home.
+    pub from: Option<String>,
 }
 
 const MODES: &[(&str, Mode)] = &[
@@ -117,33 +124,89 @@ const DESTINATION_FILLER: &[&str] = &[
     "come", "comes", "går", "kommer", "drar",
 ];
 
-/// "When's the next bus", "next tram to Majorstuen", "når går neste buss til sentrum".
+const FROM: &[&str] = &["from", "fra"];
+/// "From home" is the default, not a stop.
+const HOME_WORDS: &[&str] = &["home", "here", "hjemme", "hjem", "hjemmefra", "her"];
+/// Words just before a line number: "the next 31", "bus 31", "linje 37".
+const LINE_LEAD: &[&str] = &["next", "neste", "the", "line", "linje", "linjen", "number", "nummer", "route", "rute"];
+/// Words after a number that make it a count or a time, not a line: "the next 3 days".
+const NOT_A_LINE: &[&str] = &[
+    "minute", "minutes", "minutt", "minutter", "second", "seconds", "sekunder", "hour", "hours", "time", "timer",
+    "timene", "day", "days", "dag", "dager", "dagene", "week", "weeks", "uke", "uker", "song", "songs", "sang",
+    "sanger", "track", "tracks", "times", "percent", "prosent", "degrees", "grader", "o'clock", "am", "pm", "of",
+];
+/// A request about music, where "skip the next 2" is not a line.
+const MUSIC_WORDS: &[&str] = &["skip", "song", "songs", "track", "play", "spill", "sang", "låt", "hopp"];
+
+/// A line's public code as the transcriber writes it: "31", "n12", "re10", "31e".
+fn line_code(word: &str) -> bool {
+    let letters = word.chars().take_while(char::is_ascii_alphabetic).count();
+    let digits = word[letters..].chars().take_while(char::is_ascii_digit).count();
+    let rest = &word[letters + digits..];
+    letters <= 2 && (1..=3).contains(&digits) && rest.len() <= 1 && rest.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+fn is_mode(word: &str) -> bool {
+    MODES.iter().any(|(m, _)| *m == word)
+}
+
+/// "When's the next bus", "next tram to Majorstuen", "når går neste buss til sentrum", "when is
+/// the next 31 bus", "next train from Nationaltheatret", "når går neste 37".
 pub fn parse(text: &str) -> Option<TransitQuery> {
     // "t-bane" loses its hyphen in `normalize`; "t bane" is two words.
     let joined = text.to_lowercase().replace("t-bane", "tbane").replace("t bane", "tbane");
-    let words: Vec<String> = joined.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    let mut words: Vec<String> = Vec::new();
+    for word in joined.split_whitespace().map(normalize).filter(|w| !w.is_empty()) {
+        // "37-buss" loses its hyphen too: the line, then the mode.
+        let digits = word.chars().take_while(char::is_ascii_digit).count();
+        if digits > 0 && is_mode(&word[digits..]) {
+            words.push(word[..digits].to_owned());
+            words.push(word[digits..].to_owned());
+        } else {
+            words.push(word);
+        }
+    }
     let mode = words.iter().find_map(|w| MODES.iter().find(|(m, _)| m == w).map(|&(_, mode)| mode));
     let departures = words.iter().any(|w| DEPARTURE_WORDS.contains(&w.as_str()));
-    if mode.is_none() && !departures {
+    let music = mode.is_none() && words.iter().any(|w| MUSIC_WORDS.contains(&w.as_str()));
+    let line_at = (0..words.len()).find(|&i| {
+        let after = words.get(i + 1).map(String::as_str);
+        let before = i.checked_sub(1).map(|b| words[b].as_str());
+        !music
+            && line_code(&words[i])
+            && !after.is_some_and(|a| NOT_A_LINE.contains(&a))
+            && (after.is_some_and(is_mode) || before.is_some_and(|b| LINE_LEAD.contains(&b) || is_mode(b)))
+    });
+    if mode.is_none() && !departures && line_at.is_none() {
         return None;
     }
     // A question about the next one, not "I took the bus to work".
     if !departures && !words.iter().any(|w| WHEN_WORDS.contains(&w.as_str())) {
         return None;
     }
-    let mode_at = words.iter().position(|w| MODES.iter().any(|(m, _)| m == w) || DEPARTURE_WORDS.contains(&w.as_str()));
+    // The words after `start` up to one of `end`, with filler dropped at both ends.
+    let phrase = |start: usize, end: &[&str]| -> Option<String> {
+        let mut found: Vec<&str> =
+            words.get(start..)?.iter().map(String::as_str).take_while(|w| !end.contains(w)).collect();
+        while found.first().is_some_and(|w| *w == "the") {
+            found.remove(0);
+        }
+        while found.last().is_some_and(|w| DESTINATION_FILLER.contains(w)) {
+            found.pop();
+        }
+        (!found.is_empty()).then(|| found.join(" "))
+    };
+    let mode_at = words.iter().position(|w| is_mode(w) || DEPARTURE_WORDS.contains(&w.as_str())).or(line_at);
     let destination = mode_at.and_then(|at| {
         let to = words[at..].iter().position(|w| TOWARDS.contains(&w.as_str()))? + at;
-        let mut dest: Vec<&str> = words[to + 1..].iter().map(String::as_str).collect();
-        while dest.first().is_some_and(|w| *w == "the") {
-            dest.remove(0);
-        }
-        while dest.last().is_some_and(|w| DESTINATION_FILLER.contains(w)) {
-            dest.pop();
-        }
-        (!dest.is_empty()).then(|| dest.join(" "))
+        phrase(to + 1, FROM)
     });
-    Some(TransitQuery { mode: mode.unwrap_or(Mode::Any), destination })
+    let from = words
+        .iter()
+        .position(|w| FROM.contains(&w.as_str()))
+        .and_then(|at| phrase(at + 1, TOWARDS))
+        .filter(|stop| !HOME_WORDS.contains(&stop.as_str()));
+    Some(TransitQuery { mode: mode.unwrap_or(Mode::Any), destination, line: line_at.map(|at| words[at].clone()), from })
 }
 
 /// Places a request says for the town centre, and what the signs say instead.
@@ -382,10 +445,17 @@ impl Transit {
 
     /// The spoken answer.
     pub fn next(&mut self, query: &TransitQuery, lang: Lang) -> Result<String> {
-        if let (Some(destination), Some(_)) = (&query.destination, &self.home) {
+        if let Some(from) = &query.from {
+            return self.departures_at_stop(from, query, lang);
+        }
+        // A line named with a destination is that line's departures towards it, not a trip that may
+        // take another line.
+        if let (Some(destination), Some(_), None) = (&query.destination, &self.home, &query.line) {
             return self.trip(destination, query.mode, lang);
         }
-        let Some(found) = self.calls()? else {
+        // One line among a busy stop's departures needs more of them.
+        let count = if query.line.is_some() { MORE_DEPARTURES } else { DEPARTURES };
+        let Some(found) = self.calls(count)? else {
             return Ok(match lang {
                 Lang::English => "I found no stops near home.".into(),
                 Lang::Norwegian => "Jeg fant ingen holdeplasser i nærheten.".into(),
@@ -394,21 +464,39 @@ impl Transit {
         Ok(answer(&found, query, jiff::Timestamp::now(), lang))
     }
 
+    /// "Next train from Nationaltheatret": the departures from a stop found by name.
+    fn departures_at_stop(&self, name: &str, query: &TransitQuery, lang: Lang) -> Result<String> {
+        let Some((id, found_name, ..)) = self.find_stop(name)? else {
+            return Ok(match lang {
+                Lang::English => format!("I couldn't find a stop called {name}."),
+                Lang::Norwegian => format!("Jeg fant ingen holdeplass som heter {name}."),
+            });
+        };
+        let stop = NearStop { id, name: found_name, walk: 0 };
+        let found = self.departures_from(std::slice::from_ref(&stop), MORE_DEPARTURES)?;
+        Ok(answer(&found, query, jiff::Timestamp::now(), lang))
+    }
+
     /// The nearest stop's next departures, for the TV screen: `None` without stops or departures.
     pub fn board(&mut self) -> Result<Option<serde_json::Value>> {
-        let Some(found) = self.calls()? else { return Ok(None) };
+        let Some(found) = self.calls(DEPARTURES)? else { return Ok(None) };
         Ok(board(&found, jiff::Timestamp::now()))
     }
 
     /// Departures from the stops, nearest first, each with its walk; `None` without stops.
-    fn calls(&mut self) -> Result<Option<Vec<Stop>>> {
+    fn calls(&mut self, count: u32) -> Result<Option<Vec<Stop>>> {
         let stops = self.stops()?.to_vec();
         if stops.is_empty() {
             return Ok(None);
         }
+        self.departures_from(&stops, count).map(Some)
+    }
+
+    /// The next `count` departures from each stop, in the order given, each with its walk.
+    fn departures_from(&self, stops: &[NearStop], count: u32) -> Result<Vec<Stop>> {
         let ids: Vec<String> = stops.iter().map(|s| format!("{:?}", s.id)).collect();
         let data = self.graphql(&format!(
-            "{{ stopPlaces(ids: [{}]) {{ id name estimatedCalls(numberOfDepartures: {DEPARTURES}, timeRange: {WINDOW_SECONDS}) {{ \
+            "{{ stopPlaces(ids: [{}]) {{ id name estimatedCalls(numberOfDepartures: {count}, timeRange: {WINDOW_SECONDS}) {{ \
              expectedDepartureTime cancellation destinationDisplay {{ frontText }} serviceJourney {{ line {{ publicCode transportMode }} }} }} }} }}",
             ids.join(", ")
         ))?;
@@ -418,7 +506,7 @@ impl Transit {
             stop.walk = stops.iter().find(|s| s.id == stop.id).map_or(0, |s| s.walk);
         }
         found.sort_by_key(|stop| stops.iter().position(|s| s.id == stop.id));
-        Ok(Some(found))
+        Ok(found)
     }
 }
 
@@ -426,7 +514,7 @@ impl Transit {
 const BOARD_ROWS: usize = 6;
 
 fn board(stops: &[Stop], now: jiff::Timestamp) -> Option<serde_json::Value> {
-    let any = TransitQuery { mode: Mode::Any, destination: None };
+    let any = TransitQuery::default();
     let found = departures(stops, &any, now);
     let first = found.first()?;
     let rows: Vec<serde_json::Value> = found
@@ -445,6 +533,10 @@ fn departures(stops: &[Stop], query: &TransitQuery, now: jiff::Timestamp) -> Vec
             .calls
             .iter()
             .filter(|c| !c.cancellation && query.mode.matches(c.journey.line.mode.as_deref().unwrap_or("")))
+            .filter(|c| match &query.line {
+                None => true,
+                Some(line) => c.journey.line.public_code.as_deref().is_some_and(|code| code.eq_ignore_ascii_case(line)),
+            })
             .filter(|c| match &query.destination {
                 None => true,
                 Some(d) if centre(d) => true,
@@ -492,15 +584,35 @@ fn when_at(minutes: i64, clock: &str, lang: Lang) -> String {
 /// "The next bus is the 31 to Snarøya, from Wessels plass. It leaves in 4 minutes. The one after
 /// leaves in 12 minutes."
 fn answer(stops: &[Stop], query: &TransitQuery, now: jiff::Timestamp, lang: Lang) -> String {
-    let found = departures(stops, query, now);
+    let mut found = departures(stops, query, now);
+    // The sign may name the end of the line, not the stop asked for: a line's departures then do.
+    if found.is_empty() && query.line.is_some() && query.destination.is_some() {
+        found = departures(stops, &TransitQuery { destination: None, ..query.clone() }, now);
+    }
     let what = query.mode.word(lang);
     let Some(first) = found.first() else {
-        return match (lang, &query.destination) {
-            (Lang::English, Some(d)) => format!("I found no {what} towards {d} in the next three hours."),
-            (Lang::English, None) => format!("I found no {what} from the nearby stops in the next three hours."),
-            (Lang::Norwegian, Some(d)) => format!("Jeg fant ingen {what} mot {d} de neste tre timene."),
-            (Lang::Norwegian, None) => {
-                format!("Jeg fant ingen {what} fra holdeplassene i nærheten de neste tre timene.")
+        // "bus 31", "line 31" ("linje 31").
+        let what = match (&query.line, query.mode, lang) {
+            (None, ..) => what.to_owned(),
+            (Some(line), Mode::Any, Lang::English) => format!("line {}", line.to_uppercase()),
+            (Some(line), Mode::Any, Lang::Norwegian) => format!("linje {}", line.to_uppercase()),
+            (Some(line), ..) => format!("{what} {}", line.to_uppercase()),
+        };
+        let stop = query.from.as_ref().and_then(|_| stops.first()).map(|s| s.name.as_str());
+        return match (lang, &query.destination, stop) {
+            (Lang::English, Some(d), None) => format!("I found no {what} towards {d} in the next three hours."),
+            (Lang::English, Some(d), Some(s)) => {
+                format!("I found no {what} from {s} towards {d} in the next three hours.")
+            }
+            (Lang::English, None, s) => {
+                format!("I found no {what} from {} in the next three hours.", s.unwrap_or("the nearby stops"))
+            }
+            (Lang::Norwegian, Some(d), None) => format!("Jeg fant ingen {what} mot {d} de neste tre timene."),
+            (Lang::Norwegian, Some(d), Some(s)) => {
+                format!("Jeg fant ingen {what} fra {s} mot {d} de neste tre timene.")
+            }
+            (Lang::Norwegian, None, s) => {
+                format!("Jeg fant ingen {what} fra {} de neste tre timene.", s.unwrap_or("holdeplassene i nærheten"))
             }
         };
     };
@@ -612,7 +724,9 @@ mod tests {
 
     #[test]
     fn transit_questions() {
-        let q = |mode, dest: Option<&str>| Some(TransitQuery { mode, destination: dest.map(str::to_owned) });
+        let q = |mode, dest: Option<&str>| {
+            Some(TransitQuery { mode, destination: dest.map(str::to_owned), ..Default::default() })
+        };
         assert_eq!(parse("When's the next bus?"), q(Mode::Bus, None));
         assert_eq!(parse("when does the next tram to Majorstuen leave"), q(Mode::Tram, Some("majorstuen")));
         assert_eq!(parse("next train to Lillestrøm please"), q(Mode::Rail, Some("lillestrøm")));
@@ -623,6 +737,72 @@ mod tests {
         assert_eq!(parse("what are the next departures"), q(Mode::Any, None));
         assert_eq!(parse("I took the bus to work"), None);
         assert_eq!(parse("what's the weather"), None);
+    }
+
+    #[test]
+    fn lines_and_stops() {
+        let q = |mode, line: Option<&str>, from: Option<&str>, dest: Option<&str>| {
+            Some(TransitQuery {
+                mode,
+                line: line.map(str::to_owned),
+                from: from.map(str::to_owned),
+                destination: dest.map(str::to_owned),
+            })
+        };
+        assert_eq!(parse("when is the next 31 bus"), q(Mode::Bus, Some("31"), None, None));
+        assert_eq!(parse("when does bus 31 leave"), q(Mode::Bus, Some("31"), None, None));
+        assert_eq!(parse("når går neste 37?"), q(Mode::Any, Some("37"), None, None));
+        assert_eq!(parse("når går neste 37-buss"), q(Mode::Bus, Some("37"), None, None));
+        assert_eq!(parse("next N12 to Bekkestua"), q(Mode::Any, Some("n12"), None, Some("bekkestua")));
+        assert_eq!(parse("next train from Nationaltheatret"), q(Mode::Rail, None, Some("nationaltheatret"), None));
+        assert_eq!(
+            parse("when's the next train from Nationaltheatret to Lillestrøm"),
+            q(Mode::Rail, None, Some("nationaltheatret"), Some("lillestrøm"))
+        );
+        assert_eq!(
+            parse("next train to Lillestrøm from Oslo S"),
+            q(Mode::Rail, None, Some("oslo s"), Some("lillestrøm"))
+        );
+        assert_eq!(parse("neste buss fra Jernbanetorget"), q(Mode::Bus, None, Some("jernbanetorget"), None));
+        assert_eq!(parse("next bus from home"), q(Mode::Bus, None, None, None));
+        // Numbers that are counts, times or songs.
+        assert_eq!(parse("what's the weather the next 3 days"), None);
+        assert_eq!(parse("skip the next 2"), None);
+        assert_eq!(parse("when is the next 5 minutes"), None);
+        assert_eq!(parse("I took the 31 to work"), None);
+    }
+
+    #[test]
+    fn a_line_or_a_stop_is_answered() {
+        let now: jiff::Timestamp = "2026-09-24T18:00:00Z".parse().unwrap();
+        let stops = [stop(
+            "Wessels plass",
+            &[("31", "bus", "Snarøya", 4), ("20", "bus", "Skøyen", 6), ("31", "bus", "Tonsenhagen", 9)],
+        )];
+        let line = TransitQuery { line: Some("31".into()), ..Default::default() };
+        assert_eq!(
+            answer(&stops, &line, now, Lang::English),
+            "The next departure is bus 31 to Snarøya, from Wessels plass. It leaves in 4 minutes. The one after \
+             leaves in 9 minutes."
+        );
+        // The sign names the end of the line: the line's departures still answer.
+        let towards = TransitQuery { line: Some("20".into()), destination: Some("majorstuen".into()), ..line.clone() };
+        assert!(answer(&stops, &towards, now, Lang::English).contains("bus 20 to Skøyen"));
+        let missing = TransitQuery { line: Some("37".into()), ..Default::default() };
+        assert_eq!(
+            answer(&stops, &missing, now, Lang::English),
+            "I found no line 37 from the nearby stops in the next three hours."
+        );
+        let bus = TransitQuery { mode: Mode::Bus, line: Some("37".into()), ..Default::default() };
+        assert_eq!(
+            answer(&stops, &bus, now, Lang::Norwegian),
+            "Jeg fant ingen buss 37 fra holdeplassene i nærheten de neste tre timene."
+        );
+        let named = TransitQuery { mode: Mode::Rail, from: Some("wessels plass".into()), ..Default::default() };
+        assert_eq!(
+            answer(&stops, &named, now, Lang::English),
+            "I found no train from Wessels plass in the next three hours."
+        );
     }
 
     fn stop(name: &str, calls: &[(&str, &str, &str, i64)]) -> Stop {
@@ -663,18 +843,18 @@ mod tests {
             ),
             stop("Stortinget", &[("5", "metro", "Sognsvann", 2), ("11", "tram", "Kjelsås", 3)]),
         ];
-        let bus = TransitQuery { mode: Mode::Bus, destination: None };
+        let bus = TransitQuery { mode: Mode::Bus, destination: None, ..Default::default() };
         assert_eq!(
             answer(&stops, &bus, now, Lang::English),
             "The next bus is the 31 to Snarøya, from Wessels plass. It leaves in 4 minutes. The one after leaves in 7 \
              minutes."
         );
-        let to = TransitQuery { mode: Mode::Bus, destination: Some("snarøya".into()) };
+        let to = TransitQuery { mode: Mode::Bus, destination: Some("snarøya".into()), ..Default::default() };
         assert_eq!(
             answer(&stops, &to, now, Lang::Norwegian),
             "Neste buss, 31 mot Snarøya, går fra Wessels plass om 4 minutter, og den neste om 12 minutter."
         );
-        let metro = TransitQuery { mode: Mode::Metro, destination: None };
+        let metro = TransitQuery { mode: Mode::Metro, destination: None, ..Default::default() };
         assert_eq!(
             answer(&stops, &metro, now, Lang::English),
             "The next metro is the 5 to Sognsvann, from Stortinget. It leaves in 2 minutes."
@@ -685,7 +865,7 @@ mod tests {
         let ahead = english_sentences();
         assert!(ahead.contains(&"It leaves in 4 minutes.".to_string()));
         assert!(ahead.contains(&"The one after leaves in 7 minutes.".to_string()));
-        let any = TransitQuery { mode: Mode::Any, destination: None };
+        let any = TransitQuery { mode: Mode::Any, destination: None, ..Default::default() };
         assert!(answer(&stops, &any, now, Lang::English)
             .starts_with("The next departure is bus 31 to Snarøya, from Wessels plass."));
         // Four minutes' walk away: the bus in 4 minutes is still catchable, the metro in 2 is not.
@@ -694,7 +874,7 @@ mod tests {
         let metro_far = answer(&far, &metro, now, Lang::English);
         assert_eq!(metro_far, "I found no metro from the nearby stops in the next three hours.");
         let stops = far;
-        let ferry = TransitQuery { mode: Mode::Ferry, destination: None };
+        let ferry = TransitQuery { mode: Mode::Ferry, destination: None, ..Default::default() };
         assert_eq!(
             answer(&stops, &ferry, now, Lang::English),
             "I found no boat from the nearby stops in the next three hours."

@@ -53,6 +53,9 @@ const NUMBER_SHAPES: &[(&str, u32)] = &[
     ("power costs #", 100),
     ("it costs #", 100),
     (" is at #:#.", 59),
+    // "The cheapest 3 hours start at 01:00 and end at 04:00."
+    ("the cheapest # hours start ", 59),
+    ("the cheapest hour starts ", 59),
 ];
 
 /// Whole sentences with numbers that are kept, with or without the honorific ("..., sir."), and
