@@ -115,11 +115,14 @@ does, so the engine takes the device's microphone in place of Assist. Answers ar
 another media player. Timers count down on the Voice PE's LED ring through the ESPHome timer events.
 
 **Timers, reminders and alarms.** `timer.rs` parses durations and times of day ("at 5", "at 17:30", "half past
-six", "tomorrow at 8", "klokka 7"); an hour without am or pm is the next of the two within 12 hours, and for a
+six", "tomorrow at 8", "klokka 7", "fem over halv åtte"); a number that counts things ("look at 2 houses") is not a
+time. An hour without am or pm is the next of the two within 12 hours, and for a
 wake-up alarm the morning. "Tomorrow" said before 05:00 is the coming morning. "In 10 minutes" wins over an hour
 later in the sentence ("remind me in 10 minutes to call Anna at 3"). A wake-up alarm is a timer that rings, "snooze"
 sets it again for 9 minutes, and "move my alarm to 7:30", "push my alarm back 10 minutes" or "10 minutes earlier"
-replaces the one that is set ("an extra alarm" is a new one); while it rings, later is a snooze that long. They are
+replaces the one that is set ("an extra alarm" is a new one); while it rings, later is a snooze that long. With
+several, "Which one?" takes only an answer for 30 s: "the first one", "the 7 pm one", "the pasta one",
+"pastatimeren" or "both"; a reply with a verb ("pause the pasta one") runs as a request of its own. They are
 kept in `timers-file` (default `timers.json` next to `unhandled-log`) with wall-clock end times, so a restart (every
 deploy) keeps them. Those that ended while the engine was down are dealt with when a satellite connects, or a minute
 after the start: a reminder is still told ("It was due at 14:30."), a timer up to 10 minutes late is told that it

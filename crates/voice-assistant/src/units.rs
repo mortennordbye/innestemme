@@ -35,7 +35,9 @@ const fn unit(
 
 use Dimension::*;
 
-/// US cups and spoons in English, metric spoons in Norwegian ("spiseskje" is 15 ml).
+/// US cups and spoons in English, metric cups and spoons in Norwegian ("kopp" is 2.5 dl,
+/// "spiseskje" 15 ml), as Norwegian recipes mean them. New units go at the end: `CELSIUS` and
+/// `FAHRENHEIT` are positions in this list.
 const UNITS: &[Unit] = &[
     unit(
         Length,
@@ -97,7 +99,7 @@ const UNITS: &[Unit] = &[
         ("liter", "liter"),
         &["litre", "litres", "liter", "liters", "literen", "l"],
     ),
-    unit(Volume, 236.588, ("cup", "cups"), ("kopp", "kopper"), &["cup", "cups", "kopp", "kopper", "koppen"]),
+    unit(Volume, 236.588, ("cup", "cups"), ("amerikansk kopp", "amerikanske kopper"), &["cup", "cups"]),
     unit(
         Volume,
         14.787,
@@ -144,6 +146,7 @@ const UNITS: &[Unit] = &[
         &["fahrenheit", "f", "°f"],
     ),
     unit(Temperature, 0.0, ("kelvin", "kelvin"), ("kelvin", "kelvin"), &["kelvin", "k"]),
+    unit(Volume, 250.0, ("Norwegian cup", "Norwegian cups"), ("kopp", "kopper"), &["kopp", "kopper", "koppen"]),
 ];
 
 const CELSIUS: usize = 25;
@@ -236,8 +239,24 @@ fn unit_at(tokens: &[String], i: usize) -> Option<usize> {
     UNITS.iter().position(|u| u.said.contains(&word))
 }
 
-/// Small numbers as words, which the transcriber often writes. English only: Norwegian "to" (two)
-/// is also "to" between the units.
+/// Norwegian small numbers as words. "En"/"ett" are in `ONE`; "to" (two) is also the word between
+/// the units, so it is only read as a number right before a unit (see `value_at`).
+const NUMBER_WORDS_NO: &[(&str, f64)] = &[
+    ("null", 0.0),
+    ("tre", 3.0),
+    ("fire", 4.0),
+    ("fem", 5.0),
+    ("seks", 6.0),
+    ("sju", 7.0),
+    ("syv", 7.0),
+    ("åtte", 8.0),
+    ("ni", 9.0),
+    ("ti", 10.0),
+    ("elleve", 11.0),
+    ("tolv", 12.0),
+];
+
+/// Small numbers as words, which the transcriber often writes.
 const NUMBER_WORDS: &[&str] = &[
     "zero",
     "one",
@@ -268,6 +287,9 @@ fn number(token: &str) -> Option<f64> {
     }
     if let Some(n) = NUMBER_WORDS.iter().position(|w| *w == token) {
         return Some(n as f64);
+    }
+    if let Some((_, n)) = NUMBER_WORDS_NO.iter().find(|(w, _)| *w == token) {
+        return Some(*n);
     }
     // "1/2 cup".
     if let Some((top, bottom)) = token.split_once('/') {
@@ -327,7 +349,13 @@ fn value_at(tokens: &[String], i: usize) -> Option<(f64, usize)> {
             return (!continues).then(|| (sign * fraction, after_fraction(tokens, i + 2)));
         }
     }
-    let whole = number(first)?;
+    // "To kopper" is two cups, but "10 miles to kilometres" is not two kilometres: right after a
+    // unit, "to" is the word between the units.
+    let after_unit = i > 0 && unit_at(tokens, i - 1).is_some();
+    let whole = match first {
+        "to" if !after_unit && unit_at(tokens, skip_filler(tokens, i + 1)).is_some() => 2.0,
+        _ => number(first)?,
+    };
     if continues && first.contains('/') {
         return None;
     }
@@ -419,7 +447,9 @@ pub fn parse(text: &str) -> Option<Conversion> {
         let to = unit_at(tokens, to_at)?;
         let between = ["are", "is", "there", "in", "to", "er", "det", "i", "på", "går", "make", "makes", "goes"];
         let mut i = to_at + 1;
-        while tokens.get(i).is_some_and(|t| between.contains(&t.as_str())) {
+        // "Er to kopper": "to" right before a unit is the amount, two.
+        let two = |i: usize| tokens[i] == "to" && unit_at(tokens, skip_filler(tokens, i + 1)).is_some();
+        while tokens.get(i).is_some_and(|t| between.contains(&t.as_str())) && !two(i) {
             i += 1;
         }
         let (value, from, end) = amount_at(tokens, i)?;
@@ -603,7 +633,16 @@ mod tests {
         assert_eq!(say("hvor mange centimeter er en tomme").as_deref(), Some("1 tomme er 2,54 centimeter."));
         assert_eq!(say("hvor mange kilometer er en mil").as_deref(), Some("1 mil er 10 kilometer."));
         assert_eq!(say("hva er 10 engelske mil i kilometer").as_deref(), Some("10 engelske mil er 16,1 kilometer."));
-        assert_eq!(say("konverter 2 kopper til desiliter").as_deref(), Some("2 kopper er 4,73 desiliter."));
+        // A Norwegian "kopp" is 2.5 dl, as recipes here mean it; "cup" is the US cup.
+        assert_eq!(say("konverter 2 kopper til desiliter").as_deref(), Some("2 kopper er 5 desiliter."));
+        assert_eq!(say("hvor mange desiliter er to kopper").as_deref(), Some("2 kopper er 5 desiliter."));
+        assert_eq!(say("hva er tre kopper i desiliter").as_deref(), Some("3 kopper er 7,5 desiliter."));
+        assert_eq!(
+            say("hva er fem grader celsius i fahrenheit").as_deref(),
+            Some("5 grader celsius er 41 grader fahrenheit.")
+        );
+        // "To" between the units is not two.
+        assert_eq!(say("konverter 10 kilo to pund").as_deref(), Some("10 kilo er 22 pund."));
         assert_eq!(say("hvor mange gram er det i et pund").as_deref(), Some("1 pund er 453,6 gram."));
     }
 

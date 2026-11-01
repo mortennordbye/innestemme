@@ -13,7 +13,9 @@ enum Op {
 }
 
 /// Commas between digits: a thousands separator before exactly three digits ("1,000"), else a
-/// Norwegian decimal comma ("1,5"). Other commas are punctuation.
+/// Norwegian decimal comma ("1,5"). Other commas are punctuation. Three digits after the comma
+/// stay thousands in Norwegian too: the transcriber writes "1,000" in both languages, so
+/// "1,125 pluss 1" is 1126 although a Norwegian may have meant 1.125.
 fn decimal_commas(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -143,6 +145,12 @@ mod tests {
         assert_eq!(calc("what's 7 minus 10"), Some(-3.0));
         assert_eq!(calc("hva er 1,5 pluss 2"), Some(3.5));
         assert_eq!(calc("what's 1,000 plus 1"), Some(1001.0));
+        assert_eq!(calc("what's 1,125 plus 1"), Some(1126.0));
+        // Three digits after the comma are thousands in Norwegian too (see `decimal_commas`).
+        assert_eq!(calc("hva er 1,000 pluss 1"), Some(1001.0));
+        assert_eq!(calc("hva er 1,125 pluss 1"), Some(1126.0));
+        assert_eq!(calc("hva er 1,25 pluss 1"), Some(2.25));
+        assert_eq!(calc("hva er 1,1250 pluss 1"), Some(2.125));
         assert_eq!(calc("5+5"), Some(10.0));
         assert_eq!(calc("hva er 3 ganger 4"), Some(12.0));
         assert_eq!(calc("2 plus 3 times 4"), Some(20.0));

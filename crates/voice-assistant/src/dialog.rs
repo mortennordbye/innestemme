@@ -114,8 +114,19 @@ impl WakeWord {
     /// The request without the name said at its end: "what time is it, Jarvis" is "what time is it".
     pub fn drop_trailing(&self, text: &str) -> String {
         let words: Vec<&str> = text.split_whitespace().collect();
+        // "Hva er været på Frøya" with the name Freya: after a preposition the word is a place or
+        // a thing, unless a comma sets the name apart.
+        let after_preposition = words.len() >= 2 && {
+            let before = words[words.len() - 2];
+            !before.ends_with(',')
+                && [
+                    "på", "i", "in", "at", "to", "til", "from", "fra", "for", "of", "av", "near", "ved", "about", "om",
+                    "with", "med",
+                ]
+                .contains(&normalize(before).as_str())
+        };
         match words.split_last() {
-            Some((last, rest)) if !rest.is_empty() && self.matches(&normalize(last)) => {
+            Some((last, rest)) if !rest.is_empty() && !after_preposition && self.matches(&normalize(last)) => {
                 let tail = last.trim_start_matches(|c: char| c.is_alphanumeric() || c == '\'');
                 let rest = rest.join(" ");
                 format!("{}{tail}", rest.trim_end_matches([',', ' ']))
@@ -236,6 +247,10 @@ mod tests {
         assert_eq!(freya.drop_trailing("Turn off the lights Freya"), "Turn off the lights");
         assert_eq!(freya.drop_trailing("Freya"), "Freya");
         assert_eq!(freya.drop_trailing("Tell me a joke"), "Tell me a joke");
+        // After a preposition it is a place, unless a comma sets the name apart.
+        assert_eq!(freya.drop_trailing("Hva er været på Frøya"), "Hva er været på Frøya");
+        assert_eq!(freya.drop_trailing("What's the weather in Oslo, Freya"), "What's the weather in Oslo");
+        assert_eq!(freya.drop_trailing("Hva er været på, Freya"), "Hva er været på");
         assert_eq!(strip_wake("Heifreya, hvordan er været?").as_deref(), Some("hvordan er været?"));
         assert_eq!(strip_wake("Hi."), None);
     }

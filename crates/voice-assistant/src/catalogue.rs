@@ -372,7 +372,7 @@ pub const SKILLS: &[Skill] = &[
             "Turn off the alarm",
             "Cancel my alarm",
         ],
-        norwegian: &["Vekk meg klokka 7", "Er vekkerklokka stilt?"],
+        norwegian: &["Vekk meg klokka 7", "Vekk meg klokka fem over halv sju", "Er vekkerklokka stilt?"],
     },
     Skill {
         id: "shopping",
@@ -486,7 +486,7 @@ pub const SKILLS: &[Skill] = &[
         name: "Unit conversion",
         group: "Everyday",
         icon: "scale",
-        does: "Converts lengths, weights, volumes and cooking measures (cups, tablespoons, ounces) and temperatures, worked out at once. No currencies: they need live rates.",
+        does: "Converts lengths, weights, volumes and cooking measures (cups, tablespoons, ounces) and temperatures, worked out at once. A cup is the US cup in English and 2.5 dl in Norwegian (\"kopp\"). No currencies: they need live rates.",
         source: "Built in",
         calls: &[],
         examples: &[
@@ -498,7 +498,7 @@ pub const SKILLS: &[Skill] = &[
             "Convert half a cup to millilitres",
             "5 feet 10 inches in centimetres",
         ],
-        norwegian: &["Hvor mange centimeter er en tomme?", "Hva er 2 kopper i desiliter?"],
+        norwegian: &["Hvor mange centimeter er en tomme?", "Hva er 2 kopper i desiliter?", "Hvor mange desiliter er to kopper?"],
     },
     Skill {
         id: "distance",
