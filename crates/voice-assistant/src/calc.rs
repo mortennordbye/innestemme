@@ -13,12 +13,10 @@ enum Op {
 }
 
 /// Commas between digits: a thousands separator before exactly three digits ("1,000"), else a
-/// Norwegian decimal comma ("1,5"). In a Norwegian sum every comma between digits is a decimal
-/// comma ("1,125 pluss 1"): Norwegian writes thousands with a space. Other commas are punctuation.
+/// Norwegian decimal comma ("1,5"). Other commas are punctuation. Three digits after the comma
+/// stay thousands in Norwegian too: the transcriber writes "1,000" in both languages, so
+/// "1,125 pluss 1" is 1126 although a Norwegian may have meant 1.125.
 fn decimal_commas(text: &str) -> String {
-    let norwegian = text
-        .split(|c: char| !c.is_alphanumeric())
-        .any(|w| ["pluss", "ganger", "gange", "delt", "dele", "hva", "blir", "hvor", "mye"].contains(&w));
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     for (i, &c) in chars.iter().enumerate() {
@@ -28,7 +26,7 @@ fn decimal_commas(text: &str) -> String {
         }
         let before = i > 0 && chars[i - 1].is_ascii_digit();
         let digits = chars[i + 1..].iter().take_while(|c| c.is_ascii_digit()).count();
-        if before && digits > 0 && (digits != 3 || norwegian) {
+        if before && digits > 0 && digits != 3 {
             out.push('.');
         }
     }
@@ -148,7 +146,11 @@ mod tests {
         assert_eq!(calc("hva er 1,5 pluss 2"), Some(3.5));
         assert_eq!(calc("what's 1,000 plus 1"), Some(1001.0));
         assert_eq!(calc("what's 1,125 plus 1"), Some(1126.0));
-        assert_eq!(calc("hva er 1,125 pluss 1"), Some(2.125));
+        // Three digits after the comma are thousands in Norwegian too (see `decimal_commas`).
+        assert_eq!(calc("hva er 1,000 pluss 1"), Some(1001.0));
+        assert_eq!(calc("hva er 1,125 pluss 1"), Some(1126.0));
+        assert_eq!(calc("hva er 1,25 pluss 1"), Some(2.25));
+        assert_eq!(calc("hva er 1,1250 pluss 1"), Some(2.125));
         assert_eq!(calc("5+5"), Some(10.0));
         assert_eq!(calc("hva er 3 ganger 4"), Some(12.0));
         assert_eq!(calc("2 plus 3 times 4"), Some(20.0));

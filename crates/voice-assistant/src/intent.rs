@@ -738,8 +738,43 @@ fn music(words: &[String]) -> Option<MusicCommand> {
     if has("resume") || has("unpause") || (about_music && ["continue", "fortsett", "start"].iter().any(|w| has(w))) {
         return Some(MusicCommand::Resume);
     }
-    // "Neste" is also "neste helg", "neste buss": only music when said of music or on its own.
-    if has("skip") || ((has("next") || has("neste")) && (about_music || words.len() <= 3)) {
+    // "Neste" is also "neste helg", "neste buss": only music when said of music or on its own, and
+    // never of a day or a week ("og neste helg", "and next weekend" follow a weather answer).
+    const WHEN_WORDS: &[&str] = &[
+        "weekend",
+        "week",
+        "day",
+        "month",
+        "year",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+        "game",
+        "match",
+        "helg",
+        "helgen",
+        "uke",
+        "uka",
+        "dag",
+        "dagen",
+        "måned",
+        "år",
+        "mandag",
+        "tirsdag",
+        "onsdag",
+        "torsdag",
+        "fredag",
+        "lørdag",
+        "søndag",
+        "kamp",
+        "kampen",
+    ];
+    let about_when = words.iter().any(|w| WHEN_WORDS.contains(&w.trim_end_matches("'s")));
+    if has("skip") || ((has("next") || has("neste")) && !about_when && (about_music || words.len() <= 3)) {
         return Some(MusicCommand::Next);
     }
     if has("previous") || has("forrige") {
@@ -1876,6 +1911,10 @@ mod tests {
         assert_eq!(parse("next song"), Intent::Music(MusicCommand::Next));
         assert_eq!(parse("neste sang"), Intent::Music(MusicCommand::Next));
         assert_eq!(parse("neste"), Intent::Music(MusicCommand::Next));
+        // Of a day or a week, "next" is not the next song, even short.
+        for text in ["og neste helg", "neste uke da", "and next weekend", "next week", "neste kamp"] {
+            assert_ne!(parse(text), Intent::Music(MusicCommand::Next), "{text}");
+        }
     }
 
     #[test]

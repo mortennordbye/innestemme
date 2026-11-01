@@ -607,8 +607,11 @@ impl Worker {
         }
         // A question waiting for "yes" only takes a yes or a no: other words without the name are the room.
         let confirming = self.pending_confirm.is_some() && confirmation(&request).is_some();
-        let pending =
-            self.pending_lights.is_some() || confirming || self.timers.awaiting_duration() || self.list_is_open();
+        // "Which one?" takes a short answer ("the first one"): a longer sentence still faces the
+        // room-talk filter.
+        let timers_asked =
+            self.timers.awaiting_duration() && !(self.timers.choosing() && request.split_whitespace().count() > 5);
+        let pending = self.pending_lights.is_some() || confirming || timers_asked || self.list_is_open();
         // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
         // for murdering his barn it 40 stop" set the volume.
         // A wake word without the name is as unsure as the follow-up window: the TV's "just because
