@@ -1,14 +1,13 @@
 <div align="center">
 
-# 🤫 innestemme
+<img src="assets/icon.svg" alt="" width="112" height="112">
+
+# innestemme
 
 ### A local voice assistant that replaces Home Assistant's Assist, on your own CPU.
 
-[![Rust](https://img.shields.io/badge/Rust-000000?logo=rust&logoColor=white)](https://www.rust-lang.org) [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-18BCF2?logo=homeassistant&logoColor=white)](https://www.home-assistant.io) [![ESPHome](https://img.shields.io/badge/ESPHome-000000?logo=esphome&logoColor=white)](https://esphome.io) [![Ollama](https://img.shields.io/badge/Ollama-000000?logo=ollama&logoColor=white)](https://ollama.com)
-
-[![CI](https://github.com/mortennordbye/innestemme/actions/workflows/ci.yml/badge.svg)](https://github.com/mortennordbye/innestemme/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/mortennordbye/innestemme/badge)](https://securityscorecards.dev/viewer/?uri=github.com/mortennordbye/innestemme)
-
-[![License](https://img.shields.io/github/license/mortennordbye/innestemme?style=flat-square)](LICENSE) [![Last Commit](https://img.shields.io/github/last-commit/mortennordbye/innestemme?style=flat-square)](https://github.com/mortennordbye/innestemme/commits/main) [![Stars](https://img.shields.io/github/stars/mortennordbye/innestemme?style=flat-square)](https://github.com/mortennordbye/innestemme/stargazers)
+[![Rust](https://img.shields.io/badge/Rust-0f425b?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org) [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-0f425b?style=flat-square&logo=homeassistant&logoColor=white)](https://www.home-assistant.io) [![ESPHome](https://img.shields.io/badge/ESPHome-0f425b?style=flat-square&logo=esphome&logoColor=white)](https://esphome.io) [![Ollama](https://img.shields.io/badge/Ollama-0f425b?style=flat-square&logo=ollama&logoColor=white)](https://ollama.com)<br>
+[![CI](https://img.shields.io/github/actions/workflow/status/mortennordbye/innestemme/ci.yml?branch=main&style=flat-square&labelColor=0f425b&label=CI)](https://github.com/mortennordbye/innestemme/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://img.shields.io/ossf-scorecard/github.com/mortennordbye/innestemme?style=flat-square&labelColor=0f425b&label=openssf%20scorecard)](https://scorecard.dev/viewer/?uri=github.com/mortennordbye/innestemme) [![License](https://img.shields.io/github/license/mortennordbye/innestemme?style=flat-square&labelColor=0f425b&color=18bcf2)](LICENSE) [![Last commit](https://img.shields.io/github/last-commit/mortennordbye/innestemme?style=flat-square&labelColor=0f425b&color=18bcf2)](https://github.com/mortennordbye/innestemme/commits/main) [![Stars](https://img.shields.io/github/stars/mortennordbye/innestemme?style=flat-square&labelColor=0f425b&color=18bcf2)](https://github.com/mortennordbye/innestemme/stargazers)
 
 *Innestemme* is Norwegian for "indoor voice": a voice assistant that never leaves the house. Wake word, speech
 recognition, the rules and the voice all run locally on a CPU, it drives Home Assistant, and it answers through
