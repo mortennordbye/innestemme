@@ -13,6 +13,11 @@ updates:
       prefix: "chore(deps):"
     groups:
       github-actions:
+        update-types: [minor, patch]
+        patterns: ["*"]
+      # The auto-merge workflow reads this exact group name.
+      security:
+        applies-to: security-updates
         patterns: ["*"]
 
   - package-ecosystem: cargo
@@ -27,6 +32,9 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
     ignore:
       # moshi 0.6.4 (Mimi codec) is built on candle 0.9 and has no newer release; our
       # tensors cross into it, so candle moves when moshi does.
@@ -47,4 +55,8 @@ updates:
       prefix: "chore(deps):"
     groups:
       docker:
+        update-types: [minor, patch]
+        patterns: ["*"]
+      security:
+        applies-to: security-updates
         patterns: ["*"]
