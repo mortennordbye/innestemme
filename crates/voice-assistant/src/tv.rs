@@ -394,7 +394,7 @@ impl Tv {
             TvCommand::App(name) => {
                 if !on {
                     call("turn_on", json!({}))?;
-                    self.wait_until_on(ha, &entity)?;
+                    wait_until_on(ha, &entity)?;
                 }
                 let state = ha.state(&entity)?;
                 let sources: Vec<String> = state["attributes"]["source_list"]
@@ -536,7 +536,7 @@ impl Tv {
         let cast = self.cast_entity(ha)?.context("no Google Cast media player for the TV")?;
         if !on {
             ha.service("media_player", "turn_on", json!({ "entity_id": entity }))?;
-            self.wait_until_on(ha, entity)?;
+            wait_until_on(ha, entity)?;
         }
         ha.service(
             "media_player",
@@ -560,35 +560,49 @@ impl Tv {
         let state = ha.state(&entity)?;
         if ["off", "standby"].contains(&state["state"].as_str().unwrap_or("off")) {
             ha.service("media_player", "turn_on", json!({ "entity_id": entity }))?;
-            self.wait_until_on(ha, &entity)?;
+            wait_until_on(ha, &entity)?;
         }
         open_url(ha, &entity, url)
     }
 
-    /// The TV and what it shows (`source`), when it is on. A lockdown takes over only a TV that is
-    /// already on, and puts that back when it ends.
-    pub fn on_source(&self, ha: &HomeAssistant) -> Result<Option<(String, Option<String>)>> {
+    /// The TV and what it shows now, for putting it back after the screen took it over. `None`
+    /// without a TV, or when Home Assistant cannot reach it.
+    pub fn before(&self, ha: &HomeAssistant) -> Result<Option<(String, Before)>> {
         let Some(entity) = self.find(ha)? else { return Ok(None) };
-        let state = ha.state(&entity)?;
-        if ["off", "standby", "unavailable"].contains(&state["state"].as_str().unwrap_or("off")) {
-            return Ok(None);
-        }
-        let source = state["attributes"]["source"].as_str().map(str::to_owned);
-        Ok(Some((entity, source)))
+        Ok(before(&ha.state(&entity)?).map(|before| (entity, before)))
     }
+}
 
-    fn wait_until_on(&self, ha: &HomeAssistant, entity: &str) -> Result<()> {
-        let start = Instant::now();
-        while start.elapsed() < START_TIMEOUT {
-            std::thread::sleep(Duration::from_millis(500));
-            let state = ha.state(entity)?;
-            if state["state"] == "on" && state["attributes"]["source_list"].is_array() {
-                info!(after = ?start.elapsed(), "tv started");
-                return Ok(());
-            }
+/// What a TV in `state` shows; `None` when Home Assistant cannot reach it.
+fn before(state: &serde_json::Value) -> Option<Before> {
+    Some(match state["state"].as_str().unwrap_or("off") {
+        "unavailable" => return None,
+        "off" | "standby" => Before::Off,
+        _ => state["attributes"]["source"].as_str().map_or(Before::Unknown, |s| Before::Source(s.to_owned())),
+    })
+}
+
+/// What a TV showed before the screen took it over.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Before {
+    Off,
+    Source(String),
+    /// On, without a source to go back to.
+    Unknown,
+}
+
+/// Waits until a TV that was turned on can take commands.
+pub fn wait_until_on(ha: &HomeAssistant, entity: &str) -> Result<()> {
+    let start = Instant::now();
+    while start.elapsed() < START_TIMEOUT {
+        std::thread::sleep(Duration::from_millis(500));
+        let state = ha.state(entity)?;
+        if state["state"] == "on" && state["attributes"]["source_list"].is_array() {
+            info!(after = ?start.elapsed(), "tv started");
+            return Ok(());
         }
-        anyhow::bail!("the TV did not start within {START_TIMEOUT:?}")
     }
+    anyhow::bail!("the TV did not start within {START_TIMEOUT:?}")
 }
 
 /// What Plex will play: the name to say, the item's key, and the media type for Home Assistant.
@@ -660,6 +674,16 @@ pub fn select_source(ha: &HomeAssistant, entity: &str, source: &str) -> Result<(
 mod tests {
     use super::*;
     use crate::dialog::normalize;
+
+    #[test]
+    fn what_the_tv_showed_before() {
+        assert_eq!(before(&json!({ "state": "standby" })), Some(Before::Off));
+        assert_eq!(before(&json!({ "state": "off" })), Some(Before::Off));
+        assert_eq!(before(&json!({ "state": "unavailable" })), None);
+        let hdmi = json!({ "state": "on", "attributes": { "source": "HDMI 1" } });
+        assert_eq!(before(&hdmi), Some(Before::Source("HDMI 1".into())));
+        assert_eq!(before(&json!({ "state": "on", "attributes": {} })), Some(Before::Unknown));
+    }
 
     fn tv(text: &str) -> Option<TvCommand> {
         let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();

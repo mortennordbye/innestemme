@@ -35,7 +35,8 @@ fetched from the sherpa-onnx release); the name check on a wake word uses the sl
 weather?"), with known misspellings (`dialog.rs`).
 
 **Turns.** After an answer the assistant listens a few seconds more without the wake word (6 s on a satellite,
-8 s on the Mac), for recognised requests only, so room chatter is ignored. Speech that repeats an answer of the last 30 s is the Sonos heard back and is dropped. An
+8 s on the Mac), for recognised requests only, so room chatter is ignored. Not after party mode starts or stops: talk
+over the loud music would be taken as a request ("play"). Speech that repeats an answer of the last 30 s is the Sonos heard back and is dropped. An
 unrecognised request after a wake gets "Sorry, I didn't catch that." only when Parakeet hears the name in the wake
 word itself, so a false wake by the TV stays silent. That check runs as soon as the device wakes, while the
 request is still being said, so the reply does not wait for it. A wake word without the name leaves the music and the TV playing,
@@ -122,7 +123,8 @@ to its members), so "undo" puts every lamp's brightness and colour back and leav
 scene, party mode or a lockdown since then leaves nothing to undo, though "them" still means those lights. Party mode keeps `scene.party_restore` from
 before it and puts it back a second after the stream stops; a lockdown in that second takes the snapshot over
 for standing down. A party started during a lockdown keeps no snapshot of the red lights: ending it turns them
-red again, and standing down ends it first. "Stand down" with no lockdown leaves a party alone.
+red again, and standing down ends it first. "Stand down" with no lockdown leaves a party alone, except one "what do you think
+about open source?" started: that one ends with its song and its TV.
 
 **Speech.** English through Kokoro, voice `am_onyx`: from a Kokoro-FastAPI server (`english-tts: kokoro`, a
 Python sidecar in the cluster) or inside the engine through sherpa-onnx (`english-tts: kokoro-onnx`, the f32

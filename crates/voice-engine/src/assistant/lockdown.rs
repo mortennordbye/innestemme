@@ -125,7 +125,7 @@ impl Worker {
         format!("Lockdown initiated. The house is sealed. {threat}")
     }
 
-    /// Puts the screen on a TV that is on and not showing it yet. On a thread of its own: the TV
+    /// Puts the screen on the TV, turned on first when it is off. On a thread of its own: the TV
     /// takes a while to answer, and the answer need not wait for it.
     pub(super) fn screen_on_tv(&mut self) {
         let Some(url) = self.config.screen_url.clone() else { return };
@@ -133,19 +133,26 @@ impl Worker {
         if self.lockdown_tv.is_some() || self.screen.watched() {
             return;
         }
-        let (entity, source) = match self.tv.on_source(ha) {
-            Ok(Some(on)) => on,
+        let (entity, before) = match self.tv.before(ha) {
+            Ok(Some(tv)) => tv,
             Ok(None) => return,
-            Err(error) => return warn!(error = format!("{error:#}"), "no tv for the lockdown"),
+            Err(error) => return warn!(error = format!("{error:#}"), "no tv for the screen"),
         };
-        let (tv_ha, tv_entity) = (ha.detached(), entity.clone());
+        let (tv_ha, tv_entity, off) = (ha.detached(), entity.clone(), before == tv::Before::Off);
         let opened = std::thread::Builder::new().name("tv".into()).spawn(move || {
-            if let Err(error) = tv::open_url(&tv_ha, &tv_entity, &url) {
-                warn!(error = format!("{error:#}"), "could not open the lockdown on the tv");
+            let open = || {
+                if off {
+                    tv_ha.service("media_player", "turn_on", serde_json::json!({ "entity_id": tv_entity }))?;
+                    tv::wait_until_on(&tv_ha, &tv_entity)?;
+                }
+                tv::open_url(&tv_ha, &tv_entity, &url)
+            };
+            if let Err(error) = open() {
+                warn!(error = format!("{error:#}"), "could not open the screen on the tv");
             }
         });
         match opened {
-            Ok(_) => self.lockdown_tv = Some((entity, source)),
+            Ok(_) => self.lockdown_tv = Some((entity, before)),
             Err(error) => warn!(%error, "could not start the tv thread"),
         }
     }
@@ -186,12 +193,19 @@ impl Worker {
     /// it to something else.
     pub(super) fn tv_back(&mut self) {
         let Some(ha) = &self.home_assistant else { return };
-        let Some((entity, Some(source))) = self.lockdown_tv.take().filter(|_| self.screen.watched()) else {
+        let Some((entity, before)) = self.lockdown_tv.take().filter(|_| self.screen.watched()) else {
             return;
         };
         let tv_ha = ha.detached();
         let back = std::thread::Builder::new().name("tv".into()).spawn(move || {
-            if let Err(error) = tv::select_source(&tv_ha, &entity, &source) {
+            let back = match before {
+                tv::Before::Source(source) => tv::select_source(&tv_ha, &entity, &source),
+                tv::Before::Off => {
+                    tv_ha.service("media_player", "turn_off", serde_json::json!({ "entity_id": entity }))
+                }
+                tv::Before::Unknown => Ok(()),
+            };
+            if let Err(error) = back {
                 warn!(error = format!("{error:#}"), "could not put the tv back");
             }
         });
@@ -211,6 +225,8 @@ impl Worker {
         let locked_down = house::lockdown_on(ha, self.locked_down);
         if locked_down {
             self.party_off_for_stand_down();
+        } else if self.open_source_party && self.party_off() {
+            return if no { "Ok, festen er over." } else { "Okay, the party's over." }.into();
         }
         let ha = self.home_assistant.as_ref().expect("checked above");
         // Stopped first: a step after the lights are restored would turn them red again.
