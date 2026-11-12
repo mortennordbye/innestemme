@@ -33,7 +33,7 @@ focus; Norwegian works with Whisper and Piper.
 | Timers, reminders and alarms | "set a pasta timer for 8 minutes", "remind me in 20 minutes to check the oven", "remind me at 5 to call mum", "wake me up at 7", "snooze" |
 | TV and its screen | "turn off the TV", "put Netflix on the TV", "put on Exit on NRK", "next episode of The Office on Plex", "show the weather on the TV" |
 | Routines | "I'm leaving", "I'm home", "good night" |
-| Just for fun | "initiate lockdown" (red lights, Hans Zimmer) and "stand down", "party mode" (every Hue light follows the music; "fast party mode" and "relaxed party mode" for a faster or a calmer, warm show), "what do you think about open source?" (party mode, a song and a TV screen; "stop the party" ends it) |
+| Just for fun | "initiate lockdown" (red lights, Hans Zimmer) and "stand down", "party mode" (every Hue light follows the music; "fast party mode" and "relaxed party mode" for a faster or a calmer, warm show), "what do you think about open source?" (party mode, a song and a TV screen; "stop the party" ends all three) |
 | House | "is everything okay at home?", "who's home?", "where is Ingrid?", "how warm is it in the bedroom?", "what's the humidity?", "is the alarm armed?" |
 | Sensors | "which batteries are low?", "what's the battery on the leak sensor?", "is there a leak?" |
 | Phones | "where's my phone?" (rings it, even on silent), "how much battery does my phone have?" |
