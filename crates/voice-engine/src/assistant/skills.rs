@@ -169,6 +169,8 @@ impl Worker {
         }
         // The stream changes the lights: undo has no look from before it to go back to.
         self.forget_light_undo();
+        // Room talk over the music in a follow-up window would be taken as a request ("play").
+        self.follow_up_closed = true;
         match (pace, no) {
             (Pace::Relaxed, false) => "Okay, relaxed party mode is on.",
             (Pace::Normal, false) => "Okay, party mode is on.",
@@ -188,11 +190,15 @@ impl Worker {
         self.config.party.stop();
         self.forget_light_undo();
         self.spawn_party_restore(PARTY_RELEASE);
+        self.follow_up_closed = true;
         if std::mem::take(&mut self.open_source_party) {
             // The music was paused for the request: it stays paused under the answer, then stops.
             self.hushed = None;
             self.after_answer = Some((MusicCommand::Stop, None));
-            self.tv_back();
+            // The lockdown's TV stays with it until standing down.
+            if !self.locked_down {
+                self.tv_back();
+            }
         }
         self.hide_open_source();
         true
@@ -206,6 +212,9 @@ impl Worker {
             return started;
         }
         self.after_answer = Some((MusicCommand::Song(self.config.open_source_music.clone()), None));
+        // Under the answer, like the lockdown's music: a start just as the answer's announcement ends
+        // on the same speaker can hang in Music Assistant.
+        self.music_under_answer = true;
         self.open_source_party = true;
         self.screen_on_tv();
         self.show("open_source", serde_json::json!({}), None);

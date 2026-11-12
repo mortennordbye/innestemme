@@ -82,7 +82,7 @@ whisper-size: base
 # tv: media_player.living_room_tv
 # The engine's /tv page as the TV reaches it. "Show the weather on the TV" opens it in the TV's browser
 # through Home Assistant's LG webOS integration; scenes and jokes show there while it is open. A lockdown
-# opens it on a TV that is on, and standing down switches the TV back.
+# opens it on the TV (turned on first when it is off), and standing down switches the TV back.
 # screen-url: https://voice.example.lan/tv
 # "Play <title> on Plex": the Plex server innestemme searches, and a token for it in VOICE_PLEX_TOKEN.
 # Home Assistant needs its Plex integration for the same server: the TV's Cast player plays plex://<key>.

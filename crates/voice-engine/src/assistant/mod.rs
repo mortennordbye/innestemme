@@ -375,10 +375,12 @@ struct Worker {
     light_undo_gone: Option<Instant>,
     /// The TV a lockdown or the open source party put the screen on, and what the TV showed
     /// before, for their end.
-    lockdown_tv: Option<(String, Option<String>)>,
+    lockdown_tv: Option<(String, voice_assistant::tv::Before)>,
     /// Party mode was started by "what do you think about open source?": ending it also stops
     /// its song and gives the TV back.
     open_source_party: bool,
+    /// The answer opens no follow-up window.
+    follow_up_closed: bool,
     /// Which threat the next lockdown ends on.
     threat_turn: usize,
     /// `after_answer` starts as the answer starts playing, not when it has played.
@@ -519,6 +521,7 @@ impl Worker {
                     self.previewing = true;
                     let answer = self.compose(&text, Lang::English).unwrap_or_default();
                     self.previewing = false;
+                    self.follow_up_closed = false;
                     info!(request = text, answer, "done from the web page");
                     let turn = self.turn_for(&text, Some(answer.clone()), Outcome::Done, start);
                     self.config.activity.record(turn);
@@ -747,7 +750,7 @@ impl Worker {
             let turn = self.turn_for(text, Some(answer.clone()), Outcome::Done, start);
             self.config.activity.record(activity::Turn { after_ms, ..turn });
             self.history.push_back((Instant::now(), Turn { user: text.to_owned(), assistant: answer }));
-            self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
+            self.follow_up_until = (!std::mem::take(&mut self.follow_up_closed)).then(|| Instant::now() + FOLLOW_UP);
             self.emit(AssistantEvent::Done);
             self.unhush();
             self.woken_at = None;

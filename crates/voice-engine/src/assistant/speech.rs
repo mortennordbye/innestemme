@@ -119,9 +119,10 @@ impl Worker {
         // After the answer is queued: the speaker's announcement ducks the music under it.
         self.unhush();
         // The reply is queued faster than it plays; the window opens when it has been heard.
-        self.follow_up_until = Some(Instant::now() + Duration::from_secs_f32(seconds) + FOLLOW_UP);
+        self.follow_up_until = (!std::mem::take(&mut self.follow_up_closed))
+            .then(|| Instant::now() + Duration::from_secs_f32(seconds) + FOLLOW_UP);
         if self.after_answer.is_some() {
-            // The lockdown's music sets the scene under its threat; other music waits for the answer.
+            // The lockdown's and the open source party's music start under the answer; other music waits for it.
             let wait = if self.music_under_answer { Duration::ZERO } else { Duration::from_secs_f32(seconds) };
             self.after_answer_at = Some(Instant::now() + wait + ANSWER_START);
         }

@@ -190,6 +190,7 @@ impl AssistantProcessor {
             light_undo_gone: None,
             lockdown_tv: None,
             open_source_party: false,
+            follow_up_closed: false,
             threat_turn: 0,
             music_under_answer: false,
             after_answer: None,
