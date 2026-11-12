@@ -258,7 +258,7 @@ fn routine_answer(
                 .into(),
             );
         }
-        Routine::Lockdown | Routine::StandDown => unreachable!("the worker runs these itself"),
+        Routine::Lockdown | Routine::StandDown | Routine::OpenSource => unreachable!("the worker runs these itself"),
         Routine::Home => {
             parts.push(if no { "Velkommen hjem." } else { "Welcome home." }.into());
             if let Some(target) = home_target(ha, config, here)? {

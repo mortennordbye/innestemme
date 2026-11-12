@@ -165,6 +165,8 @@ pub struct AssistantConfig {
     pub lockdown_music: String,
     /// The music's volume during a lockdown, in percent; music already louder stays as loud.
     pub lockdown_volume: u8,
+    /// What "what do you think about open source?" plays: a song search.
+    pub open_source_music: String,
     /// The Hue lights following the music, when a bridge is configured.
     pub party: Party,
     /// Shopping list items written under their Norwegian names, and Whisper for items said alone.
@@ -1204,6 +1206,7 @@ impl Worker {
                 match routine {
                     Routine::Lockdown => self.lockdown(lang),
                     Routine::StandDown => self.stand_down(lang),
+                    Routine::OpenSource => self.open_source(lang),
                     _ => self.routine(routine, lang),
                 }
             }

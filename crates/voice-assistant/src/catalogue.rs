@@ -162,6 +162,17 @@ pub const SKILLS: &[Skill] = &[
         norwegian: &["Skru på festmodus", "Rolig festmodus", "Slå av festmodus"],
     },
     Skill {
+        id: "open_source",
+        name: "Open source",
+        group: "Home",
+        icon: "heart",
+        does: "Just for fun: says what it thinks of open source, then starts party mode and plays the open-source-music, and the TV screen shows I love open source while the party runs. Stopping the party puts the lights back.",
+        source: "The Hue bridge's Entertainment API, Music Assistant",
+        calls: &["Hue entertainment_configuration", "scene.create", "music_assistant.play_media", "scene.turn_on"],
+        examples: &["What do you think about open source?", "Do you like open source?", "How do you feel about open source?"],
+        norwegian: &["Hva synes du om åpen kildekode?", "Liker du åpen kildekode?"],
+    },
+    Skill {
         id: "alerts",
         name: "Safety alerts",
         group: "Home",
@@ -600,6 +611,7 @@ pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
         Intent::Tv(TvCommand::Show(_) | TvCommand::Hide) => "tv_screen",
         Intent::Tv(_) => "tv",
         Intent::Routine(Routine::Lockdown | Routine::StandDown) => "lockdown",
+        Intent::Routine(Routine::OpenSource) => "open_source",
         Intent::Routine(_) => "routines",
         Intent::Party(_) => "party",
         Intent::House(command) => match command {
