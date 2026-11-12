@@ -373,8 +373,12 @@ struct Worker {
     /// When a scene, party mode or a lockdown last changed the lights: light changes before it
     /// cannot be undone.
     light_undo_gone: Option<Instant>,
-    /// The TV a lockdown put its screen on, and what the TV showed before, for standing down.
+    /// The TV a lockdown or the open source party put the screen on, and what the TV showed
+    /// before, for their end.
     lockdown_tv: Option<(String, Option<String>)>,
+    /// Party mode was started by "what do you think about open source?": ending it also stops
+    /// its song and gives the TV back.
+    open_source_party: bool,
     /// Which threat the next lockdown ends on.
     threat_turn: usize,
     /// `after_answer` starts as the answer starts playing, not when it has played.

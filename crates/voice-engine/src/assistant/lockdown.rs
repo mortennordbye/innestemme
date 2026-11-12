@@ -72,6 +72,8 @@ impl Worker {
         }
         // Its red lights and the party's stream would fight over the same lights.
         let party = self.party_off_for_lockdown();
+        // The lockdown's music and screen take over; standing down ends them.
+        self.open_source_party = false;
         if party {
             info!("party mode ended for the lockdown");
         }
@@ -104,7 +106,7 @@ impl Worker {
             // A second lockdown keeps the volume from before the first.
             self.lockdown_volume = self.lockdown_volume.or(volume);
         }
-        self.lockdown_screen();
+        self.screen_on_tv();
         // The lockdown's music replaces what was paused for the request.
         self.hushed = None;
         let music = MusicCommand::Song(self.config.lockdown_music.clone());
@@ -123,9 +125,9 @@ impl Worker {
         format!("Lockdown initiated. The house is sealed. {threat}")
     }
 
-    /// Puts the lockdown's screen on a TV that is on and not showing it yet. On a thread of its own:
-    /// the TV takes a while to answer, and the answer need not wait for it.
-    fn lockdown_screen(&mut self) {
+    /// Puts the screen on a TV that is on and not showing it yet. On a thread of its own: the TV
+    /// takes a while to answer, and the answer need not wait for it.
+    pub(super) fn screen_on_tv(&mut self) {
         let Some(url) = self.config.screen_url.clone() else { return };
         let Some(ha) = &self.home_assistant else { return };
         if self.lockdown_tv.is_some() || self.screen.watched() {
@@ -180,6 +182,24 @@ impl Worker {
         info!(?music, ?volume, "music after the answer");
     }
 
+    /// Back to what the TV showed before [`Self::screen_on_tv`], unless someone has since switched
+    /// it to something else.
+    pub(super) fn tv_back(&mut self) {
+        let Some(ha) = &self.home_assistant else { return };
+        let Some((entity, Some(source))) = self.lockdown_tv.take().filter(|_| self.screen.watched()) else {
+            return;
+        };
+        let tv_ha = ha.detached();
+        let back = std::thread::Builder::new().name("tv".into()).spawn(move || {
+            if let Err(error) = tv::select_source(&tv_ha, &entity, &source) {
+                warn!(error = format!("{error:#}"), "could not put the tv back");
+            }
+        });
+        if let Err(error) = back {
+            warn!(%error, "could not start the tv thread");
+        }
+    }
+
     pub(super) fn stand_down(&mut self, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &self.home_assistant else {
@@ -221,18 +241,7 @@ impl Worker {
         self.after_answer = Some((MusicCommand::Stop, volume));
         self.music_under_answer = false;
         info!(restored, ?volume, "lockdown over");
-        // Back to what the TV showed, unless someone has since switched it to something else.
-        if let Some((entity, Some(source))) = self.lockdown_tv.take().filter(|_| self.screen.watched()) {
-            let tv_ha = ha.detached();
-            let back = std::thread::Builder::new().name("tv".into()).spawn(move || {
-                if let Err(error) = tv::select_source(&tv_ha, &entity, &source) {
-                    warn!(error = format!("{error:#}"), "could not put the tv back");
-                }
-            });
-            if let Err(error) = back {
-                warn!(%error, "could not start the tv thread");
-            }
-        }
+        self.tv_back();
         if self.screen.showing("lockdown") {
             self.hide();
         }

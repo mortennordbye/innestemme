@@ -127,6 +127,10 @@ impl Worker {
             }
             .into();
         }
+        // A party that stopped by itself left this set; a plain party mode never stops the music.
+        if self.config.party.mode().is_none() {
+            self.open_source_party = false;
+        }
         // A restore still waiting would land on the party's first frames. Called off in time, the
         // last party's snapshot is still the look from before it.
         let restore_called_off = self.party_restore.take().is_some_and(PendingRestore::cancel);
@@ -184,6 +188,12 @@ impl Worker {
         self.config.party.stop();
         self.forget_light_undo();
         self.spawn_party_restore(PARTY_RELEASE);
+        if std::mem::take(&mut self.open_source_party) {
+            // The music was paused for the request: it stays paused under the answer, then stops.
+            self.hushed = None;
+            self.after_answer = Some((MusicCommand::Stop, None));
+            self.tv_back();
+        }
         self.hide_open_source();
         true
     }
@@ -196,6 +206,8 @@ impl Worker {
             return started;
         }
         self.after_answer = Some((MusicCommand::Song(self.config.open_source_music.clone()), None));
+        self.open_source_party = true;
+        self.screen_on_tv();
         self.show("open_source", serde_json::json!({}), None);
         if lang == Lang::Norwegian { "Jeg elsker åpen kildekode, for faen." } else { house::OPEN_SOURCE_ANSWER }.into()
     }
@@ -270,6 +282,7 @@ impl Worker {
         if self.config.party.mode().is_some() {
             self.config.party.stop();
             info!("party mode ended for standing down");
+            self.open_source_party = false;
             self.hide_open_source();
             std::thread::sleep(PARTY_RELEASE);
         }
