@@ -236,6 +236,9 @@ struct Args {
     /// down puts the old one back.
     #[arg(long, env = "VOICE_LOCKDOWN_VOLUME", default_value_t = 85, value_parser = clap::value_parser!(u8).range(1..=100))]
     lockdown_volume: u8,
+    /// What "what do you think about open source?" plays with party mode, as a song search.
+    #[arg(long, env = "VOICE_OPEN_SOURCE_MUSIC", default_value = "Freed from Desire by Gala")]
+    open_source_music: String,
     /// Shopping list items under their Norwegian names: an English or misheard item is matched to a
     /// Norwegian grocery, and an item said by itself after "add" is heard again by Whisper in Norwegian.
     #[arg(long, env = "VOICE_NORWEGIAN_GROCERIES", default_value_t = false, action = clap::ArgAction::Set)]
@@ -606,6 +609,7 @@ fn main() -> Result<()> {
                     home_music: args.home_music.clone(),
                     lockdown_music: args.lockdown_music.clone(),
                     lockdown_volume: args.lockdown_volume,
+                    open_source_music: args.open_source_music.clone(),
                     party: voice_engine::party::Party::new(
                         match (&args.hue_bridge, &args.hue_app_key, &args.hue_client_key) {
                             (Some(bridge), Some(app_key), Some(client_key)) => Some(voice_engine::party::HueConfig {

@@ -222,6 +222,14 @@ impl Worker {
                         let ids = ids.ok_or("There is no lockdown to end.")?;
                         plan.set(lamps, &ids, |_| plan::Effect::new("restore", "put back"));
                     }
+                    Routine::OpenSource if !config.party.configured() => {
+                        return Err("Party mode needs a Hue bridge.".into())
+                    }
+                    Routine::OpenSource => {
+                        let (colour, _) = house::lockdown_lights(ha).map_err(failed)?;
+                        plan.set(lamps, &colour, |_| plan::Effect::new("party", "follows the music"));
+                        plan.also.push(format!("Plays {}.", config.open_source_music));
+                    }
                 }
             }
             Intent::Unknown => return Err("Not understood without the language model.".into()),

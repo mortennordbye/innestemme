@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use voice_assistant::ha::{self, HomeAssistant};
 use voice_assistant::house;
-use voice_assistant::intent::{Day, Focus};
+use voice_assistant::intent::{Day, Focus, MusicCommand};
 use voice_assistant::lang::Lang;
 use voice_assistant::party::{Pace, PartyCommand};
 use voice_assistant::shopping::ListCommand;
@@ -184,7 +184,26 @@ impl Worker {
         self.config.party.stop();
         self.forget_light_undo();
         self.spawn_party_restore(PARTY_RELEASE);
+        self.hide_open_source();
         true
+    }
+
+    /// "What do you think about open source?": party mode, its song after the answer, and its
+    /// screen until the party ends.
+    pub(super) fn open_source(&mut self, lang: Lang) -> String {
+        let started = self.party(PartyCommand::On(Pace::Normal), lang);
+        if self.config.party.mode().is_none() {
+            return started;
+        }
+        self.after_answer = Some((MusicCommand::Song(self.config.open_source_music.clone()), None));
+        self.show("open_source", serde_json::json!({}), None);
+        if lang == Lang::Norwegian { "Jeg elsker åpen kildekode, for faen." } else { house::OPEN_SOURCE_ANSWER }.into()
+    }
+
+    fn hide_open_source(&mut self) {
+        if self.screen.showing("open_source") {
+            self.hide();
+        }
     }
 
     /// Puts party mode's lights back after `wait`, on a thread of its own: the bridge lets go of
@@ -251,6 +270,7 @@ impl Worker {
         if self.config.party.mode().is_some() {
             self.config.party.stop();
             info!("party mode ended for standing down");
+            self.hide_open_source();
             std::thread::sleep(PARTY_RELEASE);
         }
     }

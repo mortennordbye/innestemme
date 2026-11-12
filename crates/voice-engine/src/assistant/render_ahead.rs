@@ -73,6 +73,7 @@ impl Worker {
                 "Okay, the party's over.",
             ])
             .chain(house::LOCKDOWN_ANSWERS)
+            .chain(&[house::OPEN_SOURCE_ANSWER])
             .chain(house::LOCKDOWN_THREATS)
             .chain(house::ROUTINE_ANSWERS)
             .chain(Jokes::english())

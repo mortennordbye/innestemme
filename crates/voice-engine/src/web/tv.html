@@ -109,6 +109,21 @@ body { color: var(--text); font: 15px/1.45 var(--sans); }
 .m-lockdown .timer { font-family: var(--mono); font-size: 44px; color: #ff3030; letter-spacing: .2em; font-variant-numeric: tabular-nums; }
 .m-lockdown .end { font-family: var(--mono); font-size: 24px; letter-spacing: .3em; color: rgba(255,120,120,.6); text-transform: uppercase; }
 
+/* open_source */
+.m-open_source { flex-direction: column; justify-content: center; align-items: center; text-align: center; gap: 34px; padding-top: 150px; }
+.m-open_source .wash { position: absolute; inset: -50%; z-index: -2; opacity: .16; animation: spin 14s linear infinite;
+  background: conic-gradient(from 0deg, #ff3d8b, #ffcf5c, #5cffb0, #3dd6ff, #8a5cff, #ff3d8b); }
+.m-open_source h2 { margin: 0; font-family: var(--meme); font-weight: 400; font-size: 240px; line-height: .92; text-transform: uppercase; color: #fff; }
+.m-open_source h2 .heart { display: inline-block; color: #ff3d6e; text-shadow: 0 0 60px rgba(255,61,110,.7); animation: beat .6s ease-in-out infinite; }
+.m-open_source h2 .rainbow { display: block; background: linear-gradient(90deg, #ff3d8b, #ffcf5c, #5cffb0, #3dd6ff, #8a5cff, #ff3d8b) 0 0 / 200% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent; animation: rainbow 3s linear infinite; }
+.m-open_source .sub { font-family: var(--mono); font-size: 30px; letter-spacing: .3em; text-transform: uppercase; color: var(--soft); }
+.m-open_source .tux { position: absolute; bottom: 230px; width: 220px; height: 264px; animation: hop .5s ease-in-out infinite alternate; }
+.m-open_source .tux.l { left: 90px; } .m-open_source .tux.r { right: 90px; transform: scaleX(-1); animation-delay: -.25s; }
+.m-open_source .tux .fl { transform-box: fill-box; transform-origin: 50% 8%; animation: wave .25s ease-in-out infinite alternate; }
+.m-open_source .tux .fl.b { animation-name: wave-back; }
+.m-open_source .bit { position: absolute; top: -80px; z-index: -1; font-family: var(--sans); line-height: 1; animation: fall linear infinite; }
+
 /* music */
 .m-music { align-items: center; gap: 100px; }
 .m-music .cover { width: 600px; height: 600px; flex: none; border-radius: 28px; position: relative; overflow: hidden; box-shadow: 0 40px 120px rgba(0,0,0,.7); }
@@ -205,6 +220,12 @@ body { color: var(--text); font: 15px/1.45 var(--sans); }
 @keyframes flap { from { transform: rotateX(90deg); opacity: 0; } }
 @keyframes slide { from { transform: translateX(120%); } }
 @keyframes slideout { to { transform: translateX(120%); opacity: 0; } }
+@keyframes beat { 50% { transform: scale(1.25); } }
+@keyframes rainbow { to { background-position: 200% 0; } }
+@keyframes hop { from { translate: 0 0; rotate: -6deg; } to { translate: 0 -70px; rotate: 6deg; } }
+@keyframes wave { from { rotate: 15deg; } to { rotate: 55deg; } }
+@keyframes wave-back { from { rotate: -15deg; } to { rotate: -55deg; } }
+@keyframes fall { to { transform: translate(var(--dx), 1260px) rotate(var(--turn)); } }
 @keyframes drain { from { width: 100%; } to { width: 0; } }
 @media (prefers-reduced-motion: reduce) { .stage *, .stage *::before { animation-duration: .01s !important; animation-iteration-count: 1 !important; } }
 </style>
@@ -291,6 +312,23 @@ const MODULES = {
       draw();
       const id = setInterval(draw, 1000);
       return () => clearInterval(id);
+    },
+  },
+  open_source: {
+    render: () => {
+      const colors = PALETTES.flat();
+      const pick = (list) => list[Math.floor(Math.random() * list.length)];
+      const bits = Array.from({ length: 70 }, () => `<span class="bit" style="left:${(Math.random() * 100).toFixed(1)}%;color:${pick(colors)};font-size:${24 + Math.floor(Math.random() * 40)}px;--dx:${Math.round(Math.random() * 300 - 150)}px;--turn:${pick([-1, 1]) * (360 + Math.floor(Math.random() * 360))}deg;animation-duration:${(3 + Math.random() * 4).toFixed(2)}s;animation-delay:-${(Math.random() * 7).toFixed(2)}s">${pick(["★", "♥", "■", "●", "✦"])}</span>`).join("");
+      const tux = (side) => `<svg class="tux ${side}" viewBox="0 0 100 120">
+        <ellipse class="fl" cx="17" cy="72" rx="8" ry="24" fill="#111"/><ellipse class="fl b" cx="83" cy="72" rx="8" ry="24" fill="#111"/>
+        <ellipse cx="50" cy="66" rx="34" ry="46" fill="#111"/><ellipse cx="50" cy="78" rx="23" ry="32" fill="#fff"/>
+        <ellipse cx="41" cy="34" rx="7" ry="9" fill="#fff"/><ellipse cx="59" cy="34" rx="7" ry="9" fill="#fff"/>
+        <circle cx="43" cy="36" r="3.5" fill="#111"/><circle cx="57" cy="36" r="3.5" fill="#111"/>
+        <ellipse cx="50" cy="47" rx="11" ry="5" fill="#ffb400"/>
+        <ellipse cx="34" cy="112" rx="14" ry="6" fill="#ffb400"/><ellipse cx="66" cy="112" rx="14" ry="6" fill="#ffb400"/></svg>`;
+      return `<div class="mod m-open_source"><div class="wash"></div>${bits}${tux("l")}${tux("r")}
+        <h2>I <span class="heart">♥</span><span class="rainbow">Open source</span></h2>
+        <div class="sub">Free as in freedom · say “stop the party”</div></div>`;
     },
   },
   music: {

@@ -79,6 +79,8 @@ pub enum Routine {
     Lockdown,
     /// "Stand down": the lights and volume back as they were before the lockdown.
     StandDown,
+    /// "What do you think about open source?": party mode and a song. Just for fun.
+    OpenSource,
 }
 
 /// Words before a request that do not change it: "okay, I'm leaving", "so, is everything okay".
@@ -525,6 +527,14 @@ const STAND_DOWN: &[&str] = &[
     "all clear",
 ];
 
+const OPEN_SOURCE: &[&str] = &["open source", "opensource", "åpen kildekode"];
+/// Words that ask for an opinion: "what do you think of", "do you like", "hva synes du om".
+const OPINION: &[&str] =
+    &["think", "feel", "like", "love", "opinion", "thoughts", "take", "view", "synes", "liker", "elsker", "mener"];
+
+/// The answer to "what do you think about open source?", rendered ahead of time.
+pub const OPEN_SOURCE_ANSWER: &str = "I fucking love open source.";
+
 /// Fixed English lockdown answers, rendered ahead of time.
 pub const LOCKDOWN_ANSWERS: &[&str] = &[
     "Lockdown initiated. The house is sealed.",
@@ -578,6 +588,9 @@ pub fn routine(words: &[String]) -> Option<Routine> {
     let starts = |list: &[&str]| list.iter().any(|p| text == *p || text.starts_with(&format!("{p} ")));
     if starts(STAND_DOWN) {
         return Some(Routine::StandDown);
+    }
+    if OPEN_SOURCE.iter().any(|p| contains_words(&text, p)) && has_any(words, OPINION) {
+        return Some(Routine::OpenSource);
     }
     if starts(LOCKDOWN) {
         return Some(Routine::Lockdown);
@@ -1748,6 +1761,13 @@ mod tests {
         assert_eq!(routine("red alert"), Some(Routine::Lockdown));
         assert_eq!(routine("stand down"), Some(Routine::StandDown));
         assert_eq!(routine("end the lockdown"), Some(Routine::StandDown));
+        assert_eq!(routine("what do you think about open source"), Some(Routine::OpenSource));
+        assert_eq!(routine("What do you think of open-source?"), Some(Routine::OpenSource));
+        assert_eq!(routine("do you like open source"), Some(Routine::OpenSource));
+        assert_eq!(routine("how do you feel about open source software"), Some(Routine::OpenSource));
+        assert_eq!(routine("hva synes du om åpen kildekode"), Some(Routine::OpenSource));
+        assert_eq!(routine("liker du åpen kildekode"), Some(Routine::OpenSource));
+        assert_eq!(routine("what is open source"), None);
     }
 
     fn phone(id: &str, owner: &str, location: &str) -> Phone {
