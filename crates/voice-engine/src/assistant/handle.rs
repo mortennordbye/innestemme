@@ -132,6 +132,20 @@ impl AssistantHandle {
         answer
     }
 
+    /// Speech (24 kHz) from Home Assistant's Wyoming client; its text, empty when there are no words.
+    pub fn transcribe(&self, audio: Vec<i16>) -> tokio::sync::oneshot::Receiver<String> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let _ = self.jobs.send(Job::Transcribe(audio, reply));
+        answer
+    }
+
+    /// Text from Home Assistant's Wyoming client; its speech at 24 kHz in the engine's voice.
+    pub fn speech(&self, text: String) -> tokio::sync::oneshot::Receiver<Vec<i16>> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let _ = self.jobs.send(Job::Speech(text, reply));
+        answer
+    }
+
     /// Text from Home Assistant to speak, after whatever the assistant is saying now.
     pub fn announce(&self, announcement: Announcement) {
         let _ = self.jobs.send(Job::Announce(announcement));
@@ -167,7 +181,8 @@ impl AssistantHandle {
         (handle, announced)
     }
 
-    /// A handle whose assistant answers every request with `answer`, and the requests it got.
+    /// A handle whose assistant answers every request and transcript with `answer` and speaks 0.2 s
+    /// of a tone, and what it got: requests and texts as they are, audio as its length.
     #[cfg(test)]
     pub(crate) fn answering_for_tests(answer: &str) -> (Self, impl Fn() -> Vec<String>) {
         let (mut handle, _) = Self::for_tests();
@@ -177,9 +192,20 @@ impl AssistantHandle {
         let (answer, log) = (answer.to_owned(), asked.clone());
         std::thread::spawn(move || {
             for job in received {
-                if let Job::Act(text, reply) | Job::Ask(text, reply) = job {
-                    log.lock().unwrap().push(text);
-                    let _ = reply.send(answer.clone());
+                match job {
+                    Job::Act(text, reply) | Job::Ask(text, reply) => {
+                        log.lock().unwrap().push(text);
+                        let _ = reply.send(answer.clone());
+                    }
+                    Job::Transcribe(audio, reply) => {
+                        log.lock().unwrap().push(format!("{} samples", audio.len()));
+                        let _ = reply.send(answer.clone());
+                    }
+                    Job::Speech(text, reply) => {
+                        log.lock().unwrap().push(text);
+                        let _ = reply.send(vec![1000; 4800]);
+                    }
+                    _ => {}
                 }
             }
         });

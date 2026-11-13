@@ -265,6 +265,10 @@ enum Job {
     /// A request from a phone or Home Assistant's Assist: acted on like [`Job::Act`], and the
     /// answer comes back in the persona's style, as it would be spoken.
     Ask(String, tokio::sync::oneshot::Sender<String>),
+    /// Speech (24 kHz) from Home Assistant's Wyoming client: what the listener hears in it.
+    Transcribe(Vec<i16>, tokio::sync::oneshot::Sender<String>),
+    /// Text from Home Assistant's Wyoming client: its speech (24 kHz) in the engine's voice.
+    Speech(String, tokio::sync::oneshot::Sender<Vec<i16>>),
 }
 
 struct Worker {
@@ -521,6 +525,24 @@ impl Worker {
                     let answer = self.typed(&text);
                     info!(request = text, answer, "done from the web page");
                     let _ = reply.send(answer);
+                }
+                Job::Transcribe(audio, reply) => {
+                    let start = Instant::now();
+                    let text = match self.transcriber.transcribe(&audio) {
+                        Ok(candidates) => candidates.into_iter().next().map(|c| c.text).unwrap_or_default(),
+                        Err(error) => {
+                            warn!(%error, "transcription for Home Assistant failed");
+                            String::new()
+                        }
+                    };
+                    info!(text, took = ?start.elapsed(), "transcribed for Home Assistant");
+                    let _ = reply.send(text);
+                }
+                Job::Speech(text, reply) => {
+                    let start = Instant::now();
+                    let pcm = self.synthesize(&text);
+                    info!(text, took = ?start.elapsed(), "spoken for Home Assistant");
+                    let _ = reply.send(pcm);
                 }
                 Job::Ask(text, reply) => {
                     let answer = self.typed(&text);

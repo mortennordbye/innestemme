@@ -200,7 +200,9 @@ listed in the code. The page has no login and the TV opens it too, so the engine
 switches, players, selects, numbers, the shopping list and arming the alarm, and refuses disarming, buttons
 (restarts), updates and the network's switches other than the guest Wi-Fi. `/api/activity` has the requests since
 the start (in memory, about a day's worth). `POST /api/ask` (with `ask-token`) is the one way in that runs any request, as
-if said in the room, and answers in text: for a phone, behind a bearer token (`deployment.md`).
+if said in the room, and answers in text: for a phone, behind a bearer token (`deployment.md`). With `wyoming-bind`, `wyoming_server.rs`
+offers the listener and the voice to Home Assistant over Wyoming, so its Assist hears and speaks like the satellite
+(`home-assistant.md`).
 
 **Real-time audio path.** The UDP transport, jitter buffer and model thread (`voice-proto`, `voice-rt`,
 `voice-engine`) do no heap allocation after start; `tests/loopback.rs` checks that under an allocator that aborts.

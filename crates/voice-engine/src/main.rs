@@ -388,6 +388,10 @@ struct Args {
     /// The answer comes back as text. Off when unset.
     #[arg(long, env = "VOICE_ASK_TOKEN", hide_env_values = true)]
     ask_token: Option<String>,
+    /// Serves the listener and the voice to Home Assistant over Wyoming (its `wyoming` integration)
+    /// on this address, for example 0.0.0.0:10300. Off when unset. Needs `--processor assistant`.
+    #[arg(long, env = "VOICE_WYOMING_BIND")]
+    wyoming_bind: Option<SocketAddr>,
     /// Announcement volume on `--answer-player`, 0 to 1. Default: the player's own volume.
     #[arg(long, env = "VOICE_ANSWER_VOLUME")]
     answer_volume: Option<f32>,
@@ -695,25 +699,26 @@ fn main() -> Result<()> {
         let metrics = Arc::new(Metrics::default());
         let http = tokio::net::TcpListener::bind(args.metrics_bind).await.context("binding metrics listener")?;
         let speech = Arc::new(SpeechClips::default());
+        let voice = match args.english_tts {
+            EnglishTts::Say => {
+                format!("macOS say{}", args.say_voice.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
+            }
+            EnglishTts::Piper => {
+                format!("Piper{}", args.piper_voice_en.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
+            }
+            EnglishTts::Kokoro | EnglishTts::KokoroOnnx => format!("Kokoro, {}", args.kokoro_voice),
+        };
+        let version = option_env!("INNESTEMME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
         let web = args.web.then(|| {
-            let voice = match args.english_tts {
-                EnglishTts::Say => {
-                    format!("macOS say{}", args.say_voice.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
-                }
-                EnglishTts::Piper => {
-                    format!("Piper{}", args.piper_voice_en.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
-                }
-                EnglishTts::Kokoro | EnglishTts::KokoroOnnx => format!("Kokoro, {}", args.kokoro_voice),
-            };
             let about = serde_json::json!({
                 "name": args.wake_name,
                 "wake_words": args.satellite_wake_words,
-                "voice": voice,
+                "voice": voice.clone(),
                 "honorific": args.honorific,
                 "honorific_female": args.honorific_female,
                 "norwegian": args.norwegian,
                 "language_model": args.llm_url.is_some(),
-                "version": option_env!("INNESTEMME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+                "version": version,
                 "listener": format!("{:?}", args.listener).to_lowercase(),
                 "wake_model": args.wake_model,
                 "wake_threshold": args.wake_threshold,
@@ -739,6 +744,17 @@ fn main() -> Result<()> {
             )
         });
         tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));
+        if let Some(bind) = args.wyoming_bind {
+            let assistant = handle.clone().context("`--wyoming-bind` needs `--processor assistant`")?;
+            let listener = tokio::net::TcpListener::bind(bind).await.context("binding the Wyoming listener")?;
+            let about = voice_engine::wyoming_server::About {
+                version: version.to_owned(),
+                listener: format!("{:?}", args.listener).to_lowercase(),
+                voice,
+            };
+            info!(%bind, "wyoming server for Home Assistant");
+            tokio::spawn(voice_engine::wyoming_server::serve(listener, assistant, about));
+        }
         if let Some(address) = args.satellite.clone() {
             let assistant = handle.context("`--satellite` needs `--processor assistant`")?;
             let key = args.satellite_key.as_deref().map(voice_esphome::frame::parse_key).transpose()?;

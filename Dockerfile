@@ -49,6 +49,6 @@ COPY --from=build /out/bin/ /usr/local/bin/
 COPY --from=build --chown=nonroot:nonroot /out/models /models
 ENV HF_HOME=/models
 VOLUME /models
-EXPOSE 7000/udp 9090/tcp
+EXPOSE 7000/udp 9090/tcp 10300/tcp
 USER nonroot
 ENTRYPOINT ["/usr/local/bin/voice-engine"]
