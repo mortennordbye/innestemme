@@ -78,6 +78,9 @@ whisper-size: base
 # A phone (a Siri shortcut) asks anything it is asked by voice through POST /api/ask with this as a bearer
 # token (needs web). Its own token, not the announce one. Set VOICE_ASK_TOKEN or VOICE_ASK_TOKEN_FILE.
 # ask-token:
+# The listener and the voice for Home Assistant's Assist over Wyoming (its `wyoming` integration), so a
+# pipeline hears and speaks like the satellite does. Off when unset. No authentication: keep it on the LAN.
+# wyoming-bind: 0.0.0.0:10300
 # The room the microphone is in, for "turn off the lights" without a room. A satellite's default is its
 # area in Home Assistant.
 # room: Living Room

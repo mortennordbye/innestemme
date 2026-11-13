@@ -102,6 +102,23 @@ impl Worker {
         }
     }
 
+    /// Text spoken elsewhere (Home Assistant's Wyoming client): the whole speech at 24 kHz, a
+    /// sentence at a time like an answer, so sentences rendered ahead come from the speech cache.
+    pub(super) fn synthesize(&mut self, text: &str) -> Vec<i16> {
+        let mut out = Vec::new();
+        for sentence in text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {
+            let mut pcm = Vec::new();
+            if let Err(error) = self.tts.speak(sentence, Lang::English, &mut |p| pcm.extend_from_slice(p)) {
+                warn!(%error, "speech synthesis failed");
+                continue;
+            }
+            // Kokoro opens each sentence with 50-90 ms of silence, heard as a slower answer.
+            let onset = pcm.iter().position(|s| s.unsigned_abs() > SPEECH_ONSET).unwrap_or(pcm.len());
+            out.extend_from_slice(&pcm[onset.saturating_sub(ONSET_LEAD)..]);
+        }
+        out
+    }
+
     pub(super) fn finish(&mut self, spoken: Spoken, start: Instant) {
         self.woken_at = None;
         self.live.clear();

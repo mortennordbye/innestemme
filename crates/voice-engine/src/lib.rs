@@ -16,6 +16,7 @@ pub mod settings;
 pub mod transport;
 pub mod unhandled;
 pub mod web;
+pub mod wyoming_server;
 
 pub use engine::{Engine, FrameProcessor, LoopbackEngine, MimiProcessor, Passthrough, ProcessError, StepOutcome};
 pub use metrics::Metrics;

@@ -15,8 +15,11 @@ and an `ask-token`. Home Assistant keeps the token in its config entry, once for
 2. Settings > Devices & services > Add integration > innestemme. The engine URL is where its web page answers
    (`http://<engine host>:9090`, or the HTTPS name in front of it), and the token is its `ask-token`. Setup asks
    "what time is it" once to check both; nothing is switched.
-3. Settings > Voice assistants > Add assistant: name it after the assistant, pick innestemme as the conversation
-   agent, and a speech to text and text to speech engine. Make it the preferred assistant to have the app's Assist
+3. For the engine's own ears and voice, set `wyoming-bind` (for example `0.0.0.0:10300`) and add the Wyoming
+   Protocol integration in Home Assistant with the engine's host and that port. It offers the engine's listener as
+   speech to text and its voice as text to speech, both "innestemme".
+4. Settings > Voice assistants > Add assistant: name it after the assistant, and pick innestemme as the
+   conversation agent, speech to text and text to speech. Make it the preferred assistant to have the app's Assist
    button use it.
 
 ## What it does and does not do
@@ -26,6 +29,10 @@ and an `ask-token`. Home Assistant keeps the token in its config entry, once for
 - The answer is in the persona's style ("As you wish, sir. The kitchen lights are off."), as it is spoken in the
   room. An answer that would end quietly is "Done." in Assist, which needs words.
 - "Turn off the lights" without a room means the satellite's room, as for every request that arrives as text.
-- The engine's own wake word, voice and speech cache are not used: the pipeline's speech engines are.
+- With the Wyoming engines, the request is transcribed by the satellite's listener and the answer is spoken in its
+  voice, sentence by sentence through the speech cache, so answers rendered ahead play at once. Home Assistant
+  still decides when the speaker has stopped. Wyoming has no authentication: whoever reaches the port can
+  transcribe and synthesize, which changes nothing in the house.
+- Audio up to 30 s and text up to 1000 characters are taken; the engine's wake word is not used.
 - A wrong token or an engine that does not answer gives an error in Assist ("innestemme refused the token.",
   "innestemme is not answering.").
