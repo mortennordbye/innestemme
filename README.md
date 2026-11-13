@@ -67,6 +67,7 @@ For a Voice PE, see [docs/voice-pe.md](docs/voice-pe.md); for the cluster, [docs
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | how a request flows and what each step costs, the parts, the wire protocol, metrics |
 | [docs/voice-pe.md](docs/voice-pe.md) | the Voice PE as a satellite: setup, what the engine does with it, troubleshooting |
+| [docs/home-assistant.md](docs/home-assistant.md) | the integration that makes it Assist's conversation agent: the app's Assist button talks to it |
 | [firmware/README.md](firmware/README.md) | the patched Voice PE firmware (wake word in the engine) |
 | [docs/deployment.md](docs/deployment.md) | the image, the homelab cluster, configuration and secrets |
 | [docs/development.md](docs/development.md) | tests, the Mac loop, the examples and the latency bench |

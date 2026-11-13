@@ -270,7 +270,7 @@ impl Web {
             return Some(too_many(format!("At most {ASK_RATE} requests a minute.")));
         }
         tracing::info!(request = one_line(&request), "asked from a phone");
-        Some(match tokio::time::timeout(HEAR_TIMEOUT, assistant.act(request)).await {
+        Some(match tokio::time::timeout(HEAR_TIMEOUT, assistant.ask(request)).await {
             Ok(Ok(answer)) => json_response(&json!({ "answer": answer })),
             _ => (
                 "504 Gateway Timeout",

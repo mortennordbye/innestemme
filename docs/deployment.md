@@ -114,7 +114,8 @@ endpoint does not exist. Give it a token of its own, not the `announce-token`, s
 | `q` | The request, as it would be said, up to 300 characters. A leading name ("Jarvis, ...") is dropped. |
 
 It runs the request through the same rules, skills and language model as a spoken one and answers `200` with
-`{"answer": "..."}` once it is done, for the phone to speak or show. The answer is not spoken in the house, but
+`{"answer": "..."}` once it is done, for the phone to speak or show, in the persona's style as it would be
+spoken. The answer is not spoken in the house, but
 what the request does is done as if it was said to the satellite: "turn off the lights" without a room means the
 satellite's room (or `room`), and "play jazz" plays on its speaker. A request that ends quietly ("never mind")
 answers with an empty `answer`. More than 10 requests in a minute get `429`.
@@ -126,8 +127,10 @@ The endpoint can do whatever a voice in the room can, so serve it only where the
 gateway, reached away from home over the VPN. Behind a proxy every caller has the proxy's address, so wrong
 tokens lock out the proxy for that minute.
 
-An iPhone shortcut named after the assistant ("Jarvis") makes "Hey Siri, Jarvis" ask it, from the lock screen,
-the Action Button or a widget too. In the Shortcuts app:
+For every user of a Home Assistant at once, the `innestemme` integration makes it Assist's conversation agent
+([home-assistant.md](home-assistant.md)). For one phone without Home Assistant, an iPhone shortcut named after the
+assistant ("Jarvis") makes "Hey Siri, Jarvis" ask it, from the lock screen, the Action Button or a widget too. In
+the Shortcuts app:
 
 1. Dictate Text (language English, stop listening after a pause).
 2. URL Encode the dictated text.

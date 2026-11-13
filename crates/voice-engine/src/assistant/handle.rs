@@ -125,6 +125,13 @@ impl AssistantHandle {
         answer
     }
 
+    /// A request from a phone or Home Assistant's Assist; its answer's text, in the persona's style.
+    pub fn ask(&self, text: String) -> tokio::sync::oneshot::Receiver<String> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let _ = self.jobs.send(Job::Ask(text, reply));
+        answer
+    }
+
     /// Text from Home Assistant to speak, after whatever the assistant is saying now.
     pub fn announce(&self, announcement: Announcement) {
         let _ = self.jobs.send(Job::Announce(announcement));
@@ -170,7 +177,7 @@ impl AssistantHandle {
         let (answer, log) = (answer.to_owned(), asked.clone());
         std::thread::spawn(move || {
             for job in received {
-                if let Job::Act(text, reply) = job {
+                if let Job::Act(text, reply) | Job::Ask(text, reply) = job {
                     log.lock().unwrap().push(text);
                     let _ = reply.send(answer.clone());
                 }
