@@ -262,6 +262,9 @@ enum Job {
     /// A button on the web page: a fixed request, acted on without a spoken answer. The answer's
     /// text comes back.
     Act(String, tokio::sync::oneshot::Sender<String>),
+    /// A request from a phone or Home Assistant's Assist: acted on like [`Job::Act`], and the
+    /// answer comes back in the persona's style, as it would be spoken.
+    Ask(String, tokio::sync::oneshot::Sender<String>),
 }
 
 struct Worker {
@@ -515,20 +518,17 @@ impl Worker {
                 Job::Failed(text, lang) => self.announce(&text, Vec::new(), lang, false),
                 Job::Announce(announcement) => self.announce_from_home(announcement),
                 Job::Act(text, reply) => {
-                    let start = Instant::now();
-                    // Typed on the web page: a question asked by voice ("Forget everything I
-                    // remember?") is neither answered nor dropped by it.
-                    self.previewing = true;
-                    let answer = self.compose(&text, Lang::English).unwrap_or_default();
-                    self.previewing = false;
-                    self.follow_up_closed = false;
+                    let answer = self.typed(&text);
                     info!(request = text, answer, "done from the web page");
-                    let turn = self.turn_for(&text, Some(answer.clone()), Outcome::Done, start);
-                    self.config.activity.record(turn);
-                    // What follows an answer (the lockdown's music) follows at once: there is none to wait out.
-                    if self.after_answer.is_some() {
-                        self.after_answer_at = Some(Instant::now());
-                    }
+                    let _ = reply.send(answer);
+                }
+                Job::Ask(text, reply) => {
+                    let answer = self.typed(&text);
+                    let answer = match &mut self.persona {
+                        Some(persona) if !answer.is_empty() => persona.style(&answer, jiff::Zoned::now().hour() as u8),
+                        _ => answer,
+                    };
+                    info!(request = text, answer, "asked from a phone or Assist");
                     let _ = reply.send(answer);
                 }
                 Job::Ready => {
@@ -990,6 +990,25 @@ impl Worker {
             }
             None => request,
         }
+    }
+
+    /// A request that arrives as text (a web page button, a phone): acted on without a spoken
+    /// answer, and recorded like a spoken one. The answer's text, empty when it ends quietly.
+    fn typed(&mut self, text: &str) -> String {
+        let start = Instant::now();
+        // A question asked by voice ("Forget everything I remember?") is neither answered nor
+        // dropped by a request that cannot hear the reply.
+        self.previewing = true;
+        let answer = self.compose(text, Lang::English).unwrap_or_default();
+        self.previewing = false;
+        self.follow_up_closed = false;
+        let turn = self.turn_for(text, Some(answer.clone()), Outcome::Done, start);
+        self.config.activity.record(turn);
+        // What follows an answer (the lockdown's music) follows at once: there is none to wait out.
+        if self.after_answer.is_some() {
+            self.after_answer_at = Some(Instant::now());
+        }
+        answer
     }
 
     /// Several requests in one sentence, run in order; their answers one after another. A question
