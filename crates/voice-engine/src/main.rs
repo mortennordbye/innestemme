@@ -383,6 +383,11 @@ struct Args {
     /// page's port (`--web`) with `Authorization: Bearer <this>`. Off when unset.
     #[arg(long, env = "VOICE_ANNOUNCE_TOKEN", hide_env_values = true)]
     announce_token: Option<String>,
+    /// Lets a phone (a Siri shortcut) ask the assistant anything it is asked by voice:
+    /// `POST /api/ask?q=...` on the web page's port (`--web`) with `Authorization: Bearer <this>`.
+    /// The answer comes back as text. Off when unset.
+    #[arg(long, env = "VOICE_ASK_TOKEN", hide_env_values = true)]
+    ask_token: Option<String>,
     /// Announcement volume on `--answer-player`, 0 to 1. Default: the player's own volume.
     #[arg(long, env = "VOICE_ANSWER_VOLUME")]
     answer_volume: Option<f32>,
@@ -729,7 +734,8 @@ fn main() -> Result<()> {
                     .with_hub(hub)
                     .with_control(control)
                     .with_learned(learned.clone())
-                    .with_announce_token(args.announce_token.clone()),
+                    .with_announce_token(args.announce_token.clone())
+                    .with_ask_token(args.ask_token.clone()),
             )
         });
         tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));

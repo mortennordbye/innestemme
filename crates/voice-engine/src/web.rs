@@ -57,6 +57,10 @@ pub struct Web {
     announce_token: Option<String>,
     /// When the last announcements were taken, for [`ANNOUNCE_RATE`].
     announced: Recent,
+    /// The bearer token a phone sends with `/api/ask`; without one there is no such page.
+    ask_token: Option<String>,
+    /// When the last requests were asked, for [`ASK_RATE`].
+    asked: Recent,
     /// When the last wrong or missing tokens came, by address, for [`REFUSED_RATE`]: one caller
     /// guessing does not lock Home Assistant out.
     refused:
@@ -73,6 +77,9 @@ const REFUSED_ADDRESSES: usize = 256;
 /// Announcements taken per [`ANNOUNCE_WINDOW`]; more are refused, so an automation that loops
 /// cannot talk over everything.
 const ANNOUNCE_RATE: usize = 5;
+/// Requests asked per [`ANNOUNCE_WINDOW`]; more than anyone says to a phone in a minute, so a
+/// leaked token or a looping shortcut cannot flip the house faster than that.
+const ASK_RATE: usize = 10;
 /// Wrong tokens per [`ANNOUNCE_WINDOW`] before every request is refused, so the token cannot be
 /// guessed at speed.
 const REFUSED_RATE: usize = 10;
@@ -124,6 +131,18 @@ impl Web {
     }
 }
 
+/// A bearer token from the settings, or `None` with a warning when it is too short to be safe.
+fn long_enough(setting: &str, endpoint: &str, token: Option<String>) -> Option<String> {
+    let token = token.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty())?;
+    if token.chars().count() < TOKEN_MIN {
+        tracing::warn!(
+            "{setting} is shorter than {TOKEN_MIN} characters: {endpoint} stays off (use a long random one)"
+        );
+        return None;
+    }
+    Some(token)
+}
+
 /// Text from outside on one log line.
 pub(crate) fn one_line(text: &str) -> String {
     text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
@@ -155,23 +174,36 @@ impl Web {
             learned: None,
             announce_token: None,
             announced: Default::default(),
+            ask_token: None,
+            asked: Default::default(),
             refused: Default::default(),
         }
     }
 
     /// Turns on `/api/announce` for requests that carry this token.
     pub fn with_announce_token(mut self, token: Option<String>) -> Self {
-        let token = token.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
-        self.announce_token = match token {
-            Some(token) if token.chars().count() < TOKEN_MIN => {
-                tracing::warn!(
-                    "announce-token is shorter than {TOKEN_MIN} characters: announcements stay off (use a long random one)"
-                );
-                None
-            }
-            token => token,
-        };
+        self.announce_token = long_enough("announce-token", "/api/announce", token);
         self
+    }
+
+    /// Turns on `/api/ask` for requests that carry this token.
+    pub fn with_ask_token(mut self, token: Option<String>) -> Self {
+        self.ask_token = long_enough("ask-token", "/api/ask", token);
+        self
+    }
+
+    /// `None` when the caller may go on; else the answer that refuses it. Checked before anything
+    /// else, so nothing about the request is told to a caller without the token.
+    fn refused(&self, token: &str, name: &str, head: &str, peer: std::net::IpAddr) -> Option<Response> {
+        if self.locked_out(peer) {
+            return Some(too_many("Too many wrong tokens; try again in a minute.".into()));
+        }
+        if bearer(head).is_some_and(|given| same(given.as_bytes(), token.as_bytes())) {
+            return None;
+        }
+        self.refuse(peer);
+        let body = json!({ "reason": format!("Send Authorization: Bearer <{name}>.") }).to_string();
+        Some(("401 Unauthorized", "application/json", body.into_bytes()))
     }
 
     /// `POST /api/announce?text=...` with `Authorization: Bearer <announce-token>`: Home Assistant
@@ -182,14 +214,8 @@ impl Web {
         let query = target.strip_prefix("/api/announce")?;
         let query = if query.is_empty() { "" } else { query.strip_prefix('?')? };
         let token = self.announce_token.as_deref()?;
-        // The token first: nothing about the request is told to a caller without it.
-        if self.locked_out(peer) {
-            return Some(too_many("Too many wrong tokens; try again in a minute.".into()));
-        }
-        if !bearer(head).is_some_and(|given| same(given.as_bytes(), token.as_bytes())) {
-            self.refuse(peer);
-            let body = json!({ "reason": "Send Authorization: Bearer <announce-token>." }).to_string();
-            return Some(("401 Unauthorized", "application/json", body.into_bytes()));
+        if let Some(refused) = self.refused(token, "announce-token", head, peer) {
+            return Some(refused);
         }
         if !post {
             return Some(bad_request("POST"));
@@ -212,6 +238,46 @@ impl Web {
         );
         assistant.announce(announcement);
         Some(("202 Accepted", "application/json", json!({ "ok": true }).to_string().into_bytes()))
+    }
+
+    /// `POST /api/ask?q=...` with `Authorization: Bearer <ask-token>`: a request typed or dictated
+    /// on a phone (a Siri shortcut), run as if it was said in the room, lights and music included.
+    /// Its answer comes back as text for the phone to speak, and is not spoken in the house.
+    pub async fn ask(&self, post: bool, target: &str, head: &str, peer: std::net::IpAddr) -> Option<Response> {
+        let query = target.strip_prefix("/api/ask")?;
+        let query = if query.is_empty() { "" } else { query.strip_prefix('?')? };
+        let token = self.ask_token.as_deref()?;
+        if let Some(refused) = self.refused(token, "ask-token", head, peer) {
+            return Some(refused);
+        }
+        if !post {
+            return Some(bad_request("POST"));
+        }
+        let Some(assistant) = &self.assistant else {
+            return Some(bad_request("This engine has no assistant."));
+        };
+        let text = query.split('&').find_map(|pair| pair.strip_prefix("q=")).map(decode).unwrap_or_default();
+        let text = text.trim();
+        if text.is_empty() {
+            return Some(bad_request("`q` is the request."));
+        }
+        if text.chars().count() > TYPED_MAX {
+            return Some(bad_request("That is longer than any spoken request."));
+        }
+        // "Jarvis, turn off the lights": the name is how it is addressed, not part of the request.
+        let request = self.wake.strip(text).unwrap_or_else(|| text.to_owned());
+        if !take(&self.asked, ASK_RATE) {
+            return Some(too_many(format!("At most {ASK_RATE} requests a minute.")));
+        }
+        tracing::info!(request = one_line(&request), "asked from a phone");
+        Some(match tokio::time::timeout(HEAR_TIMEOUT, assistant.act(request)).await {
+            Ok(Ok(answer)) => json_response(&json!({ "answer": answer })),
+            _ => (
+                "504 Gateway Timeout",
+                "application/json",
+                json!({ "reason": "The assistant did not answer in time." }).to_string().into_bytes(),
+            ),
+        })
     }
 
     pub fn with_learned(mut self, learned: Arc<Learned>) -> Self {
@@ -651,6 +717,51 @@ mod tests {
         let home_assistant = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 3));
         assert_eq!(status(true, "/api/announce?text=hi", &head(TOKEN), home_assistant), Some("202 Accepted"));
         assert_eq!(one_line("Someone\nis at\r\nthe door"), "Someone is at  the door");
+    }
+
+    #[tokio::test]
+    async fn asks_only_with_its_own_token_and_answers_in_text() {
+        let head = |token: &str| format!("POST /api/ask HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n\r\n");
+        let status = |response: Option<Response>| response.map(|r| r.0);
+        // Off without a token, with one too short to be safe, or with only the announce token.
+        assert_eq!(status(web().ask(true, "/api/ask?q=hi", &head(TOKEN), PEER).await), None);
+        let short = web().with_ask_token(Some("secret".into()));
+        assert_eq!(status(short.ask(true, "/api/ask?q=hi", &head("secret"), PEER).await), None);
+        let announcing = web().with_announce_token(Some(TOKEN.into()));
+        assert_eq!(status(announcing.ask(true, "/api/ask?q=hi", &head(TOKEN), PEER).await), None);
+
+        let (handle, asked) = AssistantHandle::answering_for_tests("Okay, the kitchen lights are off.");
+        let web = Web::new(WakeWord::new("Jarvis"), json!({}), Some(handle), Arc::default(), None)
+            .with_ask_token(Some(TOKEN.into()));
+        let ask = |post, target: String, token: &str| {
+            let head = head(token);
+            let web = &web;
+            async move { web.ask(post, &target, &head, PEER).await }
+        };
+        assert_eq!(status(ask(true, "/api/ask?q=hi".into(), "wrong").await), Some("401 Unauthorized"));
+        assert_eq!(status(ask(false, "/api/ask?q=hi".into(), TOKEN).await), Some("400 Bad Request"));
+        assert_eq!(status(ask(true, "/api/ask?q=+".into(), TOKEN).await), Some("400 Bad Request"));
+        assert_eq!(status(ask(true, "/api/ask".into(), TOKEN).await), Some("400 Bad Request"));
+        let long = format!("/api/ask?q={}", "a".repeat(TYPED_MAX + 1));
+        assert_eq!(status(ask(true, long, TOKEN).await), Some("400 Bad Request"));
+        assert_eq!(status(ask(true, "/api/asking?q=hi".into(), TOKEN).await), None);
+        assert!(asked().is_empty());
+
+        let (code, kind, body) =
+            ask(true, "/api/ask?q=Jarvis%2C+turn+off+the+kitchen+lights".into(), TOKEN).await.unwrap();
+        assert_eq!((code, kind), ("200 OK", "application/json"));
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["answer"], "Okay, the kitchen lights are off.");
+        // The name is how it is addressed: the assistant gets the request without it.
+        let asked_now = asked();
+        assert_eq!(asked_now.len(), 1);
+        assert!(asked_now[0].to_lowercase().starts_with("turn off the kitchen lights"), "{asked_now:?}");
+
+        // A looping shortcut or a leaked token is cut off.
+        for _ in 1..ASK_RATE {
+            assert_eq!(status(ask(true, "/api/ask?q=hi".into(), TOKEN).await), Some("200 OK"));
+        }
+        assert_eq!(status(ask(true, "/api/ask?q=hi".into(), TOKEN).await), Some("429 Too Many Requests"));
     }
 
     #[tokio::test]

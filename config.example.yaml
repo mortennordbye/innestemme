@@ -75,6 +75,9 @@ whisper-size: base
 # Home Assistant automations speak through POST /api/announce with this as a bearer token (needs web).
 # A secret: set VOICE_ANNOUNCE_TOKEN or VOICE_ANNOUNCE_TOKEN_FILE rather than writing it here.
 # announce-token:
+# A phone (a Siri shortcut) asks anything it is asked by voice through POST /api/ask with this as a bearer
+# token (needs web). Its own token, not the announce one. Set VOICE_ASK_TOKEN or VOICE_ASK_TOKEN_FILE.
+# ask-token:
 # The room the microphone is in, for "turn off the lights" without a room. A satellite's default is its
 # area in Home Assistant.
 # room: Living Room
