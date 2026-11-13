@@ -26,6 +26,9 @@ async def async_setup_entry(
 class InnestemmeAgent(conversation.ConversationEntity):
     _attr_has_entity_name = True
     _attr_name = None
+    # The engine switches lights, music and scenes itself; without the flag Assist shows "This assistant
+    # cannot control your home".
+    _attr_supported_features = conversation.ConversationEntityFeature.CONTROL
 
     def __init__(self, entry: ConfigEntry) -> None:
         self._entry = entry
