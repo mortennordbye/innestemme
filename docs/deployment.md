@@ -101,3 +101,44 @@ actions:
       text: "Someone is at the door."
       room: kitchen
 ```
+
+## Requests from a phone
+
+With `web: true` and an `ask-token` (`VOICE_ASK_TOKEN`, or `VOICE_ASK_TOKEN_FILE` for a mounted Secret), a phone
+can ask the assistant anything it is asked by voice: lights, music, the weather, a timer. Without a token the
+endpoint does not exist. Give it a token of its own, not the `announce-token`, so either can be revoked alone.
+`POST /api/ask` on the engine's HTTP port takes the request in the query and the token as a bearer header:
+
+| Query | |
+|---|---|
+| `q` | The request, as it would be said, up to 300 characters. A leading name ("Jarvis, ...") is dropped. |
+
+It runs the request through the same rules, skills and language model as a spoken one and answers `200` with
+`{"answer": "..."}` once it is done, for the phone to speak or show. The answer is not spoken in the house, but
+what the request does is done as if it was said to the satellite: "turn off the lights" without a room means the
+satellite's room (or `room`), and "play jazz" plays on its speaker. A request that ends quietly ("never mind")
+answers with an empty `answer`. More than 10 requests in a minute get `429`.
+Without the right token it answers `401` before anything else is checked, with the same lockout as
+announcements: 10 wrong tokens in a minute from one address get `429` until the minute has passed. A token
+shorter than 16 characters leaves it off, with a warning in the log.
+
+The endpoint can do whatever a voice in the room can, so serve it only where the house is: the cluster's private
+gateway, reached away from home over the VPN. Behind a proxy every caller has the proxy's address, so wrong
+tokens lock out the proxy for that minute.
+
+An iPhone shortcut named after the assistant ("Jarvis") makes "Hey Siri, Jarvis" ask it, from the lock screen,
+the Action Button or a widget too. In the Shortcuts app:
+
+1. Dictate Text (language English, stop listening after a pause).
+2. URL Encode the dictated text.
+3. Get Contents of URL: `https://<engine host>/api/ask?q=` followed by the encoded text, method `POST`,
+   header `Authorization` with the value `Bearer <ask-token>`.
+4. Get Dictionary Value, key `answer`, from the contents.
+5. Speak Text, with that value.
+
+From a shell, with the token in `ASK_TOKEN`:
+
+```
+curl -X POST -H "Authorization: Bearer $ASK_TOKEN" \
+  "https://<engine host>/api/ask?q=what%27s+the+weather+tomorrow"
+```

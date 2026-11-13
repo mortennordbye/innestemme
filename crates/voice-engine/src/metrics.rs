@@ -275,6 +275,9 @@ pub async fn serve_http(
                 Some(web) if target.starts_with("/api/announce") => {
                     web.announce(method == b"POST", target, head, peer.ip())
                 }
+                Some(web) if target.starts_with("/api/ask") => {
+                    web.ask(method == b"POST", target, head, peer.ip()).await
+                }
                 Some(web) if target.starts_with("/api/hub") => web.hub_api(method == b"POST", target).await,
                 Some(web) if target.starts_with("/api/ha/") => web.control_api(method == b"POST", target).await,
                 Some(web) if target.starts_with("/api/act?") => web.act(method == b"POST", target).await,

@@ -159,4 +159,23 @@ impl AssistantHandle {
         };
         (handle, announced)
     }
+
+    /// A handle whose assistant answers every request with `answer`, and the requests it got.
+    #[cfg(test)]
+    pub(crate) fn answering_for_tests(answer: &str) -> (Self, impl Fn() -> Vec<String>) {
+        let (mut handle, _) = Self::for_tests();
+        let (jobs, received) = mpsc::channel::<Job>();
+        handle.jobs = jobs;
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (answer, log) = (answer.to_owned(), asked.clone());
+        std::thread::spawn(move || {
+            for job in received {
+                if let Job::Act(text, reply) = job {
+                    log.lock().unwrap().push(text);
+                    let _ = reply.send(answer.clone());
+                }
+            }
+        });
+        (handle, move || asked.lock().unwrap().clone())
+    }
 }
