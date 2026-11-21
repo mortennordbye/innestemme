@@ -522,8 +522,7 @@ fn added_answer(added: &[String], already: &[String], brief: bool, lang: Lang) -
             (false, true) => format!("Added {list}."),
             (true, true) => format!("La til {list}."),
             // The fixed part in a sentence of its own, rendered ahead: only "Added egg." is synthesized.
-            (false, false) if added.len() > 1 => format!("Added {list}. They're on the shopping list."),
-            (false, false) => format!("Added {list}. It's on the shopping list."),
+            (false, false) => format!("Added {list}. The shopping list is updated."),
             (true, false) => format!("La til {list} på handlelista."),
         });
     }
@@ -718,7 +717,7 @@ mod tests {
         assert_eq!(added_answer(&items(&["Bread"]), &[], true, en), "Added bread.");
         assert_eq!(
             added_answer(&items(&["Bread"]), &items(&["Milk"]), false, en),
-            "Added bread. It's on the shopping list. Milk is already on the list."
+            "Added bread. The shopping list is updated. Milk is already on the list."
         );
         assert_eq!(added_answer(&[], &items(&["Milk", "Eggs"]), true, en), "Milk and eggs are already on the list.");
         assert_eq!(removed_answer(&items(&["Milk"]), &[], en), "Okay, milk is off the list.");

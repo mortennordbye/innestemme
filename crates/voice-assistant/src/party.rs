@@ -29,6 +29,12 @@ const OFF_WORDS: &[&str] = &[
 /// Words that ask for the party to start. Without one, "<verb> the party" is not a start: an
 /// unknown verb may be a misheard "stop".
 const START_WORDS: &[&str] = &[
+    "started",
+    "activate",
+    "enable",
+    "please",
+    "lights",
+    "get",
     "start",
     "begin",
     "let's",
@@ -138,5 +144,8 @@ mod tests {
         assert_eq!(party("Party!"), Some(PartyCommand::On(Pace::Normal)));
         assert_eq!(party("Party time"), Some(PartyCommand::On(Pace::Normal)));
         assert_eq!(party("Have a party"), Some(PartyCommand::On(Pace::Normal)));
+        for start in ["Get the party started", "Party please", "Party lights", "Enable party", "Activate the party"] {
+            assert_eq!(party(start), Some(PartyCommand::On(Pace::Normal)), "{start}");
+        }
     }
 }

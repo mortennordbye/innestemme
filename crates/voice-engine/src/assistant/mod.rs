@@ -89,6 +89,8 @@ const HISTORY_TURNS: usize = 4;
 const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// After a bare name or an answer, speech within this time needs no name.
 const FOLLOW_UP: Duration = Duration::from_secs(8);
+/// A draft this soon after one that was answered belongs to the same utterance.
+const SAME_UTTERANCE: Duration = Duration::from_secs(2);
 /// How long "Turn on privacy mode?" waits for its "yes".
 const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 /// How often the home's forecast and electricity prices are fetched while idle, so asking for them
@@ -312,6 +314,8 @@ struct Worker {
     /// A command was acted on from its draft, of this many samples: the utterance it ends in is
     /// not answered again.
     answered_draft: Option<usize>,
+    /// When a draft was last answered: a later draft soon after is the same utterance going on.
+    draft_answered_at: Option<Instant>,
     /// What undoes the music command answered from the draft, for a request that goes on to name
     /// another room.
     draft_undo: Option<MusicCommand>,
@@ -471,6 +475,8 @@ impl Worker {
                 Job::Woken(at, wake) => {
                     info!("device wake word");
                     self.woken_at = Some(at);
+                    // A new request: an earlier draft's utterance, if its end was lost, is over.
+                    self.answered_draft = None;
                     // Until the wake word's voice is told (`Job::Voice`), which follows at once.
                     self.address(None);
                     self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
@@ -614,8 +620,9 @@ impl Worker {
     fn act_on_draft(&mut self) {
         // A later draft of an utterance already answered from a draft is the same request again:
         // "Hey Jarvis stop the party" was answered twice, 0.6 s apart (16 Nov). The utterance's end
-        // still takes the rest of it.
-        if self.answered_draft.is_some() {
+        // still takes the rest of it. Only soon after: while the answer plays the engine is deaf,
+        // and the utterance's end, which clears `answered_draft`, can be lost.
+        if self.answered_draft.is_some() && self.draft_answered_at.is_some_and(|at| at.elapsed() < SAME_UTTERANCE) {
             return;
         }
         let Some((_, candidates)) = &self.draft else { return };
@@ -644,6 +651,7 @@ impl Worker {
         let now = Instant::now();
         self.speech_ended = now.checked_sub(pause);
         self.answered_draft = Some(audio.len());
+        self.draft_answered_at = Some(now);
         self.heard(&candidates, &audio, now, now, true);
         self.draft_undo = undo;
     }

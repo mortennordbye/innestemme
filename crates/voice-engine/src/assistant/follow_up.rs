@@ -156,7 +156,13 @@ fn echoes_question(said: &str, heard: &str) -> bool {
     let question: Vec<String> =
         echo_words(question).into_iter().filter(|w| !HONORIFICS.contains(&w.as_str())).collect();
     let heard: Vec<String> = echo_words(heard).into_iter().filter(|w| !HONORIFICS.contains(&w.as_str())).collect();
-    question.len() >= 2 && heard.len() <= question.len() + 1 && heard.ends_with(&question)
+    // "Ikke noe mer." and "Not anything else." answer "Noe mer?" and "Anything else?".
+    const NEGATIONS: &[&str] = &["not", "no", "nope", "nothing", "ikke", "nei", "ingenting"];
+    let extra = &heard[..heard.len().saturating_sub(question.len())];
+    question.len() >= 2
+        && heard.len() <= question.len() + 1
+        && heard.ends_with(&question)
+        && !extra.iter().any(|w| NEGATIONS.contains(&w.as_str()))
 }
 
 /// Words from which a heard stretch may be a garbled echo.
@@ -233,6 +239,9 @@ mod tests {
         assert!(is_echo(&added, "Anything else?"));
         assert!(!is_echo(&added, "Milk."));
         assert!(!is_echo(&added, "Milk and anything else."));
+        assert!(!is_echo(&added, "Not anything else."));
+        assert!(!is_echo(&["La til egg på handlelista. Noe mer?"], "Ikke noe mer."));
+        assert!(is_echo(&["La til egg på handlelista. Noe mer?"], "Noe mer?"));
         assert!(!is_echo(&["You have 2 timers. Which one?"], "The first one."));
         assert!(!is_echo(&[], "Turn on the kitchen."));
         let wiki = "According to Wikipedia, Danilo Restivo is an Italian convicted murderer and suspected serial \

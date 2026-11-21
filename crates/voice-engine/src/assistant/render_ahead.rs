@@ -64,8 +64,7 @@ impl Worker {
                 "Okay, I'll leave it.",
                 "Anything else?",
                 "Okay, that's everything.",
-                "It's on the shopping list.",
-                "They're on the shopping list.",
+                "The shopping list is updated.",
             ])
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
             .chain(timer::ENGLISH_ANSWERS)
