@@ -1,7 +1,8 @@
 //! What the text rules make of each heard text, for a golden comparison of two builds
 //! (`scripts/corpus/compare.sh`): the request as the worker passes it on (the name stripped from
 //! its start and its end), the `Debug` form of `intent::parse`, of `parse_without_notes` where it
-//! differs, of each part `split_commands` finds, and the catalogue skill.
+//! differs, of each part `split_commands` finds, the catalogue skill, and whether a draft that is
+//! the request is acted on at once.
 //!
 //! cargo run -p voice-assistant --example intent_corpus -- [--wake Jarvis] [--catalogue] [file]
 //!
@@ -68,6 +69,9 @@ fn main() -> anyhow::Result<()> {
             }
         }
         writeln!(out, "  skill: {}", skill_of(&parsed).map_or("-", |s| s.id))?;
+        if parsed.meta().complete_at_once {
+            writeln!(out, "  at once")?;
+        }
     }
     Ok(())
 }

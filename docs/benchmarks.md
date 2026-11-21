@@ -416,3 +416,38 @@ about 34x real time, against 456-764 ms for Kokoro.
 One sentence keeps a sound after its last number at temperature 0, with f32 and int8 weights and any
 `eos_threshold`: "..., with a high of 13." is heard as "1310". Seven other sentences ending in a number are
 clean, and the weather's real wording ends in "degrees".
+
+## Ending the turn at the draft, 2026-11-21
+
+Live (Loki): end of speech to the first answer audio is 650 ms at the median, and 640 ms of it is the energy
+detector's wait for the end (0.64 s of quiet). Only a draft that `complete_at_once` takes is answered at the
+0.24 s pause. `examples/end_turn.rs` runs the detector over each recorded run as the engine does, transcribes
+each draft with the engine's Parakeet and marks each pause as the real end or a mid pause (the speaker went
+on):
+
+```
+cargo run --release -p voice-assistant --example end_turn -- Jarvis target/testset/runs/run-*.wav
+```
+
+The test set (`target/testset/runs/`, one day) has 12 runs and 10 requests, of which about 5 are addressed
+requests; the rest are the TV, room talk or the speaker's own answer. They hold 10 real ends and 9 mid
+pauses: 7 between the wake word and the request, 2 inside a request.
+
+| Rule | Real ends answered at the draft | Mid pauses cut |
+|---|---|---|
+| `complete_at_once` on `main` | 2 of 10 | 0 of 9 |
+| The wider list below | 2 of 10 | 0 of 9 |
+| Any draft that parses to a known intent | 3 of 10 | 0 of 9 |
+
+No mid pause in the set parses to a known intent, but 2 mid pauses inside a request are too few to show that
+a general rule (any complete intent, without a reason for each) is safe; 23 of the 156 utterances of October
+hold a pause of 0.48-0.56 s. So only the list is wider, each intent with a reason in `Intent::meta`: what is
+next, the TV's status, volume and screen, the shopping list read out, who is home, leaks, the house status,
+the guest Wi-Fi, the news and "good morning". None of these is in the test set, so the gain shows only live:
+0.4 s on each such request. The weather, the power prices, the date, the sun, a scene, the lights' status
+and undo still wait, as they often go on ("... tomorrow", "... in Oslo", "... in the kitchen"). A general
+rule waits for a week of requests, with Smart Turn v3.2 and turn-1-mini.
+
+One draft in the set is misheard in a way the whole utterance is not: the draft of a "play some music" came
+out as "thanks to music", which parses as thanks and is acted on at once (already so on `main`); the
+utterance, "takes some music", is taken as music by its shape.

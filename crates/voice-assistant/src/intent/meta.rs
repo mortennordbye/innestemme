@@ -45,10 +45,13 @@ pub struct Meta {
     /// Sentences said first when the answer is slow to get or to say. For [`Intent::Unknown`] only
     /// when a language model answers.
     pub lead: Option<&'static [&'static str]>,
-    /// Nothing said after it could change the command, so a draft that is one is acted on. Not
-    /// resume: "play" is also the start of "play Careless Whisper"; not louder or quieter:
-    /// "increase the sound" may go on "by 25%"; not the date: "what day is it" may go on
-    /// "tomorrow".
+    /// Nothing said after it could change the command, so a draft that is one is acted on, 0.4 s
+    /// before the utterance's own end. Not resume: "play" is also the start of "play Careless
+    /// Whisper"; not louder or quieter: "increase the sound" may go on "by 25%"; not the date,
+    /// weather, power prices or the sun: "what day is it" may go on "tomorrow", the weather also
+    /// "in Oslo"; not a scene or the lights' status, which may go on to name a room; not undo,
+    /// which may go on "to 50 percent". A tail said after a draft acted on is lost: the engine
+    /// stops listening while it answers.
     pub complete_at_once: bool,
     /// The result is heard (the music stops, the next song starts), so it needs no words, which
     /// would only arrive a second or two later from the speaker.
@@ -97,16 +100,23 @@ impl Intent {
                 LightLevel::Brighter | LightLevel::Dimmer | LightLevel::Warm | LightLevel::Cool => false,
             }),
             Intent::Power(_) => Meta::of("power").reads().with_lead(LEADS_POWER),
-            Intent::WhosHome(_) => Meta::of("whos_home").reads().with_lead(LEADS_HOME),
+            // The question ends on "home", the name before it: "is Ingrid home", "who's home".
+            Intent::WhosHome(_) => Meta::of("whos_home").reads().with_lead(LEADS_HOME).done(true),
             Intent::WhereIs { .. } => Meta::of("whos_home").reads(),
             Intent::Convert(_) => Meta::of("convert").reads(),
             Intent::Memory(command) => Meta { read_only: memory_reads(command), ..Meta::of("memory") },
-            Intent::Briefing => Meta::of("briefing").reads(),
-            Intent::News => Meta::of("news").reads().with_lead(LEADS_NEWS),
+            // A greeting ("good morning") and the headlines take no place, day or name.
+            Intent::Briefing => Meta::of("briefing").reads().done(true),
+            Intent::News => Meta::of("news").reads().with_lead(LEADS_NEWS).done(true),
             Intent::Lookup(_) => Meta::of("lookup").reads().with_lead(LEADS_LOOKUP),
             Intent::Calculate(_) => Meta::of("calc").reads(),
             Intent::Distance(_) => Meta::of("distance").reads(),
-            Intent::ShoppingList(command) => Meta { read_only: list_reads(command), ..Meta::of("shopping") },
+            // Reading the list is the whole request; adding may go on to name more items.
+            Intent::ShoppingList(command) => Meta {
+                read_only: list_reads(command),
+                complete_at_once: matches!(command, ListCommand::Read),
+                ..Meta::of("shopping")
+            },
             Intent::Scene(_) => Meta::of("scene"),
             Intent::Script(_) => Meta::of("script"),
             Intent::Undo => Meta::of("undo"),
@@ -133,8 +143,8 @@ fn music(command: &MusicCommand) -> Meta {
     match command {
         Pause | Stop | Mute(_) | Next | Previous => meta.heard().done(true),
         Resume | Liked | Playlist(_) | Song(_) | Artist(_) | Album(_) => meta.heard(),
-        NowPlaying | Shuffle(_) | Repeat(_) | VolumeBy(_) | VolumeTo(_) => meta.done(true),
-        Louder | Quieter | UpNext | InRooms(..) | Queue(..) | MoveTo(..) => meta,
+        NowPlaying | UpNext | Shuffle(_) | Repeat(_) | VolumeBy(_) | VolumeTo(_) => meta.done(true),
+        Louder | Quieter | InRooms(..) | Queue(..) | MoveTo(..) => meta,
         // "Pause the music" is acted on at once even though it may go on "in the kitchen": the
         // command is the most common there is, and one that turns out to name another room is
         // undone by the engine. A room said ends it too.
@@ -146,11 +156,17 @@ fn tv(command: &TvCommand) -> Meta {
     let tv = Meta::of("tv");
     match command {
         TvCommand::Pause | TvCommand::Resume => tv.heard().done(true),
-        TvCommand::Power(_) | TvCommand::Mute(_) | TvCommand::Louder | TvCommand::Quieter => tv.done(true),
-        TvCommand::Status | TvCommand::Volume(_) | TvCommand::App(_) => tv,
+        // There is one TV, so nothing said after "is the TV on" or "TV volume 20" names another.
+        TvCommand::Power(_)
+        | TvCommand::Mute(_)
+        | TvCommand::Louder
+        | TvCommand::Quieter
+        | TvCommand::Status
+        | TvCommand::Volume(_) => tv.done(true),
+        // "Open YouTube" may go on "Kids".
+        TvCommand::App(_) => tv,
         TvCommand::Nrk(_) | TvCommand::Plex(_) => tv.with_lead(LEADS_TV),
-        TvCommand::Show(_) => Meta::of("tv_screen").done(true),
-        TvCommand::Hide => Meta::of("tv_screen"),
+        TvCommand::Show(_) | TvCommand::Hide => Meta::of("tv_screen").done(true),
     }
 }
 
@@ -160,11 +176,12 @@ fn house(command: &HouseCommand) -> Meta {
         Switch::On | Switch::Off => false,
     };
     match command {
-        HouseCommand::Status => Meta::of("house_status").reads().with_lead(LEADS_HOUSE),
+        // The whole house, and one guest network: nothing to add.
+        HouseCommand::Status => Meta::of("house_status").reads().with_lead(LEADS_HOUSE).done(true),
         HouseCommand::Sun(_) => Meta::of("sun").reads(),
         HouseCommand::FindPhone(_) => Meta::of("phone").done(true),
         HouseCommand::PhoneBattery(_) => Meta::of("phone").reads(),
-        HouseCommand::GuestWifi(switch) => Meta { read_only: status(switch), ..Meta::of("guest_wifi") },
+        HouseCommand::GuestWifi(switch) => Meta { read_only: status(switch), ..Meta::of("guest_wifi").done(true) },
         HouseCommand::Camera(switch) => Meta { read_only: status(switch), ..Meta::of("camera") },
         // Disarming by voice is refused, so asking for it only reads.
         HouseCommand::Alarm(switch) => Meta {
@@ -179,7 +196,7 @@ fn house(command: &HouseCommand) -> Meta {
             Indoors::Everywhere | Indoors::Here => false,
         }),
         HouseCommand::Sensors(SensorQuery::Battery(_)) => Meta::of("batteries").reads(),
-        HouseCommand::Sensors(SensorQuery::Leaks) => Meta::of("leaks").reads(),
+        HouseCommand::Sensors(SensorQuery::Leaks) => Meta::of("leaks").reads().done(true),
     }
 }
 
@@ -258,5 +275,31 @@ mod tests {
         assert!(complete("initiate lockdown"));
         assert!(complete("how you doing"));
         assert!(!complete("hey"));
+    }
+
+    #[test]
+    fn complete_at_once_questions_without_a_tail() {
+        let complete = |text: &str| parse(text).meta().complete_at_once;
+        assert!(complete("what's next?"));
+        assert!(complete("is the TV on?"));
+        assert!(complete("set the tv volume to 20"));
+        assert!(complete("close that"));
+        assert!(complete("what's on the shopping list"));
+        assert!(complete("who's home?"));
+        assert!(complete("is Ingrid home?"));
+        assert!(complete("any leaks?"));
+        assert!(complete("status report"));
+        assert!(complete("turn on the guest wifi"));
+        assert!(complete("is the guest network on?"));
+        assert!(complete("what's the latest news?"));
+        assert!(complete("good morning"));
+        // These may go on: "in Oslo", "tomorrow", "in the kitchen", "milk and eggs", "to 50 percent".
+        assert!(!complete("what's the weather"));
+        assert!(!complete("what's the power price"));
+        assert!(!complete("when is sunset"));
+        assert!(!complete("which lights are on?"));
+        assert!(!complete("add milk to the shopping list"));
+        assert!(!complete("undo"));
+        assert!(!complete("open youtube on the tv"));
     }
 }

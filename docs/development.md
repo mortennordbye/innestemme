@@ -145,6 +145,7 @@ bash scripts/testset/sync.sh     # new runs and utterances to target/testset/
 bash scripts/testset/label.sh    # reference.tsv for new utterances: Whisper large-v3-turbo on Metal
 cargo run --release -p voice-assistant --example stt_eval -- target/testset/utterances/*.wav > whisper.tsv
 cargo run -p voice-assistant --example stt_score -- target/testset/reference.tsv whisper.tsv
+cargo run --release -p voice-assistant --example end_turn -- Jarvis target/testset/runs/run-*.wav   # pauses: end or mid
 ```
 
 `runs/` holds each run at 16 kHz from the wake word to the end of the answer, as the device heard it (the
