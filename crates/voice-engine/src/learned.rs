@@ -46,13 +46,24 @@ pub struct Learned {
 }
 
 impl Learned {
-    /// Kept in `path`, read back from it if it exists; in memory only without one.
+    /// Kept in `path`, read back from it if it exists; in memory only without one. A file that is
+    /// there but cannot be read (permissions, a disk error) is left as it is, and nothing is saved
+    /// over it this run; one that is not a list of pairs is set aside under a name of its own.
     pub fn new(path: Option<PathBuf>) -> Self {
-        let pairs = path
-            .as_ref()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
+        let (path, pairs) = match path {
+            None => (None, Vec::new()),
+            Some(path) => match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let pairs = read_kept(&text, &path);
+                    (Some(path), pairs)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Some(path), Vec::new()),
+                Err(error) => {
+                    warn!(%error, path = %path.display(), "could not read the learned corrections; they are not saved this run");
+                    (None, Vec::new())
+                }
+            },
+        };
         Self { path, state: Mutex::new(State { pairs, failed: None }) }
     }
 
@@ -144,6 +155,17 @@ impl Learned {
     }
 }
 
+/// The pairs in `text`. A file that does not read is set aside, timestamped, rather than
+/// overwritten by the next save.
+fn read_kept(text: &str, path: &std::path::Path) -> Vec<Pair> {
+    serde_json::from_str(text).unwrap_or_else(|error| {
+        let aside = path.with_extension(format!("bad-{}", jiff::Timestamp::now().as_second()));
+        warn!(%error, path = %path.display(), aside = %aside.display(), "could not read the learned corrections; set aside");
+        let _ = std::fs::rename(path, aside);
+        Vec::new()
+    })
+}
+
 fn words(text: &str) -> Vec<String> {
     text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect()
 }
@@ -222,5 +244,47 @@ mod tests {
         let again = Learned::new(Some(path.clone()));
         assert_eq!(again.meant("stand out"), Some("Stand down.".to_owned()));
         let _ = std::fs::remove_file(path);
+    }
+
+    /// Learns "stand out" as "stand down" in a learner kept in `path`.
+    fn learn(path: &std::path::Path) -> Learned {
+        let learned = Learned::new(Some(path.to_owned()));
+        for _ in 0..2 {
+            learned.failed("Stand out.");
+            learned.understood("Stand down.");
+        }
+        learned
+    }
+
+    #[test]
+    fn a_bad_file_is_set_aside() {
+        let dir = std::env::temp_dir().join(format!("learned-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("learned.json");
+        std::fs::write(&path, "{ broken").unwrap();
+        let learned = learn(&path);
+        assert_eq!(learned.meant("stand out"), Some("Stand down.".to_owned()));
+        let aside: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|e| e.to_string_lossy().starts_with("bad-")))
+            .collect();
+        assert_eq!(aside.len(), 1, "{aside:?}");
+        assert_eq!(std::fs::read_to_string(&aside[0]).unwrap(), "{ broken");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_not_saved_over() {
+        let dir = std::env::temp_dir().join(format!("learned-unread-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("learned.json");
+        // Not text: reading it fails as a disk error would, though the file is there.
+        let kept = [0xff, 0xfe, b'[', b']'];
+        std::fs::write(&path, kept).unwrap();
+        let learned = learn(&path);
+        assert_eq!(learned.meant("stand out"), Some("Stand down.".to_owned()));
+        assert_eq!(std::fs::read(&path).unwrap(), kept);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

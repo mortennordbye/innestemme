@@ -1108,9 +1108,16 @@ impl Timers {
 
     fn restore(path: PathBuf, now: Instant, clock: Option<(Instant, Zoned)>) -> Self {
         let mut timers = Self { store: Some(path.clone()), clock, ..Self::default() };
+        // Only a missing file means no timers. One that is there but cannot be read (permissions,
+        // a disk error) is left as it is, and nothing is saved over the alarms it may keep.
         let kept = match std::fs::read_to_string(&path) {
             Ok(text) => read_kept(&text, &path),
-            Err(_) => Vec::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                warn!(%error, path = %path.display(), "could not read the kept timers; they are not saved this run");
+                timers.store = None;
+                Vec::new()
+            }
         };
         let local = timers.local(now);
         for k in kept {
@@ -2791,6 +2798,23 @@ mod tests {
         let timers = Timers::restore(path.clone(), t0, Some((t0, local(14, 0))));
         assert!(timers.list().is_empty());
         assert_eq!(std::fs::read_to_string(path.with_extension("bad")).unwrap(), "{ broken");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_not_saved_over() {
+        let dir = std::env::temp_dir().join(format!("innestemme-timers-unread-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("timers.json");
+        // Not text: reading it fails as a disk error would, though the file is there.
+        let kept = [0xff, 0xfe, b'[', b']'];
+        std::fs::write(&path, kept).unwrap();
+        let t0 = Instant::now();
+        let mut timers = Timers::restore(path.clone(), t0, Some((t0, local(14, 0))));
+        assert!(timers.list().is_empty());
+        timers.run(start(60).unwrap(), Lang::English, t0);
+        assert_eq!(timers.list().len(), 1);
+        assert_eq!(std::fs::read(&path).unwrap(), kept);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
