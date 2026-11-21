@@ -13,7 +13,7 @@ use voice_assistant::sensors::{self, SensorQuery};
 
 use super::lights::LightChange;
 use super::screen::SCREEN_MOMENT;
-use super::{unreachable, AssistantConfig, Job, Worker};
+use super::{not_connected, unreachable, AssistantConfig, Job, Worker};
 
 /// How often Home Assistant's safety sensors are checked.
 const ALERT_POLL: Duration = Duration::from_secs(5);
@@ -306,8 +306,7 @@ pub(super) fn confirmation(text: &str) -> Option<bool> {
     ];
     const NO: &[&str] =
         &["no", "nope", "nah", "don't", "dont", "not", "cancel", "never", "mind", "nei", "ikke", "la", "være"];
-    let words: Vec<String> =
-        text.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
+    let words = voice_assistant::dialog::words(text);
     let all = |list: &[&str]| !words.is_empty() && words.len() <= 4 && words.iter().all(|w| list.contains(&w.as_str()));
     let first = |list: &[&str]| words.first().is_some_and(|w| list[..4].contains(&w.as_str()));
     if all(NO) || first(NO) {
@@ -325,8 +324,7 @@ impl Worker {
         let name = self.config.wake.name().to_owned();
         let here = self.room.clone();
         let Some(ha) = &mut self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         match house_answer(ha, command, here.as_deref(), lang, &name) {
             Ok(answer) => {
@@ -343,8 +341,7 @@ impl Worker {
         let no = lang == Lang::Norwegian;
         let here = self.room.clone();
         let Some(ha) = &mut self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         let mut answer = match routine_answer(ha, routine, here.as_deref(), &self.config, lang) {
             Ok((answer, switched)) => {

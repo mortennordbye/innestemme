@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::lang::Lang;
+use crate::say::{capitalize, hh_mm, join};
 
 /// How long "snooze" puts the alarm off, in seconds.
 pub const SNOOZE: u32 = 9 * 60;
@@ -1146,7 +1147,7 @@ impl Timers {
                         timers.dropped.push(Notice::of(&timer, NoticeKind::Cancelled, now));
                         continue;
                     }
-                    let due = ends.to_zoned(local.time_zone().clone()).strftime("%H:%M").to_string();
+                    let due = hh_mm(ends, local.time_zone());
                     timer.late = timer.late.or(Some(due));
                     timer.state = State::Running { ends: now + LATE_WAIT };
                 }
@@ -1530,8 +1531,8 @@ impl Timers {
             ([], _) => no_alarm(no),
             ([one], false) => format!("Your alarm goes off {one}."),
             ([one], true) => format!("Vekkerklokka ringer {one}."),
-            (_, false) => format!("Your alarms go off {}.", join(&times, no)),
-            (_, true) => format!("Vekkerklokkene ringer {}.", join(&times, no)),
+            (_, false) => format!("Your alarms go off {}.", join(&times, lang)),
+            (_, true) => format!("Vekkerklokkene ringer {}.", join(&times, lang)),
         }
     }
 
@@ -1576,7 +1577,7 @@ impl Timers {
             [one] => capitalize(&format!("{}.", describe(one, true))),
             several => {
                 let parts: Vec<String> = several.iter().map(|t| describe(t, false)).collect();
-                capitalize(&format!("{}.", join(&parts, no)))
+                capitalize(&format!("{}.", join(&parts, lang)))
             }
         }
     }
@@ -1596,9 +1597,9 @@ impl Timers {
                 }
                 let labels: Vec<String> = several.iter().map(|&i| self.list[i].label(lang)).collect();
                 let text = if no {
-                    format!("Du har {} {noun_no}: {}. Hvilken?", several.len(), join(&labels, no))
+                    format!("Du har {} {noun_no}: {}. Hvilken?", several.len(), join(&labels, lang))
                 } else {
-                    format!("You have {} {noun}: {}. Which one?", several.len(), join(&labels, no))
+                    format!("You have {} {noun}: {}. Which one?", several.len(), join(&labels, lang))
                 };
                 return (text, vec![]);
             }
@@ -2118,7 +2119,7 @@ pub fn say_duration(seconds: u32, lang: Lang) -> String {
             Lang::Norwegian => "0 sekunder".into(),
         };
     }
-    join(&parts, lang == Lang::Norwegian)
+    join(&parts, lang)
 }
 
 /// "6 minutes and 40 seconds left.": the time left on the only timer, every way it is said up
@@ -2151,24 +2152,6 @@ fn single_unit(seconds: u32) -> Option<(u32, &'static str)> {
         s if s % 60 == 0 && s < 3600 => Some((s / 60, "minute")),
         s if s < 60 => Some((s, "second")),
         _ => None,
-    }
-}
-
-/// "a, b and c" / "a, b og c".
-fn join(parts: &[String], no: bool) -> String {
-    let and = if no { " og " } else { " and " };
-    match parts {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{}{and}{last}", rest.join(", ")),
-    }
-}
-
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
     }
 }
 

@@ -6,6 +6,16 @@ pub fn normalize(word: &str) -> String {
     word.chars().filter(|c| c.is_alphanumeric() || *c == '\'').flat_map(char::to_lowercase).collect()
 }
 
+/// The normalised words of `text`, without the ones that were only punctuation.
+pub fn words(text: &str) -> Vec<String> {
+    text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect()
+}
+
+/// The normalised words of `text` with one space between them.
+pub fn phrase(text: &str) -> String {
+    words(text).join(" ")
+}
+
 /// Ways transcribers write known names. An explicit list rather than an edit distance, which would
 /// also match common words. For Freya, "fredag" (Friday) and "fela" (fiddle) are close
 /// mishearings but everyday Norwegian, so they are left out; for Homie, so is "home".

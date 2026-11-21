@@ -2,6 +2,7 @@
 
 pub mod mimi;
 pub mod packet;
+pub mod wav;
 
 pub use mimi::{MimiCodec, CODEBOOKS};
 pub use packet::{PacketDecoder, PacketEncoder};

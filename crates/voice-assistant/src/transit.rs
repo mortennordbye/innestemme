@@ -11,6 +11,7 @@ use serde_json::json;
 use crate::dialog::normalize;
 use crate::geo::{Location, ENTUR_CLIENT};
 use crate::lang::Lang;
+use crate::say::{capitalize, hh_mm};
 
 const JOURNEY_PLANNER: &str = "https://api.entur.io/journey-planner/v3/graphql";
 /// Stops within this walk of the home count as "nearby".
@@ -732,7 +733,7 @@ fn departures(stops: &[Stop], query: &TransitQuery, now: jiff::Timestamp) -> Vec
                 mode: c.journey.line.mode.clone().unwrap_or_default(),
                 towards: c.destination.as_ref().and_then(|d| d.front_text.clone()).unwrap_or_default(),
                 minutes: ((c.expected.as_second() - now.as_second()) as f64 / 60.0).round() as i64,
-                clock: c.expected.to_zoned(tz.clone()).strftime("%H:%M").to_string(),
+                clock: hh_mm(c.expected, &tz),
             })
             .filter(|d| d.minutes >= stop.walk)
             .collect();
@@ -844,7 +845,7 @@ pub fn english_sentences() -> Vec<String> {
 fn trip_answer(patterns: &[Pattern], destination: &str, mode: Mode, now: jiff::Timestamp, lang: Lang) -> String {
     let tz = jiff::tz::TimeZone::system();
     let minutes = |t: jiff::Timestamp| ((t.as_second() - now.as_second()) as f64 / 60.0).floor() as i64;
-    let clock = |t: jiff::Timestamp| t.to_zoned(tz.clone()).strftime("%H:%M").to_string();
+    let clock = |t: jiff::Timestamp| hh_mm(t, &tz);
     let boarding: Vec<(&Pattern, &TripLeg)> =
         patterns.iter().filter_map(|p| Some((p, p.legs.iter().find(|l| l.mode != "foot")?))).collect();
     let Some(&(pattern, leg)) = boarding.first() else {
@@ -887,11 +888,6 @@ fn trip_answer(patterns: &[Pattern], destination: &str, mode: Mode, now: jiff::T
             )
         }
     }
-}
-
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 #[cfg(test)]

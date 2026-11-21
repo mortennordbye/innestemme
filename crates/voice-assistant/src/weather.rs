@@ -14,6 +14,7 @@ use serde::Deserialize;
 use crate::geo::{self, Location};
 use crate::intent::{Day, Focus};
 use crate::lang::Lang;
+use crate::say::capitalize;
 
 /// MET updates the forecast about hourly; answers within this reuse the last one.
 const CACHE: Duration = Duration::from_secs(600);
@@ -706,11 +707,6 @@ fn current(name: &str, t: f64) -> String {
 /// "Minus 3 to 12 degrees."
 fn range(low: f64, high: f64) -> String {
     capitalize(&format!("{} to {} degrees.", number(low), number(high)))
-}
-
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
 /// Every English weather sentence for a place with temperatures in a usual range, to render ahead:

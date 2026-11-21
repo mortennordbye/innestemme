@@ -127,12 +127,7 @@ fn synthetic(frames: usize) -> Vec<i16> {
 }
 
 fn read_wav(path: &Path) -> Result<Vec<i16>> {
-    let mut reader = hound::WavReader::open(path).with_context(|| format!("opening {}", path.display()))?;
-    let spec = reader.spec();
-    if spec.sample_rate != SAMPLE_RATE || spec.channels != 1 || spec.bits_per_sample != 16 {
-        bail!("{} must be 24 kHz mono 16-bit, got {spec:?}", path.display());
-    }
-    let pcm: Vec<i16> = reader.samples::<i16>().collect::<Result<_, _>>()?;
+    let pcm = voice_codec::wav::read_mono(path, SAMPLE_RATE)?;
     if pcm.len() < FRAME_SAMPLES {
         bail!("{} is shorter than one 80 ms frame", path.display());
     }

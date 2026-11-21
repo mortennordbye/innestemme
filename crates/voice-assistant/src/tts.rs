@@ -74,12 +74,7 @@ impl Tts for Say {
         if !status.success() {
             bail!("`say` exited with {status}");
         }
-        let mut reader = hound::WavReader::open(&path).with_context(|| format!("reading {}", path.display()))?;
-        let spec = reader.spec();
-        if spec.sample_rate != SAMPLE_RATE || spec.channels != 1 || spec.bits_per_sample != 16 {
-            bail!("`say` wrote {spec:?}, expected 24 kHz mono 16-bit");
-        }
-        let pcm = reader.samples::<i16>().collect::<Result<Vec<_>, _>>()?;
+        let pcm = voice_codec::wav::read_mono(&path, SAMPLE_RATE).context("reading the output of `say`")?;
         let _ = std::fs::remove_file(&path);
         sink(&pcm);
         Ok(())

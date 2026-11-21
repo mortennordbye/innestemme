@@ -67,15 +67,7 @@ fn main() -> Result<()> {
             let first = first.unwrap_or(took).as_millis();
             row += &format!(" {:>18}", format!("{first}/{} ms {:.1}x", took.as_millis(), seconds / took.as_secs_f32()));
             if let Some(out) = out {
-                let spec = hound::WavSpec {
-                    channels: 1,
-                    sample_rate: 24_000,
-                    bits_per_sample: 16,
-                    sample_format: hound::SampleFormat::Int,
-                };
-                let mut writer = hound::WavWriter::create(format!("{out}/{name}-{i}.wav"), spec)?;
-                pcm.iter().try_for_each(|&s| writer.write_sample(s))?;
-                writer.finalize()?;
+                voice_codec::wav::write_mono(format!("{out}/{name}-{i}.wav"), 24_000, &pcm)?;
             }
         }
         println!("{row}");

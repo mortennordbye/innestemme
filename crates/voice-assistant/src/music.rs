@@ -143,12 +143,12 @@ impl Player {
             Some(id) if id.contains('.') => id.clone(),
             speaker => {
                 let players = speakers(ha)?;
-                let name = |p: &Speaker| normalize_phrase(&p.name);
+                let name = |p: &Speaker| crate::dialog::phrase(&p.name);
                 let names = || players.iter().map(name).collect::<Vec<_>>();
                 let found = match speaker {
                     // Music Assistant names its players after the speaker, e.g. "Living Room player".
                     Some(speaker) => {
-                        let wanted = normalize_phrase(speaker);
+                        let wanted = crate::dialog::phrase(speaker);
                         players
                             .iter()
                             .find(|p| name(p) == wanted)
@@ -664,10 +664,10 @@ fn no_speaker(room: &str, players: &[Speaker], no: bool) -> String {
         (true, false) => format!("I can't find a speaker in the {room}."),
         (true, true) => format!("Jeg finner ingen høyttaler på {room}."),
         (false, false) => {
-            format!("I can't find a speaker in the {room}. There are speakers in {}.", crate::house::join(&rooms, lang))
+            format!("I can't find a speaker in the {room}. There are speakers in {}.", crate::say::join(&rooms, lang))
         }
         (false, true) => {
-            format!("Jeg finner ingen høyttaler på {room}. Det er høyttalere på {}.", crate::house::join(&rooms, lang))
+            format!("Jeg finner ingen høyttaler på {room}. Det er høyttalere på {}.", crate::say::join(&rooms, lang))
         }
     }
 }
@@ -786,12 +786,12 @@ fn search_track(ha: &HomeAssistant, entry: &str, request: &str) -> Result<Option
 
 /// One of the user's playlists by name, from the Music Assistant library.
 fn find_playlist(ha: &HomeAssistant, entry: &str, name: &str) -> Result<Option<Found>> {
-    let wanted = normalize_phrase(name);
+    let wanted = crate::dialog::phrase(name);
     let mut lists = library_playlists(ha, entry, Some(name))?;
     if lists.is_empty() {
         lists = library_playlists(ha, entry, None)?;
     }
-    let names: Vec<String> = lists.iter().map(|p| normalize_phrase(&p.name)).collect();
+    let names: Vec<String> = lists.iter().map(|p| crate::dialog::phrase(&p.name)).collect();
     let words: Vec<&str> = wanted.split(' ').collect();
     let index = names
         .iter()
@@ -813,7 +813,7 @@ fn find_playlist(ha: &HomeAssistant, entry: &str, name: &str) -> Result<Option<F
 /// Spotify's Liked Songs, which Music Assistant lists as a playlist.
 fn liked_songs(ha: &HomeAssistant, entry: &str) -> Result<Option<Found>> {
     let liked = |p: &Found| {
-        let name = normalize_phrase(&p.name);
+        let name = crate::dialog::phrase(&p.name);
         name.contains("liked") || name.contains("likte")
     };
     if let Some(list) = library_playlists(ha, entry, Some("liked"))?.into_iter().find(liked) {
@@ -841,10 +841,6 @@ fn found(item: &Value) -> Option<Found> {
         name: item["name"].as_str()?.to_owned(),
         artist: item["artists"][0]["name"].as_str().unwrap_or_default().to_owned(),
     })
-}
-
-fn normalize_phrase(text: &str) -> String {
-    text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

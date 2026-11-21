@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
-use voice_assistant::dialog::normalize;
+use voice_assistant::dialog::words;
 
 /// A repeat counts when it comes this soon after the request that was not understood.
 const REPEAT_WINDOW: Duration = Duration::from_secs(20);
@@ -164,10 +164,6 @@ fn read_kept(text: &str, path: &std::path::Path) -> Vec<Pair> {
         let _ = std::fs::rename(path, aside);
         Vec::new()
     })
-}
-
-fn words(text: &str) -> Vec<String> {
-    text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect()
 }
 
 /// Whether a repeat is the same request said again: at least half the words of the longer one are

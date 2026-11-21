@@ -6,7 +6,7 @@ use tracing::warn;
 use voice_assistant::lang::Lang;
 use voice_assistant::tv;
 
-use super::{AssistantEvent, Worker};
+use super::{not_connected, AssistantEvent, Worker};
 
 /// How long the TV screen shows asked-for data (weather, departures) before the face is back.
 const SCREEN_DATA: Duration = Duration::from_secs(120);
@@ -58,8 +58,7 @@ impl Worker {
             .into();
         };
         let Some(ha) = &self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         match self.tv.open_page(ha, &url) {
             Ok(()) => done.into(),
@@ -127,10 +126,7 @@ impl Worker {
     }
 
     fn screen_music(&mut self, no: bool) -> Result<&'static str, String> {
-        let not_connected = || -> String {
-            if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }.into()
-        };
-        let Some(ha) = &self.home_assistant else { return Err(not_connected()) };
+        let Some(ha) = &self.home_assistant else { return Err(not_connected(no)) };
         let state = self.player.check(ha).and_then(|entity| ha.state(&entity));
         let state = match state {
             Ok(state) => state,

@@ -2,7 +2,7 @@
 //! sensor", "is there a leak". Phones are left to the phone skill. A leak that is found is said in
 //! the safety alert's own words.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 
 use crate::alerts::{self, Alert};
@@ -230,8 +230,7 @@ pub(crate) use battery_states;
 const BATTERY_TEMPLATE: &str = concat!(battery_states!(), "{{ battery_states.out | tojson }}");
 
 pub fn batteries(ha: &HomeAssistant) -> Result<Vec<Battery>> {
-    let all: Vec<Battery> =
-        serde_json::from_str(&ha.template(BATTERY_TEMPLATE)?).context("parsing the battery sensors")?;
+    let all: Vec<Battery> = ha.template_json(BATTERY_TEMPLATE, "parsing the battery sensors")?;
     Ok(from_states(all))
 }
 
@@ -405,7 +404,7 @@ pub struct WaterSensor {
 const WATER_TEMPLATE: &str = r#"[{% for s in states.binary_sensor if s.attributes.device_class == 'moisture' %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}, "class": "moisture", "area": {{ (area_name(s.entity_id) or '') | tojson }}, "state": {{ s.state | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
 
 pub fn water_sensors(ha: &HomeAssistant) -> Result<Vec<WaterSensor>> {
-    serde_json::from_str(&ha.template(WATER_TEMPLATE)?).context("parsing the water sensors")
+    ha.template_json(WATER_TEMPLATE, "parsing the water sensors")
 }
 
 /// "No leaks.", or the warning for each wet sensor; sensors that are not reporting are named.
@@ -438,7 +437,7 @@ mod tests {
     use super::*;
 
     fn words(text: &str) -> Vec<String> {
-        text.split_whitespace().map(crate::dialog::normalize).filter(|w| !w.is_empty()).collect()
+        crate::dialog::words(text)
     }
 
     fn query(text: &str) -> Option<SensorQuery> {

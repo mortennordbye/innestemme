@@ -67,11 +67,6 @@ impl VoiceGender {
     pub fn female(&self, pcm: &[i16]) -> Result<f32> {
         Ok(female(&self.embedding(pcm)?))
     }
-
-    /// The voice's gender when the classifier is sure of it.
-    pub fn classify(&self, pcm: &[i16]) -> Result<Option<Gender>> {
-        Ok(sure(self.female(pcm)?))
-    }
 }
 
 /// The probability of female from an embedding of unit length.

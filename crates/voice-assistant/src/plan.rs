@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::ha::HomeAssistant;
@@ -24,7 +24,7 @@ pub struct Lamp {
 }
 
 pub fn lamps(ha: &HomeAssistant) -> Result<Vec<Lamp>> {
-    serde_json::from_str(&ha.template(LAMPS_TEMPLATE)?).context("parsing the lights for a preview")
+    ha.template_json(LAMPS_TEMPLATE, "parsing the lights for a preview")
 }
 
 /// What happens to one lamp. `kind` is how the hub colours it: on, off, level, scene, red, party,

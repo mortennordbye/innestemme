@@ -9,8 +9,8 @@ use jiff::civil::Date;
 use jiff::{Timestamp, ToSpan, Zoned};
 use serde::Deserialize;
 
-use crate::dialog::normalize;
 use crate::lang::Lang;
+use crate::say::hh_mm;
 
 const URL: &str = "https://www.hvakosterstrommen.no/api/v1/prices";
 /// Tomorrow's prices appear around 13:00; a missing day is asked again after this long.
@@ -173,7 +173,7 @@ const CHEAP_WORDS: &[&str] = &["cheap", "cheapest", "cheaper", "lowest", "billig
 const DEAR_WORDS: &[&str] = &["expensive", "dearest", "highest", "dyr", "dyrest", "dyreste", "høyest", "høyeste"];
 
 pub fn parse(text: &str) -> Option<PowerQuery> {
-    let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    let words: Vec<String> = crate::dialog::words(text);
     let has = |w: &str| words.iter().any(|x| x == w);
     let pair = |a: &str, b: &str| words.windows(2).any(|p| p[0] == a && p[1] == b);
     let said_when = if has("tomorrow") || has("imorgen") || pair("i", "morgen") {
@@ -273,7 +273,7 @@ impl Power {
         let vat = if self.area == "NO4" { 1.0 } else { 1.25 };
         let price = |i: &Interval| i.nok_per_kwh * vat;
         let price_of = |i: &Interval| format!("{} {}", format_price(price(i), lang), per_kwh(lang));
-        let at = |i: &Interval| i.time_start.to_zoned(now.time_zone().clone()).strftime("%H:%M").to_string();
+        let at = |i: &Interval| hh_mm(i.time_start, now.time_zone());
         match query {
             PowerQuery::Now => {
                 let day = self.day(today)?.context("today's prices are missing")?;
@@ -436,7 +436,7 @@ impl Power {
                     (true, false) => " Tomorrow's prices aren't out yet.",
                     (true, true) => " Morgendagens priser er ikke ute ennå.",
                 };
-                let clock = |t: Timestamp| t.to_zoned(tz.clone()).strftime("%H:%M").to_string();
+                let clock = |t: Timestamp| hh_mm(t, &tz);
                 let starts = if found.start <= now.timestamp() {
                     if no {
                         "nå".to_string()

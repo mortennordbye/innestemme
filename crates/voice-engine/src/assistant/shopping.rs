@@ -6,7 +6,7 @@ use tracing::info;
 use voice_assistant::lang::Lang;
 use voice_assistant::shopping::{Change, ListCommand};
 
-use super::{unreachable, Worker};
+use super::{not_connected, unreachable, Worker};
 
 /// After an item is added the list stays open this long: each short reply is more items.
 pub(super) const LIST_OPEN: Duration = Duration::from_secs(60);
@@ -18,8 +18,7 @@ impl Worker {
     pub(super) fn shopping_list(&mut self, command: ListCommand, lang: Lang, brief: bool) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         let adding = matches!(command, ListCommand::Add(_));
         self.list_open = adding.then(Instant::now);
@@ -48,8 +47,7 @@ impl Worker {
     pub(super) fn shopping_changes(&mut self, commands: Vec<ListCommand>, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         self.shopping.brief = true;
         let (mut answers, mut changes) = (Vec::new(), Vec::new());

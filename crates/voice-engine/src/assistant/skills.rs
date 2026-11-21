@@ -15,7 +15,7 @@ use voice_assistant::shopping::ListCommand;
 use crate::party;
 
 use super::screen::SCREEN_MOMENT;
-use super::{time_of_day, unreachable, Worker};
+use super::{not_connected, time_of_day, unreachable, Worker};
 
 /// How long the Hue bridge takes to let go of the lights once party mode's stream stops; calls
 /// to them before then are lost.
@@ -332,8 +332,7 @@ impl Worker {
     pub(super) fn where_is(&mut self, name: &str, zone: Option<&str>, arriving: bool, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         match ha.people() {
             Ok(people) => {
@@ -347,8 +346,7 @@ impl Worker {
     pub(super) fn whos_home(&mut self, name: Option<&str>, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         let people = match ha.people() {
             Ok(people) => people,
@@ -380,12 +378,7 @@ impl Worker {
             };
         }
         let home: Vec<String> = people.iter().filter(|p| p.state == "home").map(first_name).collect();
-        let and = if no { "og" } else { "and" };
-        let join = |names: &[String]| match names {
-            [] => String::new(),
-            [one] => one.clone(),
-            [rest @ .., last] => format!("{} {and} {last}", rest.join(", ")),
-        };
+        let join = |names: &[String]| voice_assistant::say::join(names, lang);
         let is = if no { "er" } else { "is" };
         let mut clauses: Vec<String> = Vec::new();
         match (no, home.len()) {
@@ -471,8 +464,7 @@ impl Worker {
         let no = lang == Lang::Norwegian;
         let here = self.room.clone();
         let Some(ha) = &mut self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         let scenes = match ha.scenes() {
             Ok(scenes) => scenes.to_vec(),
@@ -505,8 +497,7 @@ impl Worker {
     pub(super) fn script(&mut self, request: &str, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &mut self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         let script = match ha.scripts() {
             Ok(scripts) => ha::resolve_script(scripts, request).cloned(),

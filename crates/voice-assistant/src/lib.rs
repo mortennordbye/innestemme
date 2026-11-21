@@ -29,6 +29,7 @@ pub mod phonon;
 pub mod plan;
 pub mod power;
 pub mod resample;
+pub mod say;
 pub mod sensors;
 pub mod shopping;
 pub mod smalltalk;

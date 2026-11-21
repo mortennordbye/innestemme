@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{bail, Result};
-use voice_assistant::wakeword::{WakeDetector, WakeModels, CHUNK};
+use voice_assistant::wakeword::{WakeModels, CHUNK};
+
+mod common;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -14,27 +16,14 @@ fn main() -> Result<()> {
     let models = Arc::new(WakeModels::load(&model)?);
     let (mut chunks, mut took) = (0, std::time::Duration::ZERO);
     for path in args {
-        let mut reader = hound::WavReader::open(&path)?;
-        let spec = reader.spec();
-        if spec.sample_rate != 16_000 || spec.channels != 1 {
-            bail!("{path}: {} Hz, {} channels; 16 kHz mono expected", spec.sample_rate, spec.channels);
-        }
-        let pcm: Vec<i16> = reader.samples::<i16>().collect::<Result<_, _>>()?;
+        let pcm = voice_codec::wav::read_mono(&path, 16_000)?;
         // A second of silence on both sides, as a stream would have around it.
         let second = vec![0i16; 16_000];
-        let mut detector = WakeDetector::new(models.clone());
-        let (mut best, mut at, mut offset) = (0.0f32, 0usize, 0usize);
+        let padded = [&second[..], &pcm, &second].concat();
         let start = Instant::now();
-        for block in [&second[..], &pcm, &second].into_iter().flat_map(|a| a.chunks(CHUNK)) {
-            offset += block.len();
-            if let Some(score) = detector.push(block)? {
-                if score > best {
-                    (best, at) = (score, offset);
-                }
-            }
-        }
+        let (best, at) = common::wake_peak(&models, &padded)?;
         took += start.elapsed();
-        chunks += offset / CHUNK;
+        chunks += padded.len() / CHUNK;
         let at = at.saturating_sub(16_000) as f32 / 16_000.0;
         println!("{best:.3} at {at:5.2} s  {path}");
     }

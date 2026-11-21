@@ -11,6 +11,7 @@ use crate::alerts::{self, Alert};
 use crate::ha::{HomeAssistant, Light};
 use crate::lang::Lang;
 use crate::names::Names;
+use crate::say::{capitalize, join};
 use crate::sensors;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -711,8 +712,7 @@ fn entities_template(domain: &str, word: &str) -> String {
 }
 
 pub fn entities(ha: &HomeAssistant, domain: &str, word: &str) -> Result<Vec<Entity>> {
-    serde_json::from_str(&ha.template(&entities_template(domain, word))?)
-        .with_context(|| format!("parsing {domain} entities"))
+    ha.template_json(&entities_template(domain, word), &format!("parsing {domain} entities"))
 }
 
 pub fn snapshot(ha: &HomeAssistant) -> Result<Snapshot> {
@@ -743,7 +743,7 @@ pub fn phones(ha: &HomeAssistant) -> Result<Vec<Phone>> {
         r#"{{% set ids = {} %}}[{{% for id in ids %}}{{% set t = 'device_tracker.' ~ id %}}{{% set b = states('sensor.' ~ id ~ '_battery_level') %}}{{"id": {{{{ id | tojson }}}}, "name": {{{{ (state_attr(t, 'friendly_name') or id) | tojson }}}}, "where": {{{{ states(t) | tojson }}}}, "battery": {{{{ (b if b not in ['unknown', 'unavailable'] else state_attr(t, 'battery_level')) | tojson }}}}, "charging": {{{{ states('sensor.' ~ id ~ '_battery_state') | tojson }}}}, "owner": {{{{ (states.person | selectattr('attributes.device_trackers', 'defined') | selectattr('attributes.device_trackers', 'contains', t) | map(attribute='name') | first | default('')) | tojson }}}}}}{{% if not loop.last %}},{{% endif %}}{{% endfor %}}]"#,
         serde_json::to_string(&ids)?
     );
-    serde_json::from_str(&ha.template(&template)?).context("parsing the phones")
+    ha.template_json(&template, "parsing the phones")
 }
 
 /// The phones a request means: by owner or device name; without one, the only phone, else those at home.
@@ -854,11 +854,6 @@ pub fn battery_answer(phones: &[&Phone], name: Option<&str>, lang: Lang) -> Stri
         })
         .collect();
     sentences.join(" ")
-}
-
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
 /// The sun's elevation in degrees below which it is dark: the end of civil twilight, as dusk.
@@ -1009,8 +1004,7 @@ const OUTDOOR_AREAS: &[&str] = &[
 
 /// Every indoor room with a temperature or humidity sensor, in Home Assistant's order.
 pub fn climate_readings(ha: &HomeAssistant) -> Result<Vec<RoomClimate>> {
-    let sensors: Vec<ClimateSensor> =
-        serde_json::from_str(&ha.template(CLIMATE_TEMPLATE)?).context("parsing the climate sensors")?;
+    let sensors: Vec<ClimateSensor> = ha.template_json(CLIMATE_TEMPLATE, "parsing the climate sensors")?;
     Ok(rooms_of(&sensors))
 }
 
@@ -1181,16 +1175,6 @@ fn humidity_remark(room: &RoomClimate, name_it: bool, lang: Lang) -> Option<Stri
     })
 }
 
-/// "the living room and kitchen", "stua og kjøkkenet".
-pub fn join(items: &[String], lang: Lang) -> String {
-    let and = if lang == Lang::Norwegian { "og" } else { "and" };
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} {and} {last}", rest.join(", ")),
-    }
-}
-
 /// One name per room with lights on: the area, or the light's own name without one. A group with
 /// no area ("House Lights") says nothing about where.
 pub fn rooms_lit(lights: &[Light]) -> Vec<String> {
@@ -1340,8 +1324,7 @@ pub fn lockdown(ha: &HomeAssistant) -> Result<Vec<String>> {
 /// The lights a lockdown turns red, and the ones without colour it turns off. Party mode keeps a
 /// snapshot of both, and streams to the red ones.
 pub fn lockdown_lights(ha: &HomeAssistant) -> Result<(Vec<String>, Vec<String>)> {
-    let lights: Vec<LockdownLight> =
-        serde_json::from_str(&ha.template(LOCKDOWN_LIGHTS_TEMPLATE)?).context("parsing the lockdown lights")?;
+    let lights: Vec<LockdownLight> = ha.template_json(LOCKDOWN_LIGHTS_TEMPLATE, "parsing the lockdown lights")?;
     let ids = |color: bool| lights.iter().filter(|l| l.color == color).map(|l| l.id.clone()).collect::<Vec<_>>();
     Ok((ids(true), ids(false)))
 }
@@ -1365,8 +1348,7 @@ struct HueGroup {
 /// What the lockdown's alert goes to: each Hue room whose lights are all red, as one command the
 /// bridge sends to them together, and the red lights in no such room one by one.
 pub fn alarm_targets(ha: &HomeAssistant, red: &[String]) -> Result<Vec<String>> {
-    let groups: Vec<HueGroup> =
-        serde_json::from_str(&ha.template(HUE_GROUPS_TEMPLATE)?).context("parsing the Hue rooms")?;
+    let groups: Vec<HueGroup> = ha.template_json(HUE_GROUPS_TEMPLATE, "parsing the Hue rooms")?;
     Ok(cover(&groups, red))
 }
 
@@ -1518,10 +1500,9 @@ mod tests {
         // The bedroom's window light is not red, so its bed light goes alone.
         assert_eq!(cover(&groups, &red), ["light.living_room", "light.bed", "light.lamp"]);
     }
-    use crate::dialog::normalize;
 
     fn words(text: &str) -> Vec<String> {
-        text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect()
+        crate::dialog::words(text)
     }
 
     fn house(text: &str) -> Option<HouseCommand> {

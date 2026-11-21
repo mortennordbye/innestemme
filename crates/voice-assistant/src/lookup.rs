@@ -84,7 +84,7 @@ const ATTRIBUTES: &[&str] = &[
 
 /// The topic of a lookup question, if `text` is one.
 pub fn topic(text: &str) -> Option<String> {
-    let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    let words: Vec<String> = crate::dialog::words(text);
     // "Can you look up ...", "please tell me about ...".
     let polite = words.iter().take_while(|w| POLITE.contains(&w.as_str())).count();
     let joined = words[polite..].join(" ");

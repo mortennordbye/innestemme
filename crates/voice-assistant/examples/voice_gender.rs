@@ -24,12 +24,7 @@ fn main() -> Result<()> {
     let model = VoiceGender::load(1)?;
     let (mut took, mut runs) = (Duration::ZERO, 0);
     for path in paths {
-        let mut reader = hound::WavReader::open(&path)?;
-        let spec = reader.spec();
-        if spec.sample_rate != SAMPLE_RATE || spec.channels != 1 {
-            bail!("{path}: {} Hz, {} channels; 16 kHz mono expected", spec.sample_rate, spec.channels);
-        }
-        let pcm: Vec<i16> = reader.samples::<i16>().collect::<Result<_, _>>()?;
+        let pcm = voice_codec::wav::read_mono(&path, SAMPLE_RATE)?;
         let pcm = match wake {
             true => &pcm[PREROLL.min(pcm.len()).saturating_sub(WAKE)..PREROLL.min(pcm.len())],
             false => &pcm[..],

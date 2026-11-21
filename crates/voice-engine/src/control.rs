@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use voice_assistant::ha::{self, HomeAssistant};
 
-use crate::web::Response;
+use crate::web::{param, Response};
 
 /// Several screens poll every few seconds; Home Assistant renders the template at most this often.
 const FRESH: Duration = Duration::from_secs(2);
@@ -110,11 +110,11 @@ impl Control {
 
     /// `POST /api/ha/call?domain=light&service=turn_on&entity_id=light.kitchen&brightness_pct=40`.
     pub fn call(&self, query: &str) -> Result<()> {
-        let param = |key: &str| query.split('&').find_map(|p| p.strip_prefix(key)?.strip_prefix('=')).map(decode);
-        let (domain, service) = (param("domain").unwrap_or_default(), param("service").unwrap_or_default());
+        let (domain, service) =
+            (param(query, "domain").unwrap_or_default(), param(query, "service").unwrap_or_default());
         // Several, comma separated, in one call: a whole apartment's lights switch together.
         let entities: Vec<String> =
-            param("entity_id").context("`entity_id` is missing")?.split(',').map(str::to_owned).collect();
+            param(query, "entity_id").context("`entity_id` is missing")?.split(',').map(str::to_owned).collect();
         let allowed = ALLOWED.iter().any(|(d, services)| *d == domain && services.contains(&service.as_str()));
         if !allowed {
             bail!("{domain}.{service} is not allowed from the page");
@@ -129,7 +129,7 @@ impl Control {
         }
         let mut data = json!({ "entity_id": entities });
         for (key, kind) in PARAMETERS {
-            let Some(raw) = param(key) else { continue };
+            let Some(raw) = param(query, key) else { continue };
             data[*key] = match kind {
                 Kind::Int => raw.parse::<i64>().map(Value::from).context("not a whole number")?,
                 // The page's sliders send whole percents as a fraction.
@@ -165,7 +165,7 @@ impl Control {
 
     /// `/api/ha/history?entity=...`: the last 24 hours of a sensor, as `[[seconds, value], ...]`.
     pub fn history(&self, query: &str) -> Result<Value> {
-        let entity = query.split('&').find_map(|p| p.strip_prefix("entity=")).map(decode).context("`entity`")?;
+        let entity = param(query, "entity").context("`entity`")?;
         anyhow::ensure!(entity.starts_with("sensor."), "history is for sensors");
         let since = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24);
         let path = format!("/api/history/period/{since}?filter_entity_id={entity}&minimal_response&no_attributes");
@@ -185,10 +185,9 @@ impl Control {
 
     /// `/api/ha/forecast?entity=weather.home&type=daily`.
     pub fn forecast(&self, query: &str) -> Result<Value> {
-        let param = |key: &str| query.split('&').find_map(|p| p.strip_prefix(key)?.strip_prefix('=')).map(decode);
-        let entity = param("entity").context("`entity`")?;
+        let entity = param(query, "entity").context("`entity`")?;
         anyhow::ensure!(entity.starts_with("weather."), "a weather entity");
-        let kind = param("type").filter(|t| t == "hourly").unwrap_or_else(|| "daily".into());
+        let kind = param(query, "type").filter(|t| t == "hourly").unwrap_or_else(|| "daily".into());
         let mut response =
             self.ha()?.service_response("weather", "get_forecasts", json!({ "entity_id": entity, "type": kind }))?;
         Ok(response[entity.as_str()]["forecast"].take())
@@ -197,17 +196,13 @@ impl Control {
     /// `/api/ha/image?path=/api/media_player_proxy/...`: album art and camera stills, which the
     /// browser cannot fetch from Home Assistant itself.
     pub fn image(&self, query: &str) -> Result<Response> {
-        let path = query.split('&').find_map(|p| p.strip_prefix("path=")).map(decode).context("`path`")?;
+        let path = param(query, "path").context("`path`")?;
         let proxied = ["/api/media_player_proxy/", "/api/camera_proxy/"].iter().any(|p| path.starts_with(p));
         anyhow::ensure!(proxied && !path.contains(".."), "only Home Assistant's image proxies");
         let (kind, bytes) = self.ha()?.get_bytes(&path)?;
         let kind = if kind.contains("png") { "image/png" } else { "image/jpeg" };
         Ok(("200 OK", kind, bytes))
     }
-}
-
-fn decode(value: &str) -> String {
-    crate::web::decode(value)
 }
 
 /// At most `n` points, each the mean of its slice of the series.

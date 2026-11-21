@@ -292,7 +292,7 @@ fn screen(words: &[String], on_screen: bool, text: &str) -> Option<TvCommand> {
 
 /// TVs that are on, by entity id: what "everything off" turns off.
 pub fn on_tvs(ha: &HomeAssistant) -> Result<Vec<String>> {
-    let found: Vec<(String, String)> = serde_json::from_str(&ha.template(TVS_TEMPLATE)?).context("parsing the TVs")?;
+    let found: Vec<(String, String)> = ha.template_json(TVS_TEMPLATE, "parsing the TVs")?;
     Ok(found.into_iter().filter(|(_, state)| !["off", "standby"].contains(&state.as_str())).map(|(id, _)| id).collect())
 }
 
@@ -341,8 +341,7 @@ impl Tv {
         if let Some(entity) = &self.entity {
             return Ok(Some(entity.clone()));
         }
-        let found: Vec<(String, String)> =
-            serde_json::from_str(&ha.template(TVS_TEMPLATE)?).context("parsing the TVs")?;
+        let found: Vec<(String, String)> = ha.template_json(TVS_TEMPLATE, "parsing the TVs")?;
         Ok(found.into_iter().next().map(|(id, _)| id))
     }
 
@@ -547,8 +546,7 @@ impl Tv {
 
     /// The TV's Google Cast media player.
     fn cast_entity(&self, ha: &HomeAssistant) -> Result<Option<String>> {
-        let found: Vec<String> =
-            serde_json::from_str(&ha.template(CAST_TEMPLATE)?).context("parsing the cast players")?;
+        let found: Vec<String> = ha.template_json(CAST_TEMPLATE, "parsing the cast players")?;
         let named_tv = found.iter().find(|id| id.contains("tv")).cloned();
         Ok(named_tv.or_else(|| found.into_iter().next()))
     }
@@ -673,7 +671,6 @@ pub fn select_source(ha: &HomeAssistant, entity: &str, source: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dialog::normalize;
 
     #[test]
     fn what_the_tv_showed_before() {
@@ -686,7 +683,7 @@ mod tests {
     }
 
     fn tv(text: &str) -> Option<TvCommand> {
-        let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+        let words: Vec<String> = crate::dialog::words(text);
         parse(&words)
     }
 

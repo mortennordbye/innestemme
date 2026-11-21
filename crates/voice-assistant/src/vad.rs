@@ -60,10 +60,6 @@ pub fn level_db(frame: &[i16]) -> f32 {
 }
 
 impl Vad {
-    pub fn is_speaking(&self) -> bool {
-        self.speaking
-    }
-
     pub fn reset(&mut self) {
         let floor = self.floor;
         *self = Self { floor, ..Self::default() };

@@ -6,32 +6,22 @@
 use std::sync::Arc;
 
 use anyhow::{bail, Result};
-use voice_assistant::parakeet::{Parakeet, ParakeetFiles, DEFAULT_REPO};
 use voice_assistant::resample::to_24k;
-use voice_assistant::wakeword::{WakeDetector, WakeModels, CHUNK};
+use voice_assistant::wakeword::WakeModels;
 use voice_assistant::whisper::Transcribe;
+
+mod common;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let Some(model) = args.next() else { bail!("usage: wake_text <model> <wav>...") };
     let models = Arc::new(WakeModels::load(&model)?);
-    let mut parakeet =
-        Parakeet::load(&ParakeetFiles::fetch(&std::env::var("PARAKEET").unwrap_or_else(|_| DEFAULT_REPO.into()))?, 4)?;
+    let mut parakeet = common::parakeet_from_env()?;
     let before = std::env::var("BEFORE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500usize) * 16;
     let after = std::env::var("AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(200usize) * 16;
     for path in args {
-        let mut reader = hound::WavReader::open(&path)?;
-        let pcm: Vec<i16> = reader.samples::<i16>().collect::<Result<_, _>>()?;
-        let mut detector = WakeDetector::new(models.clone());
-        let (mut best, mut at, mut offset) = (0.0f32, 0usize, 0usize);
-        for block in pcm.chunks(CHUNK) {
-            offset += block.len();
-            if let Some(score) = detector.push(block)? {
-                if score > best {
-                    (best, at) = (score, offset);
-                }
-            }
-        }
+        let pcm = voice_codec::wav::read_mono(&path, 16_000)?;
+        let (best, at) = common::wake_peak(&models, &pcm)?;
         let wake = &pcm[at.saturating_sub(before)..(at + after).min(pcm.len())];
         let audio = to_24k(wake, 16_000);
         let start = std::time::Instant::now();

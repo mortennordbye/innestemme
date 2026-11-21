@@ -1419,6 +1419,11 @@ fn unreachable_text(error: &anyhow::Error, no: bool) -> &'static str {
     }
 }
 
+/// The answer when no Home Assistant is set up, in the listener's language.
+fn not_connected(no: bool) -> String {
+    if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }.into()
+}
+
 pub(crate) fn save_wav(
     dir: &std::path::Path,
     kind: &str,

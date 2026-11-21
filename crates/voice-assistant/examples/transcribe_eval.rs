@@ -5,11 +5,13 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use voice_assistant::dialog::normalize;
 use voice_assistant::lang::Lang;
 use voice_assistant::names::Names;
-use voice_assistant::whisper::{default_repo, Transcriber, WakePrompt, WhisperFiles};
+use voice_assistant::whisper::{Transcriber, WakePrompt};
+
+mod common;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -24,17 +26,9 @@ fn main() -> Result<()> {
     let names = Names::new(&vocab);
     // Controls: sentences whose "name" is not in the vocabulary must not match anything.
     let known = |name: &str| vocab.iter().any(|v| v.to_lowercase().contains(&name.to_lowercase()));
-    let size = std::env::var("WHISPER_SIZE").unwrap_or_else(|_| "base".into());
-    let files = WhisperFiles::fetch(&default_repo(false, &size))?;
-    let audio: Vec<Vec<i16>> = cases
-        .iter()
-        .map(|(path, _)| -> Result<Vec<i16>> {
-            Ok(hound::WavReader::open(path)
-                .with_context(|| path.clone())?
-                .samples::<i16>()
-                .collect::<Result<_, _>>()?)
-        })
-        .collect::<Result<_>>()?;
+    let files = common::whisper_from_env()?;
+    let audio: Vec<Vec<i16>> =
+        cases.iter().map(|(path, _)| voice_codec::wav::read_mono(path, 24_000)).collect::<Result<_>>()?;
     for budget in budgets.split(',').map(|b| b.parse::<usize>()) {
         let budget = budget?;
         let mut t = Transcriber::load(&files, None, voice_assistant::stt::device(false)?)?
