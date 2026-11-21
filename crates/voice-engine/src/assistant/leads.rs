@@ -33,12 +33,9 @@ pub(super) const LEADS: &[&[&str]] = &[
     LEADS_TV,
 ];
 
-/// "Checking the forecast, sir." or "Checking the forecast."
-pub(super) fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
-}
+pub(super) use voice_assistant::say::capitalize;
 
+/// "Checking the forecast, sir." or "Checking the forecast."
 pub(super) fn lead_sentence(lead: &str, honorific: Option<&str>) -> String {
     match honorific {
         Some(h) if !h.is_empty() => format!("{lead}, {h}."),

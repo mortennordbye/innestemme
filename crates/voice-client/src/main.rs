@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     hello(&socket, session)?;
 
     let (source, onsets) = match (&args.wav_in, args.tone, args.marker) {
-        (Some(path), ..) => (Some(read_wav(path)?), Vec::new()),
+        (Some(path), ..) => (Some(voice_rt::wav::read_mono(path, SAMPLE_RATE)?), Vec::new()),
         (None, Some(seconds), _) => (Some(tone(seconds)), Vec::new()),
         (None, None, Some(bursts)) => {
             let (pcm, onsets) = marker(bursts);
@@ -94,15 +94,6 @@ fn hello(socket: &UdpSocket, session: u16) -> Result<()> {
         std::thread::sleep(HELLO_RETRY.saturating_sub(attempt.elapsed()));
     }
     bail!("no hello reply from server within {HELLO_WINDOW:?}")
-}
-
-fn read_wav(path: &std::path::Path) -> Result<Vec<i16>> {
-    let mut reader = hound::WavReader::open(path).with_context(|| format!("opening {}", path.display()))?;
-    let spec = reader.spec();
-    if spec.sample_rate != SAMPLE_RATE || spec.channels != 1 || spec.bits_per_sample != 16 {
-        bail!("{} must be 24 kHz mono 16-bit, got {spec:?}", path.display());
-    }
-    Ok(reader.samples::<i16>().collect::<Result<_, _>>()?)
 }
 
 fn tone(seconds: f32) -> Vec<i16> {
@@ -221,17 +212,8 @@ fn run_file(
     }
 
     if let Some(path) = wav_out {
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: SAMPLE_RATE,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = hound::WavWriter::create(path, spec)?;
-        for (_, pcm, _) in &received {
-            pcm.iter().try_for_each(|&s| writer.write_sample(s))?;
-        }
-        writer.finalize()?;
+        let pcm: Vec<i16> = received.iter().flat_map(|(_, pcm, _)| pcm.iter().copied()).collect();
+        voice_rt::wav::write_mono(path, SAMPLE_RATE, &pcm)?;
         println!("wrote {}", path.display());
     }
     Ok(())

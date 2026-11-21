@@ -11,7 +11,7 @@ use voice_assistant::lang::Lang;
 use voice_assistant::music::Player;
 use voice_assistant::{house, tv};
 
-use super::{unreachable, Worker};
+use super::{not_connected, unreachable, Worker};
 
 /// The Hue alert the lockdown's lights pulse with lasts about 15 seconds: started again before it ends.
 const ALARM_REPEAT: Duration = Duration::from_secs(14);
@@ -67,8 +67,7 @@ impl Worker {
         // Checked first: without a client nothing is locked down, and a party restore still
         // waiting should go ahead.
         if self.home_assistant.is_none() {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         }
         // Its red lights and the party's stream would fight over the same lights.
         let party = self.party_off_for_lockdown();
@@ -217,8 +216,7 @@ impl Worker {
     pub(super) fn stand_down(&mut self, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         // Only with a lockdown to end: "stand down" without one leaves a party and its restore be.
         // Home Assistant's scene decides; what this engine knows only when it can't be asked.

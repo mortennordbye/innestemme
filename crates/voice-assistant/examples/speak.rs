@@ -20,15 +20,7 @@ fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut pcm = Vec::new();
     tts.speak(&text.join(" "), lang, &mut |chunk| pcm.extend_from_slice(chunk))?;
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: voice_proto::SAMPLE_RATE,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = hound::WavWriter::create(out, spec)?;
-    pcm.iter().try_for_each(|&s| writer.write_sample(s))?;
-    writer.finalize()?;
+    voice_rt::wav::write_mono(out, voice_proto::SAMPLE_RATE, &pcm)?;
     let peak = pcm.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
     println!("{out}: {:.2} s of audio in {:?}, peak {peak}", pcm.len() as f32 / 24_000.0, start.elapsed());
     Ok(())

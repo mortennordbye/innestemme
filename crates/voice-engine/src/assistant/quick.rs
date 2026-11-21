@@ -8,8 +8,7 @@ use voice_assistant::tv::TvCommand;
 
 /// "Stop", "stop it": never mind, or the music when it plays.
 pub(super) fn bare_stop(request: &str) -> bool {
-    let words: Vec<String> =
-        request.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
+    let words = voice_assistant::dialog::words(request);
     matches!(words.as_slice(), [w] | [w, _] if ["stop", "stopp"].contains(&w.as_str()))
         && intent::parse(request) == Intent::Cancel
 }
@@ -18,8 +17,7 @@ pub(super) fn bare_stop(request: &str) -> bool {
 /// that ends in "music" and is nothing else means pausing it when it was playing, else playing it.
 /// A prompt with the command words fixes some of these but makes up commands from room noise.
 pub(super) fn music_by_sound(request: &str, playing: bool) -> Option<String> {
-    let words: Vec<String> =
-        request.split_whitespace().map(voice_assistant::dialog::normalize).filter(|w| !w.is_empty()).collect();
+    let words = voice_assistant::dialog::words(request);
     // "Stop" over music means the music, not "never mind".
     if bare_stop(request) && playing {
         return Some("pause the music".into());

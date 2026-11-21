@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -76,10 +76,6 @@ impl Activity {
     /// `name` when a satellite connects, `None` when it goes.
     pub fn satellite(&self, name: Option<&str>) {
         self.inner().satellite = name.map(|n| (n.to_owned(), now()));
-    }
-
-    pub fn uptime(&self) -> Duration {
-        self.started.elapsed()
     }
 
     /// `/api/activity`: the latest requests (newest first), today's numbers, the satellite.

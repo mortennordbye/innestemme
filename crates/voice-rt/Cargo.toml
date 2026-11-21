@@ -5,7 +5,9 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 assert_no_alloc.workspace = true
 core_affinity.workspace = true
+hound = "3.5"
 voice-proto.workspace = true
 rayon = "1"

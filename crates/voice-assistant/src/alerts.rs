@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 
 use crate::ha::HomeAssistant;
@@ -53,7 +53,7 @@ impl Alert {
 const ALERTS_TEMPLATE: &str = r#"[{% for s in states.binary_sensor if s.state == 'on' and (s.attributes.device_class in ['smoke', 'carbon_monoxide', 'gas', 'moisture', 'safety'] or 'smoke_alarm' in s.entity_id or 'co_alarm' in s.entity_id or 'glass_break' in s.entity_id) %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}, "class": {{ (s.attributes.device_class or '') | tojson }}, "area": {{ (area_name(s.entity_id) or '') | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
 
 pub fn active(ha: &HomeAssistant) -> Result<Vec<Alert>> {
-    serde_json::from_str(&ha.template(ALERTS_TEMPLATE)?).context("parsing the alerts from Home Assistant")
+    ha.template_json(ALERTS_TEMPLATE, "parsing the alerts from Home Assistant")
 }
 
 /// The warning to speak: "Warning. A smoke alarm is going off in the living room."

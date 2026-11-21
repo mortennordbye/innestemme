@@ -6,27 +6,21 @@
 
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use voice_assistant::intent;
 use voice_assistant::lang::Lang;
-use voice_assistant::whisper::{default_repo, Transcriber, WakePrompt, WhisperFiles, Window};
+use voice_assistant::whisper::{Transcriber, WakePrompt, Window};
+
+mod common;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [settings, wavs @ ..] = args.as_slice() else {
         anyhow::bail!("usage: whisper_window full,3/10 a.wav b.wav ...")
     };
-    let size = std::env::var("WHISPER_SIZE").unwrap_or_else(|_| "base".into());
-    let files = WhisperFiles::fetch(&default_repo(false, &size))?;
-    let audio: Vec<Vec<i16>> = wavs
-        .iter()
-        .map(|path| -> Result<Vec<i16>> {
-            Ok(hound::WavReader::open(path)
-                .with_context(|| path.clone())?
-                .samples::<i16>()
-                .collect::<Result<_, _>>()?)
-        })
-        .collect::<Result<_>>()?;
+    let files = common::whisper_from_env()?;
+    let audio: Vec<Vec<i16>> =
+        wavs.iter().map(|path| voice_rt::wav::read_mono(path, 24_000)).collect::<Result<_>>()?;
     // Transcript and the intent it parses to, per file, from the first setting.
     let mut reference: Vec<(String, String)> = Vec::new();
     for setting in settings.split(',') {

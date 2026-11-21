@@ -9,6 +9,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 
+use crate::say::capitalize;
+
 /// Each followed by ", sir."
 const OPENERS: &[&str] = &[
     "As you wish",
@@ -341,11 +343,6 @@ fn with_honorific(sentence: &str, honorific: &str) -> String {
         Some((i, c)) if matches!(c, '.' | '?' | '!') => format!("{}, {honorific}{c}", &sentence[..i]),
         _ => format!("{sentence}, {honorific}."),
     }
-}
-
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
 fn has_word(text: &str, word: &str) -> bool {

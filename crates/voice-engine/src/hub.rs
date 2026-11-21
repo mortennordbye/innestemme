@@ -79,9 +79,7 @@ impl Hub {
 
     /// `POST /api/hub/room?area=Kitchen&on=1`: switches a room's lights.
     pub async fn room(self: &Arc<Self>, query: &str) -> Response {
-        let param = |key: &str| {
-            query.split('&').find_map(|pair| pair.strip_prefix(key)?.strip_prefix('=')).map(crate::web::decode)
-        };
+        let param = |key: &str| crate::web::param(query, key);
         let (Some(area), Some(on)) = (param("area"), param("on")) else {
             return ("400 Bad Request", "application/json", br#"{"reason":"`area` and `on`"}"#.to_vec());
         };
@@ -123,7 +121,7 @@ impl Hub {
     fn fetch(&self) -> Result<Value> {
         let Some(ha) = &self.ha else { return Ok(json!({ "error": "Home Assistant isn't connected." })) };
         let mut ha = ha.lock().unwrap_or_else(|e| e.into_inner());
-        let mut value: Value = serde_json::from_str(&ha.template(HUB_TEMPLATE)?).context("parsing the hub data")?;
+        let mut value: Value = ha.template_json(HUB_TEMPLATE, "parsing the hub data")?;
         let lights = ha.lights()?.to_vec();
         let on = ha.lights_on()?;
         value["rooms"] = rooms(&lights, &on).into();

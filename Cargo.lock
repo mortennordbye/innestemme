@@ -5029,7 +5029,6 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "hf-hub",
- "hound",
  "jiff",
  "ptts",
  "rand 0.10.3",
@@ -5043,6 +5042,7 @@ dependencies = [
  "tract-onnx",
  "ureq 3.5.2",
  "voice-proto",
+ "voice-rt",
  "xn",
 ]
 
@@ -5055,7 +5055,6 @@ dependencies = [
  "candle-transformers",
  "clap",
  "hf-hub",
- "hound",
  "mimalloc",
  "moshi",
  "voice-codec",
@@ -5070,7 +5069,6 @@ dependencies = [
  "anyhow",
  "clap",
  "cpal",
- "hound",
  "rtrb",
  "voice-proto",
  "voice-rt",
@@ -5138,8 +5136,10 @@ version = "0.1.0"
 name = "voice-rt"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "assert_no_alloc",
  "core_affinity",
+ "hound",
  "rayon",
  "voice-proto",
 ]

@@ -217,15 +217,8 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
                 Value::String(one) => one.split(',').map(str::to_owned).collect(),
                 _ => Vec::new(),
             };
-            let items: Vec<String> = items
-                .iter()
-                .map(|i| i.trim())
-                .filter(|i| !i.is_empty())
-                .map(|i| {
-                    let mut chars = i.chars();
-                    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
-                })
-                .collect();
+            let items: Vec<String> =
+                items.iter().map(|i| i.trim()).filter(|i| !i.is_empty()).map(crate::say::capitalize).collect();
             let command = match text("action").as_deref().unwrap_or("read") {
                 "add" => ListCommand::Add(items),
                 "remove" if !items.is_empty() => ListCommand::Remove(items),

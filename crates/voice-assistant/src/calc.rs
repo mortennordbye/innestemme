@@ -2,6 +2,7 @@
 //! right as people say them. Numbers as digits, the way the transcriber writes them.
 
 use crate::lang::Lang;
+use crate::say::capitalize;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Op {
@@ -121,11 +122,6 @@ fn operator(tokens: &[String]) -> Option<(Op, usize)> {
         ("percent" | "%" | "prosent", "of" | "av") => (Op::PercentOf, 2),
         _ => return None,
     })
-}
-
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
 #[cfg(test)]

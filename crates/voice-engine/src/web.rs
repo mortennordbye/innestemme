@@ -256,7 +256,7 @@ impl Web {
         let Some(assistant) = &self.assistant else {
             return Some(bad_request("This engine has no assistant."));
         };
-        let text = query.split('&').find_map(|pair| pair.strip_prefix("q=")).map(decode).unwrap_or_default();
+        let text = param(query, "q").unwrap_or_default();
         let text = text.trim();
         if text.is_empty() {
             return Some(bad_request("`q` is the request."));
@@ -298,7 +298,7 @@ impl Web {
             return Some(json_response(&json!({ "enabled": false, "pairs": [] })));
         };
         if post {
-            let Some(heard) = query.split('&').find_map(|pair| pair.strip_prefix("forget=")).map(decode) else {
+            let Some(heard) = param(query, "forget") else {
                 return Some(bad_request("`forget=<heard>`"));
             };
             learned.forget(&heard);
@@ -393,8 +393,8 @@ impl Web {
             return Some(json_response(&json!({ "available": false })));
         };
         if post {
-            let pause = query.split('&').find_map(|pair| pair.strip_prefix("pause="));
-            match pause.map(str::parse::<u64>) {
+            let pause = param(query, "pause");
+            match pause.as_deref().map(str::parse::<u64>) {
                 Some(Ok(0)) => assistant.pause.pause(None),
                 Some(Ok(minutes)) => assistant.pause.pause(Some(minutes)),
                 Some(Err(_)) => return Some(bad_request("`pause` is a number of minutes")),
@@ -421,8 +421,8 @@ impl Web {
         if !post {
             return Some(bad_request("POST"));
         }
-        let what = query.split('&').find_map(|pair| pair.strip_prefix("do=")).unwrap_or_default();
-        let Some((_, request)) = ACTIONS.iter().find(|(name, _)| *name == what) else {
+        let what = param(query, "do").unwrap_or_default();
+        let Some((_, request)) = ACTIONS.iter().find(|(name, _)| *name == what.as_str()) else {
             return Some(bad_request(
                 "`do` is one of party, party_fast, party_relaxed, party_off, lockdown, stand_down",
             ));
@@ -437,7 +437,7 @@ impl Web {
     /// `/api/hear?q=...`: the spoken answer as a URL under `/speech/`, when the request only reads.
     pub async fn hear(&self, target: &str) -> Option<Response> {
         let query = target.strip_prefix("/api/hear?")?;
-        let text = query.split('&').find_map(|pair| pair.strip_prefix("q=")).map(decode).unwrap_or_default();
+        let text = param(query, "q").unwrap_or_default();
         if text.chars().count() > TYPED_MAX {
             return Some(json_response(&json!({ "reason": "That is longer than any spoken request." })));
         }
@@ -460,7 +460,7 @@ impl Web {
     /// Nothing is switched.
     pub async fn plan(&self, target: &str) -> Option<Response> {
         let query = target.strip_prefix("/api/plan?")?;
-        let text = query.split('&').find_map(|pair| pair.strip_prefix("q=")).map(decode).unwrap_or_default();
+        let text = param(query, "q").unwrap_or_default();
         if text.chars().count() > TYPED_MAX {
             return Some(json_response(&json!({ "reason": "That is longer than any spoken request." })));
         }
@@ -489,7 +489,7 @@ impl Web {
                 Some(json_response(&json!({ "enabled": entries.is_some(), "entries": entries.unwrap_or_default() })))
             }
             "/api/parse" => {
-                let text = query.split('&').find_map(|pair| pair.strip_prefix("q=")).map(decode).unwrap_or_default();
+                let text = param(query, "q").unwrap_or_default();
                 Some(json_response(&self.parse(&text)))
             }
             _ => None,
@@ -566,13 +566,7 @@ fn bad_request(reason: &str) -> Response {
 
 /// The announcement a query asks for, or why it cannot be spoken.
 fn announcement(query: &str) -> Result<Announcement, &'static str> {
-    let value = |key: &str| {
-        query
-            .split('&')
-            .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
-            .map(decode)
-            .map(|v| v.trim().to_owned())
-    };
+    let value = |key: &str| param(query, key).map(|v| v.trim().to_owned());
     let text = value("text").unwrap_or_default();
     if text.is_empty() {
         return Err("`text` is what to say.");
@@ -611,6 +605,11 @@ fn bearer(head: &str) -> Option<&str> {
 /// Compares in time that does not depend on where the token differs.
 fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
+}
+
+/// The decoded value of `key` in a query string, as "a=1&b=two"; the key must match in full.
+pub(crate) fn param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|pair| pair.strip_prefix(key)?.strip_prefix('=')).map(decode)
 }
 
 /// Percent-decoding for a query value; `+` is a space.
@@ -796,6 +795,14 @@ mod tests {
         assert_eq!(decode("turn+off%20the%20lights"), "turn off the lights");
         assert_eq!(decode("sl%C3%A5+p%C3%A5"), "slå på");
         assert_eq!(decode("100%"), "100%");
+    }
+
+    #[test]
+    fn finds_a_query_value_by_its_whole_key() {
+        assert_eq!(param("qq=no&q=lights+on", "q").as_deref(), Some("lights on"));
+        assert_eq!(param("area=Kitchen&on=1", "on").as_deref(), Some("1"));
+        assert_eq!(param("resume", "resume"), None);
+        assert_eq!(param("", "q"), None);
     }
 
     #[test]

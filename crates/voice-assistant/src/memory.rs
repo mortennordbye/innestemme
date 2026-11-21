@@ -200,7 +200,7 @@ fn rest_from(tokens: &[&str], from: usize) -> String {
 
 /// A note is a statement: "the spare key is in the drawer", "I parked on level 3". Not "that song".
 fn is_statement(text: &str) -> bool {
-    let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    let words: Vec<String> = crate::dialog::words(text);
     let verb = words.iter().any(|w| {
         let w = w.trim_end_matches("'s");
         VERBS.contains(&w) || PUT.contains(&w)
@@ -387,7 +387,7 @@ fn kind_of(predicate: &[String]) -> Kind {
 /// put my bike in the shed" about the bike, "I parked on level 3" about parking. A note with none
 /// of those shapes is about all its words.
 fn subject_of(note: &str) -> (Vec<String>, Kind) {
-    let words: Vec<String> = note.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    let words: Vec<String> = crate::dialog::words(note);
     let pronoun = words.first().is_some_and(|w| ["i", "we", "jeg", "vi"].contains(&w.as_str()));
     // "I put my bike in the shed": the thing after the verb, up to where it went.
     if let Some(i) = words.iter().position(|w| PUT.contains(&w.as_str())).filter(|_| pronoun) {

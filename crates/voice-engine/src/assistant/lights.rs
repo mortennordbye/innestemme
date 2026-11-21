@@ -9,7 +9,7 @@ use voice_assistant::intent::{says_off, LightLevel};
 use voice_assistant::lang::Lang;
 use voice_assistant::shopping::Change;
 
-use super::{unreachable, Worker};
+use super::{not_connected, unreachable, Worker};
 
 /// The rolling KV cache is fine for long sessions, but position ids keep growing; start over
 /// between requests once this many steps have passed (about 13 minutes).
@@ -32,11 +32,6 @@ pub(super) enum LightChange {
 /// lockdown has changed the lights since (`gone`).
 fn undoable(at: Instant, gone: Option<Instant>) -> bool {
     gone.is_none_or(|gone| at > gone)
-}
-
-/// The answer when no Home Assistant is set up, in the listener's language.
-fn not_connected(no: bool) -> String {
-    if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }.into()
 }
 
 /// "In here", "this room", "her inne", "dette rommet".
@@ -79,12 +74,7 @@ impl Worker {
         let no = lang == Lang::Norwegian;
         let recent = self.recent_lights().map(|(target, _)| target);
         let Some(ha) = &mut self.home_assistant else {
-            return Err(if no {
-                "Home Assistant er ikke koblet til ennå."
-            } else {
-                "Home Assistant isn't connected yet."
-            }
-            .into());
+            return Err(not_connected(no));
         };
         let found = ha.find(request).map_err(|error| unreachable(&error, no))?;
         let here = self.room.as_deref().and_then(|room| ha.find(room).ok().flatten());
@@ -218,8 +208,7 @@ impl Worker {
     pub(super) fn lights_status(&mut self, request: &str, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &mut self.home_assistant else {
-            return if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }
-                .into();
+            return not_connected(no);
         };
         let on = match ha.lights_on() {
             Ok(on) => on,
@@ -244,7 +233,7 @@ impl Worker {
         // answer for themselves, but nobody counts them among the lights left on.
         let on: Vec<_> = on.into_iter().filter(|l| !l.status_led()).collect();
         let places = house::rooms_lit(&on);
-        let list = house::join(&places, lang);
+        let list = voice_assistant::say::join(&places, lang);
         match (no, places.is_empty()) {
             (false, true) => "All the lights are off.".into(),
             (true, true) => "Alt lyset er av.".into(),

@@ -5,3 +5,4 @@ pub mod hist;
 pub mod jitter;
 pub mod noalloc;
 pub mod threads;
+pub mod wav;

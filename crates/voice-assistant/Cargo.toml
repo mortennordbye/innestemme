@@ -11,7 +11,6 @@ candle = { version = "0.9.1", package = "candle-core" }
 candle-nn = "0.9.1"
 hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "rustls-tls"] }
 candle-transformers = "0.9.1"
-hound = "3.5"
 jiff = { version = "0.2", features = ["serde"] }
 # Phonon text to speech; files are fetched with hf-hub above, so only the tokenizer feature.
 ptts = { version = "0.7.1", default-features = false, features = ["hf"] }
@@ -26,6 +25,7 @@ tar = "0.4"
 tracing.workspace = true
 tract-onnx = "0.23.8"
 ureq = { version = "3", features = ["json"] }
+voice-rt.workspace = true
 voice-proto.workspace = true
 
 [dev-dependencies]

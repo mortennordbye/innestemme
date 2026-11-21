@@ -6,14 +6,15 @@
 //! uses Whisper told the language is Norwegian (WHISPER=base|small|medium, default small) instead,
 //! and ALONE=1 says the item by itself, as after "what should I add?".
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::time::{Duration, Instant};
 
 use voice_assistant::groceries::Groceries;
 use voice_assistant::norwegian::{Norwegian, NorwegianFiles};
-use voice_assistant::parakeet::{Parakeet, ParakeetFiles, DEFAULT_REPO};
 use voice_assistant::shopping::{self, ListCommand};
 use voice_assistant::whisper::Transcribe;
+
+mod common;
 
 fn main() -> Result<()> {
     let mut items: Vec<String> = std::env::args().skip(1).collect();
@@ -24,8 +25,7 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let whisper = std::env::var("LISTENER").is_ok_and(|l| l == "whisper");
     let alone = std::env::var("ALONE").is_ok_and(|a| a == "1");
-    let mut parakeet =
-        Parakeet::load(&ParakeetFiles::fetch(&std::env::var("PARAKEET").unwrap_or_else(|_| DEFAULT_REPO.into()))?, 4)?;
+    let mut parakeet = common::parakeet_from_env()?;
     let norwegian = match whisper {
         true => {
             let size = std::env::var("WHISPER").unwrap_or_else(|_| "small".into());
@@ -86,5 +86,5 @@ fn say(dir: &std::path::Path, voice: &str, text: &str) -> Result<Vec<i16>> {
             .status()?
             .success();
     anyhow::ensure!(ok, "say or afconvert failed for {text:?}");
-    hound::WavReader::open(&wav)?.samples::<i16>().collect::<Result<_, _>>().context("reading the wav")
+    voice_rt::wav::read_mono(&wav, 24_000)
 }

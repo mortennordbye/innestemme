@@ -11,6 +11,7 @@ use crate::dialog::normalize;
 use crate::groceries::Groceries;
 use crate::ha::HomeAssistant;
 use crate::lang::Lang;
+use crate::say::{capitalize, join};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ListCommand {
@@ -143,7 +144,7 @@ const DONE: &[&str] = &[
 /// Whether a reply while the list is open closes it: "that's all", "no, that's it", "nope",
 /// "that's all for now".
 pub fn closes_list(text: &str) -> bool {
-    let mut said = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
+    let mut said = crate::dialog::phrase(text);
     let mut trimmed = false;
     loop {
         let before = said.len();
@@ -171,12 +172,6 @@ pub fn closes_list(text: &str) -> bool {
         trimmed = true;
     }
     DONE.contains(&said.as_str()) || (trimmed && said.is_empty())
-}
-
-/// A change said while the list is open, without naming the list: "remove milk", "actually take
-/// the milk off", "add bread". `None` for a reply that is only items, or something else.
-pub fn open_list_command(text: &str) -> Option<ListCommand> {
-    open_list_commands(text).into_iter().next()
 }
 
 /// Every change in a reply while the list is open: "remove milk and add bread" is two. Empty for a
@@ -305,14 +300,6 @@ fn clean(word: &str) -> String {
         .collect::<String>()
         .trim_matches('-')
         .to_owned()
-}
-
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -490,8 +477,7 @@ impl ShoppingList {
             id: String,
             name: String,
         }
-        let lists: Vec<List> = serde_json::from_str(&ha.template(LISTS_TEMPLATE)?)
-            .context("parsing the to-do lists from Home Assistant")?;
+        let lists: Vec<List> = ha.template_json(LISTS_TEMPLATE, "parsing the to-do lists from Home Assistant")?;
         let shopping = |l: &&List| {
             let text = format!("{} {}", l.id, l.name).to_lowercase();
             ["shopping", "grocer", "handle", "innkjøp"].iter().any(|w| text.contains(w))
@@ -586,16 +572,6 @@ fn lower(items: &[String]) -> Vec<String> {
     items.iter().map(|i| i.to_lowercase()).collect()
 }
 
-/// "milk", "milk and eggs", "milk, eggs and bread".
-fn join(items: &[String], lang: Lang) -> String {
-    let and = if lang == Lang::Norwegian { "og" } else { "and" };
-    match items {
-        [] => String::new(),
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} {and} {last}", rest.join(", ")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,20 +642,21 @@ mod tests {
 
     #[test]
     fn changes_said_while_the_list_is_open() {
-        let remove = |v: &[&str]| Some(ListCommand::Remove(v.iter().map(|s| s.to_string()).collect()));
-        assert_eq!(open_list_command("remove milk"), remove(&["Milk"]));
-        assert_eq!(open_list_command("Actually, remove the milk."), remove(&["Milk"]));
-        assert_eq!(open_list_command("take the eggs off"), remove(&["Eggs"]));
-        assert_eq!(open_list_command("fjern melk"), remove(&["Melk"]));
-        assert_eq!(open_list_command("add milk"), add(&["Milk"]));
-        assert_eq!(open_list_command("oh, and add bread"), add(&["Bread"]));
-        assert_eq!(open_list_command("milk and eggs"), None);
-        assert_eq!(open_list_command("remove"), None);
+        let remove = |v: &[&str]| vec![ListCommand::Remove(v.iter().map(|s| s.to_string()).collect())];
+        let add = |v: &[&str]| Vec::from_iter(add(v));
+        assert_eq!(open_list_commands("remove milk"), remove(&["Milk"]));
+        assert_eq!(open_list_commands("Actually, remove the milk."), remove(&["Milk"]));
+        assert_eq!(open_list_commands("take the eggs off"), remove(&["Eggs"]));
+        assert_eq!(open_list_commands("fjern melk"), remove(&["Melk"]));
+        assert_eq!(open_list_commands("add milk"), add(&["Milk"]));
+        assert_eq!(open_list_commands("oh, and add bread"), add(&["Bread"]));
+        assert_eq!(open_list_commands("milk and eggs"), Vec::<ListCommand>::new());
+        assert_eq!(open_list_commands("remove"), Vec::<ListCommand>::new());
         assert_eq!(items_of("actually bread"), ["Bread"]);
         // A yes or no before the correction is not an item.
-        assert_eq!(open_list_command("No, remove the milk"), remove(&["Milk"]));
-        assert_eq!(open_list_command("Oh no, take the eggs off"), remove(&["Eggs"]));
-        assert_eq!(open_list_command("Nei, fjern melk"), remove(&["Melk"]));
+        assert_eq!(open_list_commands("No, remove the milk"), remove(&["Milk"]));
+        assert_eq!(open_list_commands("Oh no, take the eggs off"), remove(&["Eggs"]));
+        assert_eq!(open_list_commands("Nei, fjern melk"), remove(&["Melk"]));
         assert_eq!(items_of("Yes, bread"), ["Bread"]);
         assert!(items_of("No, bread").is_empty());
         assert!(items_of("no milk").is_empty());
@@ -689,9 +666,9 @@ mod tests {
         for request in ["Check if we have eggs", "ta med melk", "take the milk", "check the milk", "is milk on it"] {
             assert!(items_of(request).is_empty(), "{request}");
         }
-        assert_eq!(open_list_command("take out the milk"), remove(&["Milk"]));
-        assert_eq!(open_list_command("take the milk out"), remove(&["Milk"]));
-        assert_eq!(open_list_command("ta ut melka"), remove(&["Melka"]));
+        assert_eq!(open_list_commands("take out the milk"), remove(&["Milk"]));
+        assert_eq!(open_list_commands("take the milk out"), remove(&["Milk"]));
+        assert_eq!(open_list_commands("ta ut melka"), remove(&["Melka"]));
         assert_eq!(
             open_list_commands("add bread and put milk on"),
             [ListCommand::Add(vec!["Bread".into()]), ListCommand::Add(vec!["Milk".into()])]
@@ -702,12 +679,12 @@ mod tests {
             [ListCommand::Remove(vec!["Milk".into()]), ListCommand::Add(vec!["Bread".into()])]
         );
         // Questions and bringing are not removals.
-        assert_eq!(open_list_command("Check if we have eggs"), Some(ListCommand::Has(vec!["Eggs".into()])));
-        assert_eq!(open_list_command("ta med melk"), add(&["Melk"]));
-        assert_eq!(open_list_command("take the milk"), remove(&["Milk"]));
-        assert_eq!(open_list_command("check the milk"), remove(&["Milk"]));
-        assert_eq!(open_list_command("check off the eggs"), remove(&["Eggs"]));
-        assert_eq!(open_list_command("ta egg av"), remove(&["Egg"]));
+        assert_eq!(open_list_commands("Check if we have eggs"), [ListCommand::Has(vec!["Eggs".into()])]);
+        assert_eq!(open_list_commands("ta med melk"), add(&["Melk"]));
+        assert_eq!(open_list_commands("take the milk"), remove(&["Milk"]));
+        assert_eq!(open_list_commands("check the milk"), remove(&["Milk"]));
+        assert_eq!(open_list_commands("check off the eggs"), remove(&["Eggs"]));
+        assert_eq!(open_list_commands("ta egg av"), remove(&["Egg"]));
     }
 
     #[test]

@@ -6,6 +6,7 @@ use std::sync::{mpsc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::dialog::normalize;
@@ -342,9 +343,8 @@ impl HomeAssistant {
 
     fn refresh_named(&mut self) -> Result<()> {
         if self.named_fetched.is_none_or(|at| at.elapsed() > REFRESH) {
-            self.scenes = serde_json::from_str(&self.template(SCENES_TEMPLATE)?).context("parsing the scene list")?;
-            self.scripts =
-                serde_json::from_str(&self.template(SCRIPTS_TEMPLATE)?).context("parsing the script list")?;
+            self.scenes = self.template_json(SCENES_TEMPLATE, "parsing the scene list")?;
+            self.scripts = self.template_json(SCRIPTS_TEMPLATE, "parsing the script list")?;
             self.named_fetched = Some(Instant::now());
         }
         Ok(())
@@ -383,7 +383,7 @@ impl HomeAssistant {
 
     /// Everyone Home Assistant tracks, and where they are.
     pub fn people(&self) -> Result<Vec<Person>> {
-        serde_json::from_str(&self.template(PEOPLE_TEMPLATE)?).context("parsing the people from Home Assistant")
+        self.template_json(PEOPLE_TEMPLATE, "parsing the people from Home Assistant")
     }
 
     /// Turns on a scene or runs a script (both are `<domain>.turn_on`).
@@ -394,8 +394,7 @@ impl HomeAssistant {
 
     /// The lights that are on now (not cached).
     pub fn lights_on(&mut self) -> Result<Vec<Light>> {
-        let ids: Vec<String> =
-            serde_json::from_str(&self.template(LIGHTS_ON_TEMPLATE)?).context("parsing the lights that are on")?;
+        let ids: Vec<String> = self.template_json(LIGHTS_ON_TEMPLATE, "parsing the lights that are on")?;
         Ok(self.lights()?.iter().filter(|l| ids.contains(&l.id)).cloned().collect())
     }
 
@@ -465,6 +464,13 @@ impl HomeAssistant {
         Ok(self.post("/api/template", serde_json::json!({ "template": template }))?.body_mut().read_to_string()?)
     }
 
+    /// Renders a template that prints JSON and parses it. `what` is the context of a parse error, as
+    /// "parsing the TVs"; an error from the request itself stays as it is.
+    pub fn template_json<T: DeserializeOwned>(&self, template: &str, what: &str) -> Result<T> {
+        let text = self.template(template)?;
+        serde_json::from_str(&text).with_context(|| what.to_owned())
+    }
+
     /// Any GET under the API, e.g. `/api/states/light.kitchen`.
     pub fn get(&self, path: &str) -> Result<serde_json::Value> {
         self.agent
@@ -525,7 +531,7 @@ impl HomeAssistant {
             serde_json::to_string(&area)?,
             serde_json::to_string(also)?
         );
-        serde_json::from_str(&self.template(&template)?).context("parsing the playing media players")
+        self.template_json(&template, "parsing the playing media players")
     }
 
     /// The area of the first device with one of these names (friendly name or ESPHome name).
@@ -612,10 +618,10 @@ pub fn resolve_scene<'a>(scenes: &'a [Named], request: &str, here: Option<&str>)
         return SceneMatch::NotFound;
     }
     let wanted = crate::names::sound_key(&words.join(" "));
-    let room = named_room.or_else(|| here.and_then(|h| room_group(&normalize_phrase(h))));
-    let here_area = here.map(normalize_phrase);
+    let room = named_room.or_else(|| here.and_then(|h| room_group(&crate::dialog::phrase(h))));
+    let here_area = here.map(crate::dialog::phrase);
     let in_room = |scene: &Named| {
-        let area = normalize_phrase(&scene.area);
+        let area = crate::dialog::phrase(&scene.area);
         match room {
             Some(group) => room_group(&area) == Some(group),
             None => here_area.as_deref().is_some_and(|h| h == area),
@@ -660,8 +666,8 @@ pub fn resolve_scene<'a>(scenes: &'a [Named], request: &str, here: Option<&str>)
 
 /// A scene's name without its room: "Living room Relax" is "relax".
 fn scene_own_name(scene: &Named) -> String {
-    let name = normalize_phrase(&scene.name);
-    let area = normalize_phrase(&scene.area);
+    let name = crate::dialog::phrase(&scene.name);
+    let area = crate::dialog::phrase(&scene.area);
     match name.strip_prefix(&format!("{area} ")) {
         Some(rest) if !area.is_empty() => rest.to_owned(),
         _ => name,
@@ -697,7 +703,7 @@ pub fn resolve_script<'a>(scripts: &'a [Named], request: &str) -> Option<&'a Nam
         return None;
     }
     let phrase = words.join(" ");
-    if let Some(exact) = scripts.iter().find(|s| normalize_phrase(&s.name) == phrase) {
+    if let Some(exact) = scripts.iter().find(|s| crate::dialog::phrase(&s.name) == phrase) {
         return Some(exact);
     }
     let names = crate::names::Names::new(scripts.iter().map(|s| s.name.as_str()));
@@ -708,11 +714,11 @@ pub fn resolve_script<'a>(scripts: &'a [Named], request: &str) -> Option<&'a Nam
 /// A scene or script whose whole name is the request: "movie time", "living room relax". Makes
 /// every Home Assistant script a voice command without a verb.
 pub fn exact<'a>(entities: &'a [Named], request: &str) -> Option<&'a Named> {
-    let phrase = normalize_phrase(request);
+    let phrase = crate::dialog::phrase(request);
     let polite: &[&str] = &["please", "takk", "ok", "okay"];
     let phrase: Vec<&str> = phrase.split(' ').filter(|w| !polite.contains(w)).collect();
     let phrase = phrase.join(" ");
-    entities.iter().find(|e| !phrase.is_empty() && normalize_phrase(&e.name) == phrase)
+    entities.iter().find(|e| !phrase.is_empty() && crate::dialog::phrase(&e.name) == phrase)
 }
 
 /// Whether a request names a room or light at all ("turn them off" does not).
@@ -729,7 +735,7 @@ pub fn names_only_room(words: &[String]) -> bool {
 
 /// Whether a name or area is the room `room` names, in either language ("Soverom" is the bedroom).
 pub fn is_room(name: &str, room: &str) -> bool {
-    let (name, room) = (normalize_phrase(name), normalize_phrase(room));
+    let (name, room) = (crate::dialog::phrase(name), crate::dialog::phrase(room));
     !name.is_empty() && (name == room || room_group(&room).is_some_and(|g| room_group(&name) == Some(g)))
 }
 
@@ -740,8 +746,7 @@ const ANNOUNCERS_TEMPLATE: &str = r#"{% set ma = integration_entities("music_ass
 /// The media player to announce on in a room as said ("kitchen", "stua"); `None` when the room
 /// has none.
 pub fn announcer_in(ha: &HomeAssistant, room: &str) -> Result<Option<String>> {
-    let players: Vec<serde_json::Value> =
-        serde_json::from_str(&ha.template(ANNOUNCERS_TEMPLATE)?).context("parsing media players")?;
+    let players: Vec<serde_json::Value> = ha.template_json(ANNOUNCERS_TEMPLATE, "parsing media players")?;
     Ok(pick_announcer(&players, room))
 }
 
@@ -768,7 +773,7 @@ fn pick_announcer(players: &[serde_json::Value], room: &str) -> Option<String> {
 
 /// Whether a whole phrase is a room people name, in either language: "kitchen", "badet".
 pub fn is_room_phrase(phrase: &str) -> bool {
-    room_group(&normalize_phrase(phrase)).is_some()
+    room_group(&crate::dialog::phrase(phrase)).is_some()
 }
 
 /// [`ROOMS`]' rooms as said in Norwegian after "på", in the same order.
@@ -777,7 +782,7 @@ const NORWEGIAN_ROOMS: &[&str] =
 
 /// A room people name, in a language's words: "Stue" is "living room", and "stua" in Norwegian.
 pub fn room_name(phrase: &str, lang: crate::lang::Lang) -> Option<&'static str> {
-    let group = room_group(&normalize_phrase(phrase))?;
+    let group = room_group(&crate::dialog::phrase(phrase))?;
     match lang {
         crate::lang::Lang::English => Some(ROOMS[group][0]),
         crate::lang::Lang::Norwegian => NORWEGIAN_ROOMS.get(group).copied(),
@@ -802,11 +807,11 @@ pub fn resolve(lights: &[Light], request: &str) -> Option<Target> {
     let group = room_group(&phrase).or_else(|| words.iter().find_map(|w| room_group(w)));
 
     let area_matches = |area: &str| {
-        let area = normalize_phrase(area);
+        let area = crate::dialog::phrase(area);
         !area.is_empty() && (area == phrase || (group.is_some() && room_group(&area) == group))
     };
     let room_light = lights.iter().find(|l| {
-        let name = normalize_phrase(&l.name);
+        let name = crate::dialog::phrase(&l.name);
         name == phrase || (group.is_some() && room_group(&name) == group)
     });
     if let Some(light) = room_light {
@@ -826,7 +831,7 @@ pub fn resolve(lights: &[Light], request: &str) -> Option<Target> {
     let named: Vec<&Light> = lights
         .iter()
         .filter(|l| {
-            let name = normalize_phrase(&l.name);
+            let name = crate::dialog::phrase(&l.name);
             words.iter().all(|w| name.split(' ').any(|n| n == w))
                 || group.is_some_and(|g| ROOMS[g].iter().any(|room| name.contains(room)))
         })
@@ -836,10 +841,6 @@ pub fn resolve(lights: &[Light], request: &str) -> Option<Target> {
         [one] => Some(Target { label: one.name.clone(), ids: vec![one.id.clone()], area: false }),
         many => Some(Target { label: phrase, ids: many.iter().map(|l| l.id.clone()).collect(), area: true }),
     }
-}
-
-fn normalize_phrase(text: &str) -> String {
-    text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

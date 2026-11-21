@@ -1511,7 +1511,7 @@ const MISHEARD: &[(&[&str], &[&str])] = &[
 
 /// The request with known mishearings put right, as normalised words; unchanged when there are none.
 fn corrected(text: &str) -> std::borrow::Cow<'_, str> {
-    let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    let words: Vec<String> = crate::dialog::words(text);
     let mut out: Vec<&str> = Vec::with_capacity(words.len());
     let (mut i, mut changed) = (0, false);
     while i < words.len() {
@@ -1539,7 +1539,7 @@ fn corrected(text: &str) -> std::borrow::Cow<'_, str> {
 
 fn rules(text: &str, notes: bool) -> Intent {
     let text = &*corrected(text);
-    let words: Vec<String> = text.split_whitespace().map(normalize).filter(|w| !w.is_empty()).collect();
+    let words: Vec<String> = crate::dialog::words(text);
     // Whole short phrases only, so it takes nothing from the skills ("how are the lights" is not it).
     if let Some(chat) = crate::smalltalk::parse(&words) {
         return Intent::SmallTalk(chat);
