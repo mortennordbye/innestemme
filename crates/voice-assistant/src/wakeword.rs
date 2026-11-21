@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use sha2::{Digest, Sha256};
 use tract_onnx::prelude::*;
+
+use crate::models::{cache_dir, fetch_from};
 
 /// Audio is scored in steps of 80 ms at 16 kHz, as openWakeWord does.
 pub const CHUNK: usize = 1280;
@@ -152,39 +153,8 @@ fn plan(path: &Path, shape: &[usize]) -> Result<Plan> {
     Ok(plan)
 }
 
-pub(crate) fn cache_dir() -> PathBuf {
-    match std::env::var_os("HF_HOME") {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/huggingface"),
-    }
-}
-
 fn fetch(dir: &Path, file: (&str, &str)) -> Result<PathBuf> {
     fetch_from(dir, RELEASE, file)
-}
-
-/// The file from the release at `release`, downloaded once and checked against its hash.
-pub(crate) fn fetch_from(dir: &Path, release: &str, (file, sha256): (&str, &str)) -> Result<PathBuf> {
-    let path = dir.join(file);
-    if path.exists() {
-        return Ok(path);
-    }
-    let url = format!("{release}/{file}");
-    let bytes = ureq::get(&url)
-        .call()
-        // ureq stops at 10 MB unless told otherwise; the speaker model is 30 MB.
-        .and_then(|mut response| response.body_mut().with_config().limit(200 << 20).read_to_vec())
-        .with_context(|| format!("downloading {url}"))?;
-    let digest: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    if digest != sha256 {
-        bail!("{url}: SHA-256 {digest}, expected {sha256}");
-    }
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    // Written under another name first, so an interrupted download is not taken for the model.
-    let partial = path.with_extension("part");
-    std::fs::write(&partial, &bytes).with_context(|| format!("writing {}", partial.display()))?;
-    std::fs::rename(&partial, &path)?;
-    Ok(path)
 }
 
 #[cfg(test)]

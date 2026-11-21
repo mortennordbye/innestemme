@@ -4,11 +4,7 @@
 
 use serde::Serialize;
 
-use crate::house::{HouseCommand, Routine};
 use crate::intent::Intent;
-use crate::sensors::SensorQuery;
-use crate::timer::{TimerCommand, Which};
-use crate::tv::TvCommand;
 
 #[derive(Debug, Serialize)]
 pub struct Skill {
@@ -601,58 +597,7 @@ pub const SKILLS: &[Skill] = &[
 
 /// The skill a parsed request belongs to; `None` for requests the rules do not take.
 pub fn skill_of(intent: &Intent) -> Option<&'static Skill> {
-    let id = match intent {
-        Intent::Lights { .. } => "lights",
-        Intent::LightLevel { .. } => "light_level",
-        Intent::LightsStatus { .. } => "lights_status",
-        Intent::Scene(_) => "scene",
-        Intent::Script(_) => "script",
-        Intent::Undo => "undo",
-        Intent::Tv(TvCommand::Show(_) | TvCommand::Hide) => "tv_screen",
-        Intent::Tv(_) => "tv",
-        Intent::Routine(Routine::Lockdown | Routine::StandDown) => "lockdown",
-        Intent::Routine(Routine::OpenSource) => "open_source",
-        Intent::Routine(_) => "routines",
-        Intent::Party(_) => "party",
-        Intent::House(command) => match command {
-            HouseCommand::Status => "house_status",
-            HouseCommand::Sun(_) => "sun",
-            HouseCommand::FindPhone(_) | HouseCommand::PhoneBattery(_) => "phone",
-            HouseCommand::GuestWifi(_) => "guest_wifi",
-            HouseCommand::Camera(_) => "camera",
-            HouseCommand::Alarm(_) => "alarm",
-            HouseCommand::Climate(..) => "climate",
-            HouseCommand::Sensors(SensorQuery::Battery(_)) => "batteries",
-            HouseCommand::Sensors(SensorQuery::Leaks) => "leaks",
-        },
-        Intent::Weather { .. } => "weather",
-        Intent::Transit(_) => "transit",
-        Intent::Power(_) => "power",
-        Intent::Music(_) => "music",
-        Intent::Timer(
-            TimerCommand::Alarm { .. }
-            | TimerCommand::MoveAlarm(_)
-            | TimerCommand::Snooze
-            | TimerCommand::StopAlarm
-            | TimerCommand::Cancel(Which { alarm: true, .. })
-            | TimerCommand::Remaining(Which { alarm: true, .. }),
-        ) => "wake_alarm",
-        Intent::Timer(_) => "timer",
-        Intent::ShoppingList(_) => "shopping",
-        Intent::WhosHome(_) | Intent::WhereIs { .. } => "whos_home",
-        Intent::Convert(_) => "convert",
-        Intent::Memory(_) => "memory",
-        Intent::Briefing => "briefing",
-        Intent::News => "news",
-        Intent::Lookup(_) => "lookup",
-        Intent::Calculate(_) => "calc",
-        Intent::Distance(_) => "distance",
-        Intent::Time | Intent::Date => "time",
-        Intent::Joke => "joke",
-        Intent::Thanks | Intent::Cancel => "manners",
-        Intent::SmallTalk(_) => "smalltalk",
-        Intent::Unknown => return None,
-    };
+    let id = intent.meta().skill?;
     SKILLS.iter().find(|s| s.id == id)
 }
 

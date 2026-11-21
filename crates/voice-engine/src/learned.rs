@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use voice_assistant::dialog::words;
+use voice_assistant::store;
 
 /// A repeat counts when it comes this soon after the request that was not understood.
 const REPEAT_WINDOW: Duration = Duration::from_secs(20);
@@ -48,20 +49,13 @@ pub struct Learned {
 impl Learned {
     /// Kept in `path`, read back from it if it exists; in memory only without one. A file that is
     /// there but cannot be read (permissions, a disk error) is left as it is, and nothing is saved
-    /// over it this run; one that is not a list of pairs is set aside under a name of its own.
+    /// over it this run; see [`store::read_list`] for one that is not a list of pairs.
     pub fn new(path: Option<PathBuf>) -> Self {
         let (path, pairs) = match path {
             None => (None, Vec::new()),
-            Some(path) => match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    let pairs = read_kept(&text, &path);
-                    (Some(path), pairs)
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Some(path), Vec::new()),
-                Err(error) => {
-                    warn!(%error, path = %path.display(), "could not read the learned corrections; they are not saved this run");
-                    (None, Vec::new())
-                }
+            Some(path) => match store::read_list(&path, "learned corrections") {
+                Ok(pairs) => (Some(path), pairs),
+                Err(_) => (None, Vec::new()),
             },
         };
         Self { path, state: Mutex::new(State { pairs, failed: None }) }
@@ -143,27 +137,10 @@ impl Learned {
 
     fn save(&self, pairs: &[Pair]) {
         let Some(path) = &self.path else { return };
-        // Written aside and renamed, so a crash never leaves half a file.
-        let partial = path.with_extension("part");
-        let result = serde_json::to_vec_pretty(pairs)
-            .map_err(std::io::Error::other)
-            .and_then(|bytes| std::fs::write(&partial, bytes))
-            .and_then(|()| std::fs::rename(&partial, path));
-        if let Err(error) = result {
+        if let Err(error) = store::write_json(path, pairs) {
             warn!(%error, path = %path.display(), "could not keep the learned corrections");
         }
     }
-}
-
-/// The pairs in `text`. A file that does not read is set aside, timestamped, rather than
-/// overwritten by the next save.
-fn read_kept(text: &str, path: &std::path::Path) -> Vec<Pair> {
-    serde_json::from_str(text).unwrap_or_else(|error| {
-        let aside = path.with_extension(format!("bad-{}", jiff::Timestamp::now().as_second()));
-        warn!(%error, path = %path.display(), aside = %aside.display(), "could not read the learned corrections; set aside");
-        let _ = std::fs::rename(path, aside);
-        Vec::new()
-    })
 }
 
 /// Whether a repeat is the same request said again: at least half the words of the longer one are
@@ -250,6 +227,21 @@ mod tests {
             learned.understood("Stand down.");
         }
         learned
+    }
+
+    /// A file kept by the build before the shared store still reads, and is written back the same.
+    #[test]
+    fn a_file_from_the_previous_build_reads_and_writes_the_same() {
+        let kept = include_str!("../testdata/learned.json");
+        let dir = std::env::temp_dir().join(format!("learned-previous-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("learned.json");
+        std::fs::write(&path, kept).unwrap();
+        let learned = Learned::new(Some(path.clone()));
+        assert_eq!(learned.meant("stand out"), Some("Stand down.".to_owned()));
+        learned.save(&learned.list());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), kept);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

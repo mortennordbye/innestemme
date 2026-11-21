@@ -1,0 +1,67 @@
+[
+  {
+    "id": 1,
+    "name": "pasta",
+    "reminder": null,
+    "norwegian": false,
+    "total_seconds": 480,
+    "ends": "2026-10-31T13:08:00Z",
+    "left_seconds": null,
+    "is_reminder": false,
+    "is_alarm": false,
+    "at": null,
+    "late": null
+  },
+  {
+    "id": 2,
+    "name": null,
+    "reminder": "call the plumber",
+    "norwegian": false,
+    "total_seconds": 1200,
+    "ends": "2026-10-31T13:20:00Z",
+    "left_seconds": null,
+    "is_reminder": true,
+    "is_alarm": false,
+    "at": null,
+    "late": null
+  },
+  {
+    "id": 3,
+    "name": "eggs",
+    "reminder": null,
+    "norwegian": false,
+    "total_seconds": 120,
+    "ends": null,
+    "left_seconds": 120,
+    "is_reminder": false,
+    "is_alarm": false,
+    "at": null,
+    "late": null
+  },
+  {
+    "id": 4,
+    "name": null,
+    "reminder": null,
+    "norwegian": false,
+    "total_seconds": 1500,
+    "ends": "2026-10-31T13:25:00Z",
+    "left_seconds": null,
+    "is_reminder": false,
+    "is_alarm": true,
+    "at": "14:25",
+    "late": null
+  },
+  {
+    "id": 5,
+    "name": null,
+    "reminder": null,
+    "norwegian": true,
+    "total_seconds": 300,
+    "ends": "2026-10-31T13:05:00Z",
+    "left_seconds": null,
+    "is_reminder": false,
+    "is_alarm": false,
+    "at": null,
+    "late": null
+  }
+]

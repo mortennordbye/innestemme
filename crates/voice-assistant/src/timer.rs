@@ -14,6 +14,7 @@ use tracing::{info, warn};
 
 use crate::lang::Lang;
 use crate::say::{capitalize, hh_mm, join};
+use crate::store;
 
 /// How long "snooze" puts the alarm off, in seconds.
 pub const SNOOZE: u32 = 9 * 60;
@@ -1062,26 +1063,6 @@ struct Kept {
     late: Option<String>,
 }
 
-/// The kept timers in `text`, one by one: an entry that does not read (an older or a damaged
-/// file) loses only itself, not every alarm. A file that is not a list at all is set aside
-/// rather than overwritten by the next save.
-fn read_kept(text: &str, path: &std::path::Path) -> Vec<Kept> {
-    let entries: Vec<serde_json::Value> = match serde_json::from_str(text) {
-        Ok(entries) => entries,
-        Err(error) => {
-            warn!(%error, path = %path.display(), "could not read the kept timers; set aside");
-            let _ = std::fs::rename(path, path.with_extension("bad"));
-            return Vec::new();
-        }
-    };
-    entries
-        .into_iter()
-        .filter_map(|entry| {
-            serde_json::from_value(entry).inspect_err(|error| warn!(%error, "a kept timer did not read; dropped")).ok()
-        })
-        .collect()
-}
-
 #[derive(Default)]
 pub struct Timers {
     list: Vec<Timer>,
@@ -1109,17 +1090,12 @@ impl Timers {
 
     fn restore(path: PathBuf, now: Instant, clock: Option<(Instant, Zoned)>) -> Self {
         let mut timers = Self { store: Some(path.clone()), clock, ..Self::default() };
-        // Only a missing file means no timers. One that is there but cannot be read (permissions,
-        // a disk error) is left as it is, and nothing is saved over the alarms it may keep.
-        let kept = match std::fs::read_to_string(&path) {
-            Ok(text) => read_kept(&text, &path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => {
-                warn!(%error, path = %path.display(), "could not read the kept timers; they are not saved this run");
-                timers.store = None;
-                Vec::new()
-            }
-        };
+        // A file that is there but cannot be read is left as it is, and nothing is saved over the
+        // alarms it may keep.
+        let kept: Vec<Kept> = store::read_list(&path, "kept timers").unwrap_or_else(|_| {
+            timers.store = None;
+            Vec::new()
+        });
         let local = timers.local(now);
         for k in kept {
             timers.next_id = timers.next_id.max(k.id);
@@ -1208,13 +1184,7 @@ impl Timers {
                 late: t.late.clone(),
             })
             .collect();
-        // Written aside and renamed, so a crash never leaves half a file.
-        let partial = path.with_extension("part");
-        let result = serde_json::to_vec_pretty(&kept)
-            .map_err(std::io::Error::other)
-            .and_then(|bytes| std::fs::write(&partial, bytes))
-            .and_then(|()| std::fs::rename(&partial, path));
-        if let Err(error) = result {
+        if let Err(error) = store::write_json(path, &kept) {
             warn!(%error, path = %path.display(), "could not keep the timers");
         }
     }
@@ -2572,6 +2542,26 @@ mod tests {
         assert!(ENGLISH_ANSWERS.iter().all(|a| crate::speech_cache::CachedTts::cacheable(a)));
     }
 
+    /// A file kept by the build before the shared store still reads, and is written back the same.
+    #[test]
+    fn a_file_from_the_previous_build_reads_and_writes_the_same() {
+        let kept = include_str!("../testdata/timers.json");
+        let dir = std::env::temp_dir().join(format!("innestemme-timers-previous-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("timers.json");
+        std::fs::write(&path, kept).unwrap();
+        let t0 = Instant::now();
+        let timers = Timers::restore(path.clone(), t0, Some((t0, local(14, 0))));
+        let labels: Vec<String> = timers.list().iter().map(|t| t.label(Lang::English)).collect();
+        let expected = ["the pasta timer", "the reminder to call the plumber", "the eggs timer", "the 14:25 alarm"];
+        assert_eq!(labels[..4], expected);
+        assert_eq!(timers.list()[4].lang, Lang::Norwegian);
+        assert_eq!(timers.list()[2].left(t0), Duration::from_secs(120));
+        timers.save(t0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), kept);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn timers_survive_a_restart() {
         let dir = std::env::temp_dir().join(format!("innestemme-timers-{}", std::process::id()));
@@ -2780,7 +2770,10 @@ mod tests {
         std::fs::write(&path, "{ broken").unwrap();
         let timers = Timers::restore(path.clone(), t0, Some((t0, local(14, 0))));
         assert!(timers.list().is_empty());
-        assert_eq!(std::fs::read_to_string(path.with_extension("bad")).unwrap(), "{ broken");
+        let aside = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path());
+        let aside: Vec<_> = aside.filter(|p| p.to_string_lossy().contains("timers.bad-")).collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read_to_string(&aside[0]).unwrap(), "{ broken");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
