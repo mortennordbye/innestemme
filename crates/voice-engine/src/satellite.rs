@@ -78,6 +78,13 @@ const ONSET_BASELINE: Duration = Duration::from_millis(250);
 const ONSET_RISE_DB: f32 = 15.0;
 /// After an answer has played, listen this long for a follow-up without the wake word.
 const FOLLOW_UP: Duration = Duration::from_secs(6);
+/// An answer with no word from the assistant for this long has lost its end: a lagged event
+/// broadcast drops events with only a warning. The longest quiet stretch of a real answer comes
+/// before its first audio (the language model, a skill's Home Assistant calls, a slow lead-in);
+/// after that, sentences follow each other within seconds. On a speaker device the quiet starts
+/// once the audio streamed to it has played, since it goes out at playback pace, long after it
+/// was synthesized.
+const ANSWER_SILENCE: Duration = Duration::from_secs(60);
 
 pub struct SatelliteConfig {
     /// The device's ESPHome API address, host:port (port 6053).
@@ -289,6 +296,9 @@ struct Bridge<'a, D: SatelliteDevice = Device> {
     player_answer: bool,
     /// When to end the device's run for `player_answer`.
     run_end_at: Option<Instant>,
+    /// The last event of the answer being given (`Run::Answering` or `player_answer`), for the
+    /// `ANSWER_SILENCE` watchdog.
+    answer_event_at: Option<Instant>,
 }
 
 async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &SpeechClips) -> Result<()> {
@@ -340,7 +350,9 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
                 Header { kind: Kind::Audio, codec: Codec::PcmS16, session: id, seq, ts_samples: seq.wrapping_mul(PACKET_SAMPLES as u32) }
                     .write(&mut packet);
                 let n = voice_proto::pcm_to_bytes(&pcm, &mut packet[HEADER_LEN..]);
-                udp.send(&packet[..HEADER_LEN + n]).await?;
+                if let Err(error) = udp.send(&packet[..HEADER_LEN + n]).await {
+                    break Err(error.into());
+                }
                 seq = seq.wrapping_add(1);
                 // The engine's own audio output is not used: answers come as events.
                 while udp.try_recv(&mut rx).is_ok() {}
@@ -367,6 +379,7 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
             },
         }
     };
+    b.closed(assistant);
     let mut bye = [0u8; HEADER_LEN];
     Header { kind: Kind::Bye, codec: Codec::PcmS16, session: id, seq, ts_samples: 0 }.write(&mut bye);
     let _ = udp.send(&bye).await;
@@ -409,6 +422,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
             onset: None,
             player_answer: false,
             run_end_at: None,
+            answer_event_at: None,
         }
     }
 
@@ -460,6 +474,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                         self.run = Run::Stopped(since);
                     }
                     Run::Answering => {}
+                    Run::Listening(_) => self.give_up(assistant).await?,
                     _ => self.end_run().await?,
                 }
             }
@@ -497,6 +512,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
             AssistantEvent::Heard { text } => {
                 if let Run::Stopped(_) = self.run {
                     self.run = Run::Answering;
+                    self.answer_event_at = Some(Instant::now());
                     return Ok(());
                 }
                 if !matches!(self.run, Run::WakeWord | Run::Listening(_) | Run::FollowUp(_)) {
@@ -516,6 +532,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 if self.run != Run::Answering {
                     return Ok(());
                 }
+                self.answer_event_at = Some(Instant::now());
                 // "Which room?", "For how long?": the device listens again once it has spoken. Not with
                 // an answer player: the device would listen at once, to the player's question.
                 let question = text.trim_end().ends_with('?') && self.player.is_none();
@@ -563,6 +580,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 if self.run != Run::Answering && !self.player_answer {
                     return Ok(());
                 }
+                self.answer_event_at = Some(Instant::now());
                 if self.player.is_some() {
                     if let Some((_, clip)) = &self.clip {
                         clip.push(&pcm);
@@ -601,7 +619,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                         self.finish_clip();
                         return Ok(());
                     }
-                    // Ends the player's stream.
+                    // Ends the player's stream. After a stop from the device (`Run::Stopped`) its run
+                    // has ended already; the second run end is harmless, since every start is
+                    // refused while answering, so it reaches a device with no run.
                     self.end_run().await?;
                 } else if self.speaker {
                     // The stream ends once the queued audio has gone out (see `tick`).
@@ -733,10 +753,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                     return self.wake(assistant, check.wake, Some(check.since)).await;
                 }
                 Ok(_) => {
-                    info!(
-                        score = format!("{:.2}", self.checking.take().map_or(0.0, |c| c.score)),
-                        "no name in the wake word"
-                    );
+                    // Taken outside the log call: its fields are not evaluated when INFO is off.
+                    let score = self.checking.take().map_or(0.0, |c| c.score);
+                    info!(score = format!("{score:.2}"), "no name in the wake word");
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) if check.started.elapsed() < CHECK_TIMEOUT => {}
                 Err(_) => {
@@ -834,9 +853,14 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 self.device.event(Event::RunEnd, &[]).await?;
             }
         }
+        // The window opens only if the device streams when the answer has played; a deadline
+        // reached in any other state is dropped, or a later stream would open it long after.
+        let follow_up = self.follow_up_at.is_some_and(|at| Instant::now() >= at);
+        if follow_up {
+            self.follow_up_at = None;
+        }
         match self.run {
-            Run::WakeWord if self.follow_up_at.is_some_and(|at| Instant::now() >= at) => {
-                self.follow_up_at = None;
+            Run::WakeWord if follow_up => {
                 info!("listening for a follow-up");
                 // The listening lights, without the wake sound.
                 self.device.event(Event::SttStart, &[]).await?;
@@ -851,15 +875,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 info!("no follow-up");
                 return self.end_run().await;
             }
-            Run::Listening(since) if since.elapsed() > LISTEN_TIMEOUT => {
+            Run::Listening(since) | Run::Stopped(since) if since.elapsed() > LISTEN_TIMEOUT => {
                 info!("no request after the wake word");
-                assistant.gave_up();
-                return self.end_run().await;
-            }
-            Run::Stopped(since) if since.elapsed() > LISTEN_TIMEOUT => {
-                info!("no request after the wake word");
-                self.run = Run::Idle;
-                self.mic.clear();
+                return self.give_up(assistant).await;
             }
             _ => {}
         }
@@ -877,7 +895,56 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 self.end_run().await?;
             }
         }
+        self.watch_answer().await
+    }
+
+    /// Ends an answer whose end (`Spoken` or `Done`) was lost, so that later runs are not refused
+    /// and a later wake word does not count as said over it.
+    async fn watch_answer(&mut self) -> Result<()> {
+        let answering = self.run == Run::Answering || self.player_answer;
+        let played = self.stream_start.map(|start| {
+            let samples = self.streamed + self.outgoing.len();
+            start + Duration::from_secs_f64(samples as f64 / DEVICE_RATE as f64)
+        });
+        let quiet_since = self.answer_event_at.max(played);
+        let quiet = quiet_since.is_some_and(|at| Instant::now() > at + ANSWER_SILENCE);
+        if !answering || !quiet {
+            return Ok(());
+        }
+        warn!(run = ?self.run, "the answer's end did not come: ending it");
+        (self.player_answer, self.announced, self.run_end_at, self.answer_event_at) = (false, None, None, None);
+        (self.spoken, self.stream_start) = (false, None);
+        if self.run == Run::Answering {
+            return self.end_run().await;
+        }
+        // The device's run already ended when the answer went to the player.
+        self.finish_clip();
         Ok(())
+    }
+
+    /// The run ends before the assistant heard a request after its wake word: the assistant is
+    /// told, or it goes on waiting for one (music held paused, speech held from rendering ahead).
+    fn tell_unanswered(&self, assistant: &AssistantHandle) {
+        if matches!(self.run, Run::Listening(_) | Run::Stopped(_)) {
+            assistant.gave_up();
+        }
+    }
+
+    /// Ends a run that heard no request.
+    async fn give_up(&mut self, assistant: &AssistantHandle) -> Result<()> {
+        self.tell_unanswered(assistant);
+        if let Run::Stopped(_) = self.run {
+            // The device already ended its run.
+            self.run = Run::Idle;
+            self.mic.clear();
+            return Ok(());
+        }
+        self.end_run().await
+    }
+
+    /// The session has ended: the device is gone, so only the assistant is told.
+    fn closed(&self, assistant: &AssistantHandle) {
+        self.tell_unanswered(assistant);
     }
 
     fn save_recording(&mut self) {

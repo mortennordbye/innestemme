@@ -139,8 +139,7 @@ struct Harness {
     device: Log,
     /// The fake Home Assistant's calls, in player mode.
     player: Log,
-    /// Logs at info, as the engine runs by default: the bridge clears a name check inside an
-    /// `info!` field, which is not evaluated when that level is off.
+    /// Logs at info, as the engine runs by default.
     _log: tracing::subscriber::DefaultGuard,
 }
 
@@ -260,9 +259,10 @@ impl Harness {
         self.tick().await
     }
 
-    /// The session ends (the device dropped the connection): the bridge is dropped.
+    /// The session ends (the device dropped the connection): the bridge is closed and dropped.
     fn disconnect(self) -> Vec<String> {
         let Self { bridge, assistant, mut calls, device, .. } = self;
+        bridge.closed(&assistant);
         drop(bridge);
         drop(assistant);
         let mut log = std::mem::take(&mut *device.lock().unwrap());
@@ -627,7 +627,6 @@ async fn player_near_miss_is_not_checked_while_the_answer_plays() {
 }
 
 #[tokio::test(start_paused = true)]
-#[ignore = "bug: a stale follow-up deadline opens the window late, fixed in step 1"]
 async fn player_stale_follow_up_deadline_does_not_open_the_window_later() {
     let mut h = Harness::server_wake(Mode::Player);
     player_answered(&mut h).await;
@@ -638,17 +637,6 @@ async fn player_stale_follow_up_deadline_does_not_open_the_window_later() {
     assert_eq!(h.tick().await, NOTHING);
 }
 
-#[tokio::test(start_paused = true)]
-async fn player_stale_follow_up_deadline_opens_the_window_later() {
-    // Bug (c): the deadline is only cleared when it is reached while streaming for the wake word.
-    let mut h = Harness::server_wake(Mode::Player);
-    player_answered(&mut h).await;
-    assert_eq!(h.stop().await, ["RunEnd"]);
-    assert_eq!(h.after(Duration::from_secs(30)).await, NOTHING);
-    h.stream().await;
-    assert_eq!(h.tick().await, ["SttStart", "assistant: hear_now"]);
-}
-
 // --- A stop from the device -------------------------------------------------------------------
 
 #[tokio::test(start_paused = true)]
@@ -656,8 +644,7 @@ async fn stop_while_listening_ends_the_run_on_a_device() {
     for mode in [Mode::Speaker, Mode::UrlWhole, Mode::UrlStreamed] {
         let mut h = Harness::new(mode);
         h.start().await;
-        // Bug (a): the assistant is not told; see the ignored test below.
-        assert_eq!(h.stop().await, ["RunEnd"], "{mode:?}");
+        assert_eq!(h.stop().await, ["RunEnd", "assistant: gave_up"], "{mode:?}");
         // What the assistant then hears is not shown on the device.
         assert_eq!(h.heard("what time is it").await, NOTHING, "{mode:?}");
         assert_eq!(h.answer("It's ten past three.").await, NOTHING, "{mode:?}");
@@ -666,7 +653,6 @@ async fn stop_while_listening_ends_the_run_on_a_device() {
 }
 
 #[tokio::test(start_paused = true)]
-#[ignore = "bug: a stop while listening does not tell the assistant, fixed in step 1"]
 async fn stop_while_listening_tells_the_assistant() {
     for mode in [Mode::Speaker, Mode::UrlWhole, Mode::UrlStreamed] {
         let mut h = Harness::new(mode);
@@ -695,14 +681,12 @@ async fn player_stop_while_listening_with_nothing_heard_goes_idle_at_the_timeout
     h.start().await;
     h.stop().await;
     assert_eq!(h.after(LISTEN_TIMEOUT).await, NOTHING);
-    // Bug (a): the assistant is not told; see the ignored test below.
-    assert_eq!(h.after(TICK).await, NOTHING);
+    assert_eq!(h.after(TICK).await, ["assistant: gave_up"]);
     assert_eq!(h.heard("what time is it").await, NOTHING);
     assert_eq!(h.start().await[0], "accept");
 }
 
 #[tokio::test(start_paused = true)]
-#[ignore = "bug: a stopped run that times out does not tell the assistant, fixed in step 1"]
 async fn player_stop_while_listening_with_nothing_heard_tells_the_assistant() {
     let mut h = Harness::new(Mode::Player);
     h.start().await;
@@ -783,17 +767,6 @@ async fn listen_timeout_gives_up() {
 // --- The session ends -------------------------------------------------------------------------
 
 #[tokio::test(start_paused = true)]
-async fn disconnect_while_listening_tells_nobody() {
-    for mode in ALL {
-        let mut h = Harness::new(mode);
-        h.start().await;
-        // Bug (b): the assistant is not told; see the ignored test below.
-        assert_eq!(h.disconnect(), NOTHING, "{mode:?}");
-    }
-}
-
-#[tokio::test(start_paused = true)]
-#[ignore = "bug: a session dropped while listening does not tell the assistant, fixed in step 1"]
 async fn disconnect_while_listening_tells_the_assistant() {
     for mode in ALL {
         let mut h = Harness::new(mode);
@@ -805,21 +778,6 @@ async fn disconnect_while_listening_tells_the_assistant() {
 // --- A lost answer event ----------------------------------------------------------------------
 
 #[tokio::test(start_paused = true)]
-async fn lost_spoken_event_refuses_every_later_run() {
-    // Bug (d): no timeout on answering; a lagged broadcast drops events with only a warning.
-    for mode in ALL {
-        let mut h = Harness::new(mode);
-        h.start().await;
-        h.heard("what time is it").await;
-        h.answer("It's ten past three.").await;
-        h.speech(0.5).await;
-        h.after(Duration::from_secs(300)).await;
-        assert_eq!(h.start().await, ["refuse"], "{mode:?}");
-    }
-}
-
-#[tokio::test(start_paused = true)]
-#[ignore = "bug: a lost answer event blocks every later run, fixed in step 1"]
 async fn lost_spoken_event_does_not_block_later_runs() {
     for mode in ALL {
         let mut h = Harness::new(mode);
@@ -833,22 +791,57 @@ async fn lost_spoken_event_does_not_block_later_runs() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn player_with_server_wake_lost_spoken_event_interrupts_the_next_wake() {
-    // The run ends without the event, but the answer counts as playing until it comes.
+async fn lost_spoken_event_ends_the_run_after_a_minute_of_quiet() {
+    for mode in ALL {
+        let mut h = Harness::new(mode);
+        h.start().await;
+        h.heard("what time is it").await;
+        h.answer("It's ten past three.").await;
+        h.speech(0.5).await;
+        // A speaker device has had all of the audio by then.
+        h.after(Duration::from_secs(1)).await;
+        assert_eq!(h.after(ANSWER_SILENCE - Duration::from_secs(2)).await, NOTHING, "{mode:?}");
+        assert_eq!(h.after(Duration::from_secs(2) + TICK).await, ["RunEnd"], "{mode:?}");
+        assert_eq!(h.after(ANSWER_SILENCE).await, NOTHING, "{mode:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn speaker_answer_still_playing_is_not_quiet() {
+    let mut h = Harness::new(Mode::Speaker);
+    h.start().await;
+    h.heard("tell me a story").await;
+    h.answer("Once upon a time.").await;
+    h.speech(90.0).await;
+    // 90 s of audio, sent as it plays: the minute without events is not a lost end.
+    assert_eq!(h.after(ANSWER_SILENCE + TICK).await.len(), 1);
+    assert_eq!(h.after(Duration::from_secs(30)).await.len(), 1);
+    assert!(h.bridge.outgoing.is_empty());
+    // The quiet minute counts from the end of the audio sent.
+    assert_eq!(h.after(ANSWER_SILENCE - Duration::from_secs(1)).await, NOTHING);
+    assert!(h.bridge.run == Run::Answering);
+    assert_eq!(h.after(Duration::from_secs(1) + TICK).await, ["RunEnd"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_with_server_wake_lost_spoken_event_does_not_interrupt_the_next_wake() {
+    // The device's run ends without the event; the watchdog stops counting the answer as playing.
     let mut h = Harness::server_wake(Mode::Player);
     h.stream().await;
     h.audio(0.9).await;
     h.heard("what time is it").await;
     h.answer("It's ten past three.").await;
     assert_eq!(h.announced(1), [answer_on_player(0)]);
-    h.after(RUN_END_DELAY).await;
-    h.after(Duration::from_secs(300)).await;
+    assert_eq!(h.after(RUN_END_DELAY).await, ["RunEnd"]);
     h.stream().await;
+    assert_eq!(h.after(Duration::from_secs(300)).await, NOTHING);
+    assert!(!h.bridge.player_answer);
+    assert!(h.bridge.clip.is_none());
     assert_eq!(
         h.audio(0.9).await,
-        ["WakeWordEnd", "SttStart", "assistant: woke_on 1536 samples", "assistant: interrupt", "assistant: hear_now"]
+        ["WakeWordEnd", "SttStart", "assistant: woke_on 1536 samples", "assistant: hear_now"]
     );
-    assert_eq!(h.announced(1), [format!("{ENTITY} {BASE}/speech/1.wav 40")]);
+    assert_eq!(h.announced(0), NOTHING);
 }
 
 // --- Server-side wake word: near misses and the name check ------------------------------------
@@ -892,6 +885,17 @@ async fn near_miss_without_the_name_keeps_streaming() {
     // A new run of near misses is checked again.
     assert_eq!(h.audio(0.4).await, NOTHING);
     assert_eq!(h.audio(0.3).await, ["assistant: check_name 9216 samples"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn near_miss_without_the_name_is_cleared_with_logging_off() {
+    let mut h = Harness::server_wake(Mode::Player);
+    let _off =
+        tracing::subscriber::set_default(tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).finish());
+    near_miss(&mut h).await;
+    h.calls.name_checks.pop_front().unwrap().send(Some(false)).unwrap();
+    assert_eq!(h.audio(0.0).await, NOTHING);
+    assert!(h.bridge.checking.is_none());
 }
 
 #[tokio::test(start_paused = true)]
