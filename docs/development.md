@@ -72,8 +72,9 @@ python3 -I scripts/latency-bench/compare.py target/latency-bench/main target/lat
 ```
 
 It needs `make kokoro` and `cargo build --release -p voice-esphome --example fake_satellite`. The fake Home
-Assistant reads from the real one in `.env` and never makes a service call; `run.sh` passes `--ha-url` because
-`HA_URL` from `.env` would otherwise win over the bench's settings file. A rendered speech cache in
+Assistant reads from the real one in `.env` and never makes a service call. The engine runs with an empty
+environment (only `PATH`, `HOME`, `RUST_LOG` and the token), so no `HA_URL`, `VOICE_*` or Hue value from `.env`
+or the shell wins over `scripts/latency-bench/bench.yaml`. A rendered speech cache in
 `target/latency-bench/seed` is copied into each run; flags after the rounds go to the engine
 (`--english-tts kokoro-onnx`), and `QUESTIONS_DIR` points at other questions.
 
