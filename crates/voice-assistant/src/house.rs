@@ -11,6 +11,7 @@ use crate::alerts::{self, Alert};
 use crate::ha::{HomeAssistant, Light};
 use crate::lang::Lang;
 use crate::names::Names;
+use crate::sensors;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Switch {
@@ -668,8 +669,9 @@ pub struct Snapshot {
     /// Privacy switches that are on.
     #[serde(default)]
     pub privacy: Vec<String>,
+    /// One battery per device, by the battery skill's rules (`sensors::from_states`).
     #[serde(default)]
-    pub low_batteries: Vec<Battery>,
+    pub batteries: Vec<sensors::Battery>,
     /// The last motion a camera saw, an ISO timestamp.
     #[serde(default)]
     pub motion: String,
@@ -681,19 +683,16 @@ pub struct Named {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct Battery {
-    pub name: String,
-    pub level: f64,
-}
-
-const SNAPSHOT_TEMPLATE: &str = r#"{% set tvs = states.media_player | rejectattr('state', 'in', ['off', 'standby', 'unavailable', 'unknown']) | rejectattr('attributes.mass_player_type', 'defined') | list %}
+const SNAPSHOT_TEMPLATE: &str = concat!(
+    sensors::battery_states!(),
+    r#"{% set tvs = states.media_player | rejectattr('state', 'in', ['off', 'standby', 'unavailable', 'unknown']) | rejectattr('attributes.mass_player_type', 'defined') | list %}
 {"alarm": {{ (states.alarm_control_panel | map(attribute='state') | first | default('')) | tojson }},
 "tvs": [{% for s in tvs if s.attributes.device_class == 'tv' or 'tv' in (s.name | lower) %}{{ s.name | tojson }}{% if not loop.last %},{% endif %}{% endfor %}],
 "playing": [{% for s in states.media_player | selectattr('state', 'eq', 'playing') | selectattr('attributes.mass_player_type', 'defined') %}{"id": {{ s.entity_id | tojson }}, "name": {{ s.name | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}],
 "privacy": [{% for s in states.switch | selectattr('state', 'eq', 'on') if 'privacy' in s.entity_id %}{{ s.name | tojson }}{% if not loop.last %},{% endif %}{% endfor %}],
-"low_batteries": [{% for s in states.sensor | selectattr('attributes.device_class', 'defined') | selectattr('attributes.device_class', 'eq', 'battery') if s.state | float(100) < 20 and not s.entity_id.endswith('_battery_level') %}{"name": {{ s.name | tojson }}, "level": {{ s.state | float }}}{% if not loop.last %},{% endif %}{% endfor %}],
-"motion": {{ (states.event | selectattr('entity_id', 'search', 'motion') | map(attribute='state') | reject('in', ['unknown', 'unavailable']) | sort | last | default('')) | tojson }}}"#;
+"batteries": {{ battery_states.out | tojson }},
+"motion": {{ (states.event | selectattr('entity_id', 'search', 'motion') | map(attribute='state') | reject('in', ['unknown', 'unavailable']) | sort | last | default('')) | tojson }}}"#
+);
 
 /// One entity of a domain whose id contains a word, with its state.
 #[derive(Debug, Clone, Deserialize)]
@@ -717,7 +716,13 @@ pub fn entities(ha: &HomeAssistant, domain: &str, word: &str) -> Result<Vec<Enti
 }
 
 pub fn snapshot(ha: &HomeAssistant) -> Result<Snapshot> {
-    serde_json::from_str(&ha.template(SNAPSHOT_TEMPLATE)?).context("parsing the house snapshot")
+    parse_snapshot(&ha.template(SNAPSHOT_TEMPLATE)?)
+}
+
+fn parse_snapshot(json: &str) -> Result<Snapshot> {
+    let mut snapshot: Snapshot = serde_json::from_str(json).context("parsing the house snapshot")?;
+    snapshot.batteries = sensors::from_states(std::mem::take(&mut snapshot.batteries));
+    Ok(snapshot)
 }
 
 /// Phones with the Home Assistant app.
@@ -1219,7 +1224,7 @@ pub fn alarm_sentence(state: &str, lang: Lang) -> Option<String> {
 }
 
 /// "Is everything okay at home?": warnings first, then the alarm, lights, TV and music, the
-/// camera, low batteries and the last motion.
+/// camera, the batteries the battery skill would name and the last motion.
 pub fn status_answer(alerts: &[Alert], lights: &[Light], snapshot: &Snapshot, lang: Lang) -> String {
     let no = lang == Lang::Norwegian;
     let mut parts: Vec<String> = alerts.iter().map(|a| alerts::sentence(a, lang)).collect();
@@ -1254,16 +1259,7 @@ pub fn status_answer(alerts: &[Alert], lights: &[Light], snapshot: &Snapshot, la
     if !snapshot.privacy.is_empty() {
         parts.push(if no { "Kameraet er i personvernmodus." } else { "The camera is in privacy mode." }.into());
     }
-    for battery in &snapshot.low_batteries {
-        let name = battery.name.to_lowercase();
-        let name = name.trim_end_matches(" battery");
-        let level = battery.level.round();
-        parts.push(if no {
-            format!("Batteriet i {name} er på {level} prosent.")
-        } else {
-            format!("The {name} battery is at {level} percent.")
-        });
-    }
+    parts.extend(sensors::low_sentences(&snapshot.batteries, lang));
     if let Ok(at) = snapshot.motion.parse::<jiff::Timestamp>() {
         let at = at.to_zoned(jiff::tz::TimeZone::system());
         if at.date() == jiff::Zoned::now().date() {
@@ -1839,5 +1835,48 @@ mod tests {
             members: Vec::new(),
         };
         assert_eq!(rooms_lit(&[house, lights[0].clone()]), ["kitchen"]);
+    }
+
+    /// The batteries as the shared template fragment lists them: a device with two level
+    /// sensors (one low), a binary "battery low" sensor, a dead sensor and a fine one.
+    const BATTERY_STATES: &str = r#"[
+        {"name": "Hall Climate Battery Level", "level": 64.0, "state": "64", "device": "d1", "area": "Hall"},
+        {"name": "Hall Climate Battery", "level": 15.4, "state": "15.4", "device": "d1", "area": "Hall"},
+        {"name": "Smoke Alarm Battery Low", "low": true, "state": "on", "device": "d2", "area": ""},
+        {"name": "Door Contact Battery", "level": null, "state": "unavailable", "device": "d3", "area": ""},
+        {"name": "Sink Leak Battery", "level": 90.0, "state": "90", "device": "d4", "area": "Kitchen"}]"#;
+
+    #[test]
+    fn status_says_the_batteries_as_the_battery_skill_does() {
+        let snapshot = parse_snapshot(&format!(r#"{{"alarm": "", "batteries": {BATTERY_STATES}}}"#)).unwrap();
+        let status = status_answer(&[], &[], &snapshot, Lang::English);
+        let skill = sensors::battery_answer(
+            &sensors::from_states(serde_json::from_str(BATTERY_STATES).unwrap()),
+            None,
+            Lang::English,
+        );
+        let batteries = "The hall climate battery is at 15 percent. The smoke alarm battery is low. The door contact \
+                         battery isn't reporting.";
+        assert_eq!(skill, batteries);
+        assert_eq!(status, format!("All is well. All the lights are off. {batteries}"));
+        let norwegian = status_answer(&[], &[], &snapshot, Lang::Norwegian);
+        assert!(norwegian.ends_with(&sensors::battery_answer(&snapshot.batteries, None, Lang::Norwegian)));
+    }
+
+    #[test]
+    fn status_leaves_phones_to_the_phone_skill() {
+        // Phones go by integration, not by entity name, in both the summary and the battery skill.
+        assert!(SNAPSHOT_TEMPLATE.contains("integration_entities('mobile_app')"));
+        assert!(!SNAPSHOT_TEMPLATE.contains("_battery_level"));
+        assert!(!SNAPSHOT_TEMPLATE.contains("< 20"));
+    }
+
+    #[test]
+    fn status_without_low_batteries_says_nothing_of_them() {
+        let snapshot = parse_snapshot(
+            r#"{"batteries": [{"name": "Sink Leak Battery", "level": 90.0, "state": "90", "device": "d4"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(status_answer(&[], &[], &snapshot, Lang::English), "All is well. All the lights are off.");
     }
 }

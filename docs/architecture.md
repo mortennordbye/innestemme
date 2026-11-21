@@ -125,6 +125,11 @@ before it and puts it back a second after the stream stops; a lockdown in that s
 for standing down. A party started during a lockdown keeps no snapshot of the red lights: ending it turns them
 red again, and standing down ends it first. "Stand down" with no lockdown leaves a party alone, except one "what do you think
 about open source?" started: that one ends with its song and its TV.
+The house status ("is everything okay at home?") is one template call (`house::snapshot`). Its batteries follow
+the battery skill's rules, because both put the same template part (`sensors::battery_states!`) in their call and
+use the same sentences: under 20 percent or a binary "battery low" sensor that is on, phones left out by the
+`mobile_app` integration, one battery per device (the lowest level), and sensors that went unavailable named as
+not reporting.
 
 **Speech.** English through Kokoro, voice `am_onyx`: from a Kokoro-FastAPI server (`english-tts: kokoro`, a
 Python sidecar in the cluster) or inside the engine through sherpa-onnx (`english-tts: kokoro-onnx`, the f32
