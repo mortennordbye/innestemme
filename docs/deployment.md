@@ -29,8 +29,8 @@ The manifests are in the homelab repo, `k8s/talos/apps/innestemme/`, deployed by
 | Volume | `models-pvc` on `/models`: the Parakeet model (630 MB) and openWakeWord under `hub/` and `openwakeword/`, the speaker model (30 MB) under `speaker/`, the speech cache (about 560 MB and growing a little), `unhandled.jsonl`, and next to it `learned.json`, `timers.json` (running timers, reminders and alarms, so a deploy keeps them) and `memory.json` (the notes). Everything on it downloads or renders again. |
 | Network | A LoadBalancer on port 9090: spoken answers for the Sonos, `/metrics`, the web pages. |
 
-Settings worth knowing in the ConfigMap: `listener: parakeet`, `english-tts: kokoro` with `kokoro-voice:
-am_onyx`, `speech-cache: /models/speech-cache`, `honorific: sir` and `honorific-female: ma'am` (the speaker model under `speaker/`), `wake-model: hey_jarvis` with
+Settings worth knowing in the ConfigMap: `listener: parakeet`, `english-tts: kokoro-onnx` with `kokoro-voice:
+am_onyx` (or `english-tts: phonon` with `phonon-voice: Hugh`), `speech-cache: /models/speech-cache`, `honorific: sir` and `honorific-female: ma'am` (the speaker model under `speaker/`), `wake-model: hey_jarvis` with
 `wake-threshold: 0.65` and `wake-check-from: 0.15`, `answer-player` and `answer-volume`, `hue-bridge` for party mode, `plex-url` (the Plex service in the cluster; its CiliumNetworkPolicy lets the innestemme namespace in), `power-cycle`,
 `unhandled-log`. No `llm-url`: rules only.
 

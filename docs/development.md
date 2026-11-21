@@ -52,7 +52,7 @@ recordings in `target/utterances`. Say so before anything plays on the real spea
 | `cargo run --release -p voice-assistant --example wake_score -- hey_jarvis target/utterances/run-*.wav` | openWakeWord's score on recordings, to pick `wake-threshold` |
 | `cargo run --release -p voice-assistant --example wake_text -- hey_jarvis target/utterances/run-*.wav` | what Parakeet hears in each wake word |
 | `cargo run --release -p voice-assistant --example stt_eval -- target/utterances/utterance-*.wav` | Whisper's transcripts and times; `stt_score` scores lists against a reference |
-| `cargo run --release -p voice-assistant --example kokoro_speed -- 4 http://127.0.0.1:8880 <out dir>` | Kokoro in the engine against Kokoro-FastAPI, per sentence, with wavs to compare by ear |
+| `PHONON=Hugh cargo run --release -p voice-assistant --example kokoro_speed -- 4 "" <out dir>` | Kokoro in the engine against Phonon (and Kokoro-FastAPI with its URL), first audio and whole sentence, with wavs to compare by ear |
 | `cargo run -p voice-assistant --example music -- "play my liked songs"` | a music request through Music Assistant |
 | `cargo run -p voice-assistant --example speak -- 127.0.0.1:10200 <voice> out.wav "Hei"` | a Piper sample |
 | `cargo run -p voice-esphome --example fake_satellite -- ...` | a pretend Voice PE, see [voice-pe.md](voice-pe.md) |

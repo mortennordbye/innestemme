@@ -391,4 +391,22 @@ What Whisper base hears back (`examples/stt_eval.rs`):
   "øre" comes out as "year" or "or", and Rikshospitalet is garbled, as with Kokoro.
 - Kokoro on sherpa-onnx 2.0.1 drops every number and "degrees" ("It's in the living room.", "Seconds left on
   the minute timer.", "The next tram is the two in the..."): the bug #109 reverts.
-- Not measured: the cluster's x86 node (the `ptts` build here has NEON, no AVX), and the voices by ear.
+- The user picked Hugh by ear.
+
+On the cluster's node (x86 with AVX, 8 CPUs, the engine running beside it), a pod limited to 6 CPUs, Hugh at
+temperature 0, eight answer sentences:
+
+| Weights, threads | First audio p50 (max) | Whole sentence p50 (max) | Audio per second of work |
+|---|---|---|---|
+| f32, 4 | 79 ms (130) | 1092 ms (1680) | 3.2x |
+| f32, 6 | 56 ms (96) | 907 ms (1407) | 4.0x |
+| int8 (q8), 4 | 47 ms (85) | 792 ms (1418) | 4.5x |
+| int8 (q8), 6 | 53 ms (72) | 788 ms (1056) | 4.9x |
+
+Kokoro in the cluster takes about 2 s before the first sound of a sentence not rendered ahead (Loki, 14-21 Nov).
+In the engine on the M4 Pro (`PHONON=Hugh kokoro_speed 4`): 4-8 ms to the first audio, 75-153 ms per sentence,
+about 34x real time, against 456-764 ms for Kokoro.
+
+One sentence keeps a sound after its last number at temperature 0, with f32 and int8 weights and any
+`eos_threshold`: "..., with a high of 13." is heard as "1310". Seven other sentences ending in a number are
+clean, and the weather's real wording ends in "degrees".

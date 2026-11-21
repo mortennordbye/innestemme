@@ -13,6 +13,10 @@ hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "rus
 candle-transformers = "0.9.1"
 hound = "3.5"
 jiff = { version = "0.2", features = ["serde"] }
+# Phonon text to speech; files are fetched with hf-hub above, so only the tokenizer feature.
+ptts = { version = "0.7.1", default-features = false, features = ["hf"] }
+# Phonon's tensor runtime, only to size its thread pool.
+xn = "0.2.15"
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
