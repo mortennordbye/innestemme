@@ -1,0 +1,30 @@
+[
+  {
+    "text": "The spare key is in the drawer.",
+    "subject": [
+      "spare",
+      "key"
+    ],
+    "kind": "Place",
+    "norwegian": false,
+    "saved": "2026-11-21T19:34:48.868843Z"
+  },
+  {
+    "text": "The dentist is on Friday.",
+    "subject": [
+      "dentist"
+    ],
+    "kind": "Time",
+    "norwegian": false,
+    "saved": "2026-11-21T19:34:48.889555Z"
+  },
+  {
+    "text": "Sykkelen står i boden.",
+    "subject": [
+      "sykkel"
+    ],
+    "kind": "Place",
+    "norwegian": true,
+    "saved": "2026-11-21T19:34:48.895555Z"
+  }
+]

@@ -12,6 +12,8 @@ use serde_json::json;
 use sherpa_onnx::{GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsKokoroModelConfig, OfflineTtsModelConfig};
 
 use crate::lang::Lang;
+use crate::models::HubRepo;
+use crate::resample::to_i16;
 use crate::tts::Tts;
 
 /// A long answer on a slow CPU still finishes well inside this.
@@ -132,9 +134,7 @@ pub struct KokoroFiles {
 
 impl KokoroFiles {
     pub fn fetch(repo: &str) -> Result<Self> {
-        let api = hf_hub::api::sync::ApiBuilder::from_env().build()?;
-        let repo_api = api.model(repo.to_owned());
-        let info = repo_api.info().with_context(|| format!("listing {repo}"))?;
+        let hub = HubRepo::model(repo)?;
         // espeak-ng's phoneme tables and English rules; not its other languages, nor its voice
         // variants, some of whose names ("!v/Mr serious") hf-hub cannot fetch.
         let wanted = |f: &str| {
@@ -144,8 +144,8 @@ impl KokoroFiles {
                 || espeak.starts_with("lang/")
         };
         let mut model = None;
-        for file in info.siblings.iter().map(|s| s.rfilename.as_str()).filter(|f| wanted(f)) {
-            let path = repo_api.get(file).with_context(|| format!("fetching {repo}/{file}"))?;
+        for file in hub.files()?.iter().map(String::as_str).filter(|f| wanted(f)) {
+            let path = hub.get(file)?;
             if file == "model.onnx" {
                 model = Some(path);
             }
@@ -206,7 +206,7 @@ impl Tts for KokoroOnnx {
             .tts
             .generate_with_config::<fn(&[f32], f32) -> bool>(text, &self.generation, None)
             .context("Kokoro made no audio")?;
-        let pcm: Vec<i16> = audio.samples().iter().map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
+        let pcm: Vec<i16> = audio.samples().iter().copied().map(to_i16).collect();
         if pcm.is_empty() {
             bail!("Kokoro made no audio");
         }

@@ -8,7 +8,7 @@
 use anyhow::{anyhow, Context, Result};
 use sherpa_onnx::{SpeakerEmbeddingExtractor, SpeakerEmbeddingExtractorConfig};
 
-use crate::wakeword::{cache_dir, fetch_from};
+use crate::models::{cache_dir, fetch_from};
 
 const RELEASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models";
 /// (file, SHA-256); Apache 2.0.
