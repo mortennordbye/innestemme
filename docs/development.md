@@ -105,6 +105,36 @@ recorded. Runs reuse one speech cache, `target/replay/cache/<voice>-sherpa-<vers
 common sentences first; `run.sh` waits at most `CACHE_WAIT`, 600 s). A new voice or sherpa-onnx version gets
 a cache of its own; another change to how speech sounds gets one with `CACHE=<name>`.
 
+To see what a branch changes, compare its replay with a replay of `main` on the same day, not with live:
+
+```
+python3 -I scripts/replay/report.py target/replay/days/2026-11-25 target/replay/branch --against target/replay/main
+```
+
+Both sides then ran on this Mac against the same house, so what live does differently (the clock, the house
+as it was, the cluster's timings) drops out. The report also compares the Home Assistant service calls each
+replay's fake logged (`ha.tsv`, sorted per run, bodies cut at 120 characters): a run whose calls differ is
+marked `changed` at least, and the calls of each such run are printed. A replay of `main` against itself
+should be all `same` with no calls that differ; answers with the time of day are the exception.
+
+### The golden intent corpus
+
+The text rules have a check of their own that covers more requests than a day of audio: every text the live
+engine heard (its `heard` lines in Loki, as far back as Loki keeps them), plus every catalogue example, goes
+through `intent::parse` on two builds, and the `Debug` output must be the same.
+
+```
+kubectl --context admin@genesis -n monitoring port-forward svc/loki 3100:3100 &
+bash scripts/corpus/fetch.sh          # target/corpus/heard.txt, deduplicated; [days back, default 90]
+bash scripts/corpus/compare.sh        # origin/main against the working tree; or <base ref> [other ref]
+```
+
+`examples/intent_corpus.rs` prints, for each text, the request as the worker passes it on (the name stripped
+from its start and end), `intent::parse`, `parse_without_notes` where it differs, the parts of
+`split_commands` and the catalogue skill. `compare.sh` builds it on a git worktree of the base ref under
+`target/corpus/` (with this tree's copy of the tool) and on the working tree, and diffs the two outputs into
+`target/corpus/diff.txt`. The texts are household speech: they stay in `target/`, which git ignores.
+
 ### The test set
 
 The same recordings are the test set for a new listener, end-of-turn model or other speech change:
