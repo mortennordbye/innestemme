@@ -30,6 +30,7 @@ const OFF_WORDS: &[&str] = &[
 /// unknown verb may be a misheard "stop".
 const START_WORDS: &[&str] = &[
     "started",
+    "going",
     "activate",
     "enable",
     "start",
@@ -81,14 +82,19 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
     {
         return Some(PartyCommand::Status);
     }
+    // "Pause the party music" is the music's; only "pause the party" is the party's.
+    if has(&["pause", "kill", "disable"]) && has(&["music", "playlist", "song", "songs", "track", "musikk"]) {
+        return None;
+    }
     // "Turn on party mode" holds "on", not "off"; "the party is over" holds "over".
     if has(OFF_WORDS) {
         return Some(PartyCommand::Off);
     }
     let paced = has(NORMAL_WORDS) || has(FAST_WORDS) || has(RELAXED_WORDS);
-    // "Party please", "party lights": short asks; in a longer sentence those words start nothing.
-    let short =
-        matches!(words, [a, b] if PARTY_WORDS.contains(&a.as_str()) && ["please", "lights"].contains(&b.as_str()));
+    // "Party please", "okay, party lights": short asks; in a longer sentence those words start nothing.
+    let core: Vec<&str> =
+        words.iter().map(String::as_str).filter(|w| !["please", "okay", "ok", "lights"].contains(w)).collect();
+    let short = matches!(core.as_slice(), [w] if PARTY_WORDS.contains(w));
     if !has(START_WORDS) && !paced && !short && words.len() > 1 {
         return None;
     }
@@ -150,6 +156,11 @@ mod tests {
         for stop in ["Pause the party please", "Kill the party lights", "Disable party mode"] {
             assert_eq!(party(stop), Some(PartyCommand::Off), "{stop}");
         }
+        for start in ["Party lights please", "Okay party please", "Please party", "Get the party going"] {
+            assert_eq!(party(start), Some(PartyCommand::On(Pace::Normal)), "{start}");
+        }
+        assert_eq!(party("Pause the party music"), None);
+        assert_eq!(party("Kill the party playlist"), None);
         for talk in ["Shop the party please", "Get rid of the party", "I didn't get invited to the party"] {
             assert_eq!(party(talk), None, "{talk}");
         }

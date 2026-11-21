@@ -1810,6 +1810,8 @@ mod tests {
         );
         assert_eq!(parse("If the TV is on, turn it off"), Intent::Tv(TvCommand::Power(false)));
         assert_eq!(parse("If party mode is on turn it off"), Intent::Party(crate::party::PartyCommand::Off));
+        // The music's, not the party's: "pause" and "kill" stop the party only without a music word.
+        assert!(matches!(parse("Pause the party music"), Intent::Music(_)));
     }
 
     #[test]
