@@ -80,6 +80,8 @@ use shopping::{LIST_OPEN, LIST_REPLY_WORDS};
 use speech::Spoken;
 use wake::WakeName;
 
+#[cfg(test)]
+pub(crate) use handle::Calls;
 pub use handle::AssistantHandle;
 pub use pause::Pause;
 pub use processor::AssistantProcessor;

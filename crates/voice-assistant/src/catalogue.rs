@@ -122,7 +122,7 @@ pub const SKILLS: &[Skill] = &[
         name: "House status",
         group: "Home",
         icon: "shield",
-        does: "Warnings first, then the alarm, which rooms have lights on, the TV and music, the camera, low batteries and the last motion.",
+        does: "Warnings first, then the alarm, which rooms have lights on, the TV and music, the camera, batteries that are low or have stopped reporting (as the Batteries skill says them) and the last motion.",
         source: "Home Assistant states",
         calls: &["POST /api/template"],
         examples: &["Is everything okay at home?", "Status report", "Is there anything I should know?"],
