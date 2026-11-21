@@ -64,6 +64,8 @@ enum EnglishTts {
     Kokoro,
     /// Kokoro in the engine (sherpa-onnx): no server, about a quarter faster on the same CPUs.
     KokoroOnnx,
+    /// Phonon 31M in the engine: streamed, first sound in about 50 ms on the cluster's CPU.
+    Phonon,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -319,6 +321,15 @@ struct Args {
     /// Kokoro voice, e.g. am_onyx (American, deep) or bm_george (British).
     #[arg(long, env = "VOICE_KOKORO_VOICE", default_value = "am_onyx")]
     kokoro_voice: String,
+    /// Phonon voice from Gradium's catalogue, e.g. Hugh (British, soft) or Toby.
+    #[arg(long, env = "VOICE_PHONON_VOICE", default_value = "Hugh")]
+    phonon_voice: String,
+    /// How much Phonon's takes vary: 0 is the same take every time and clean after numbers.
+    #[arg(long, env = "VOICE_PHONON_TEMPERATURE", default_value_t = 0.0)]
+    phonon_temperature: f32,
+    /// Phonon's full-precision weights instead of int8 (slower on the cluster's CPU).
+    #[arg(long, env = "VOICE_PHONON_F32")]
+    phonon_f32: bool,
     /// macOS `say` voice for Norwegian replies.
     #[arg(long, env = "VOICE_SAY_VOICE_NO", default_value = "Nora")]
     say_voice_no: String,
@@ -422,6 +433,9 @@ fn main() -> Result<()> {
 
     let threads = args.threads.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
     voice_rt::threads::configure_compute_threads(threads);
+    if matches!(args.english_tts, EnglishTts::Phonon) {
+        voice_assistant::phonon::set_threads(threads);
+    }
     info!(
         threads,
         avx = candle::utils::with_avx(),
@@ -538,6 +552,17 @@ fn main() -> Result<()> {
                         info!(model = %files.model().display(), voice = args.kokoro_voice, threads, "loading kokoro");
                         Box::new(voice_assistant::kokoro::KokoroOnnx::load(&files, &args.kokoro_voice, threads)?)
                     }
+                    EnglishTts::Phonon => {
+                        let int8 = !args.phonon_f32;
+                        let files = voice_assistant::phonon::PhononFiles::fetch(&args.phonon_voice, int8)?;
+                        info!(model = %files.model().display(), voice = args.phonon_voice, int8, threads, "loading phonon");
+                        Box::new(voice_assistant::phonon::Phonon::load(
+                            &files,
+                            &args.phonon_voice,
+                            args.phonon_temperature,
+                            int8,
+                        )?)
+                    }
                 })
             };
             let english = english_voice()?;
@@ -555,6 +580,13 @@ fn main() -> Result<()> {
                         EnglishTts::Kokoro => format!("kokoro-{}", args.kokoro_voice),
                         // Its own pronunciation (espeak-ng, not Kokoro-FastAPI's): not the same audio.
                         EnglishTts::KokoroOnnx => format!("kokoro-onnx-{}", args.kokoro_voice),
+                        // Weights and temperature change the audio, so each gets its own folder.
+                        EnglishTts::Phonon => format!(
+                            "phonon-{}-t{}{}",
+                            args.phonon_voice.to_lowercase(),
+                            args.phonon_temperature,
+                            if args.phonon_f32 { "" } else { "-int8" }
+                        ),
                     };
                     let dir = dir.join(voice);
                     info!(dir = %dir.display(), "speech cache");
@@ -715,6 +747,7 @@ fn main() -> Result<()> {
                 format!("Piper{}", args.piper_voice_en.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
             }
             EnglishTts::Kokoro | EnglishTts::KokoroOnnx => format!("Kokoro, {}", args.kokoro_voice),
+            EnglishTts::Phonon => format!("Phonon, {}", args.phonon_voice),
         };
         let version = option_env!("INNESTEMME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
         let web = args.web.then(|| {

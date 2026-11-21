@@ -83,7 +83,7 @@ For a Voice PE, see [docs/voice-pe.md](docs/voice-pe.md); for the cluster, [docs
 | `voice-rt` | Real-time plumbing: reorder buffer, atomic histogram, allocation guard, pinned threads. |
 | `voice-codec` | Packet codec (raw PCM) and `MimiCodec` over `moshi` / candle. |
 | `voice-engine` | The server: UDP transport, model thread, assistant worker, ESPHome satellite bridge, party mode, web pages, settings, `/metrics`. |
-| `voice-assistant` | Listeners (Parakeet, Whisper), wake word and turns, intent rules, the language model client, the skills, Home Assistant and Music Assistant, speech output (Kokoro, Piper, `say`) and the speech cache. |
+| `voice-assistant` | Listeners (Parakeet, Whisper), wake word and turns, intent rules, the language model client, the skills, Home Assistant and Music Assistant, speech output (Kokoro, Phonon, Piper, `say`) and the speech cache. |
 | `voice-esphome` | ESPHome native API client (plaintext and Noise). |
 | `voice-client` | Test client: tone, wav file or live microphone; reports frame turnaround and mouth-to-ear. |
 | `voice-bench` | Per-frame step times for [docs/benchmarks.md](docs/benchmarks.md). |

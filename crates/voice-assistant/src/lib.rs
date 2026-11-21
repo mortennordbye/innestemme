@@ -25,6 +25,7 @@ pub mod parakeet;
 pub mod party;
 pub mod people;
 pub mod persona;
+pub mod phonon;
 pub mod plan;
 pub mod power;
 pub mod resample;

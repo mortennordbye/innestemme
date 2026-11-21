@@ -128,7 +128,11 @@ about open source?" started: that one ends with its song and its TV.
 
 **Speech.** English through Kokoro, voice `am_onyx`: from a Kokoro-FastAPI server (`english-tts: kokoro`, a
 Python sidecar in the cluster) or inside the engine through sherpa-onnx (`english-tts: kokoro-onnx`, the f32
-v1.0 model, 16-31% faster on the same CPUs and no server). Norwegian through Piper over Wyoming or macOS `say`. `speech-cache` keeps every fixed sentence on disk, one folder per voice:
+v1.0 model, 16-31% faster on the same CPUs and no server), or Phonon 31M inside the engine (`english-tts: phonon`,
+`phonon-voice: Hugh`, Gradium's Rust runtime `ptts`, int8 weights unless `phonon-f32`): streamed as it is made, so the
+first sound comes in about 50 ms on the cluster's CPU instead of after the whole sentence, and it says numbers
+itself. `phonon-temperature` 0 (the default) gives the same take every time. Its model and voice are pinned to one
+Hugging Face commit each. Norwegian through Piper over Wyoming or macOS `say`. `speech-cache` keeps every fixed sentence on disk, one folder per voice:
 about 8,000 (openers, remarks, lead-ins, jokes and small talk in each way the persona puts them, confirmations,
 every volume level, the time left on a single timer, every minute of the day, the home's lights and room
 temperatures from Home Assistant). They are rendered ahead on a thread of its own with a second copy of the
