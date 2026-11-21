@@ -68,8 +68,13 @@ not understand goes to a language model when `llm-url` is set (any OpenAI-compat
 tools), else gets the short fallback. The cluster runs without one.
 
 **Skills.** One module each under `voice-assistant/src/` (weather, transit, power, music, timers, shopping,
-house, tv, news, lookup, calc, distance, party, smalltalk, jokes). `catalogue.rs` lists them for people: what each
-does, its data source, the calls it makes and example phrases, which the tests parse.
+lights, scenes, house, lockdown, tv, news, lookup, calc, distance, party, smalltalk, jokes). A skill's module holds
+its Home Assistant calls and its answers; the engine's worker keeps only what needs the conversation or the
+engine's state: which lights "them" and "undo" mean, questions asked back, the music held for a request, party
+mode, the screen and the speech. A Home Assistant skill returns a `skill::Done` (the answer, the lights it
+changed, a question it asked, a screen to show), and the worker applies it (`assistant/home.rs`). `catalogue.rs`
+lists the skills for people: what each does, its data source, the calls it makes and example phrases, which the
+tests parse.
 
 **Weather.** MET's forecast reaches about nine days (hourly for the first two and a half, then in six-hour
 steps), so a question about tonight, tomorrow, a weekday ("on Saturday", "på lørdag") or the weekend is answered

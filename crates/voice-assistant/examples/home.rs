@@ -10,6 +10,7 @@ use voice_assistant::ha::{self, HomeAssistant};
 use voice_assistant::house::{self, HouseCommand};
 use voice_assistant::intent::{self, Intent};
 use voice_assistant::lang::Lang;
+use voice_assistant::lockdown;
 use voice_assistant::shopping::ShoppingList;
 
 fn main() -> anyhow::Result<()> {
@@ -107,13 +108,13 @@ fn main() -> anyhow::Result<()> {
         }
         Intent::Routine(house::Routine::Lockdown) if run => {
             // The engine's lockdown lights and pulse, without the music; stood down after BLINK_SECONDS.
-            let red = house::lockdown(&ha)?;
-            let targets = house::alarm_targets(&ha, &red)?;
+            let red = lockdown::lockdown(&ha)?;
+            let targets = lockdown::alarm_targets(&ha, &red)?;
             println!("{} red lights, pulsing {targets:?}", red.len());
-            house::alarm_pulse(&ha, &targets)?;
+            lockdown::alarm_pulse(&ha, &targets)?;
             let seconds = std::env::var("BLINK_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
             std::thread::sleep(std::time::Duration::from_secs(seconds));
-            println!("stood down: {}", house::stand_down(&ha)?);
+            println!("stood down: {}", lockdown::stand_down(&ha)?);
         }
         Intent::Tv(command) => {
             println!("{command:?}: TVs on {:?}", voice_assistant::tv::on_tvs(&ha)?);

@@ -1,18 +1,20 @@
 //! The house beyond the lights: a status check, routines for leaving, coming home and going to bed,
 //! sunrise and sunset, finding a phone, the guest Wi-Fi, the camera's privacy mode and the alarm.
-//! The rules are here, and so are the Home Assistant calls; the engine composes the routines,
-//! since they also switch lights.
+//! The rules, the Home Assistant calls and the answers are here; the engine keeps which lights a
+//! routine switched, for "undo", and the music coming home starts.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tracing::info;
 
 use crate::alerts::{self, Alert};
-use crate::ha::{HomeAssistant, Light};
+use crate::ha::{self, HomeAssistant, Light, Target};
 use crate::lang::Lang;
 use crate::names::Names;
 use crate::say::{capitalize, join};
-use crate::sensors;
+use crate::sensors::{self, SensorQuery};
+use crate::skill::{Done, LightChange, Lights};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Switch {
@@ -536,30 +538,6 @@ const OPINION: &[&str] =
 
 /// The answer to "what do you think about open source?", rendered ahead of time.
 pub const OPEN_SOURCE_ANSWER: &str = "I fucking love open source.";
-
-/// Fixed English lockdown answers, rendered ahead of time.
-pub const LOCKDOWN_ANSWERS: &[&str] = &[
-    "Lockdown initiated. The house is sealed.",
-    "Standing down. Everything is back as it was.",
-    "There is no lockdown to end.",
-];
-
-/// What the lockdown's English answer ends on, one after the other, spoken in the dark voice
-/// ([`tts::darken`](crate::tts::darken)). Only these sentences are darkened, so none may be a
-/// sentence another answer says too.
-pub const LOCKDOWN_THREATS: &[&str] = &[
-    "I will look for you. I will find you. And I will kill you.",
-    "You can run. But you cannot hide.",
-    "There is nowhere left to hide. I can see you.",
-    "Every door is locked. And I am watching you.",
-    "Do not move. I can hear you breathing.",
-    "Nobody leaves this house. Not tonight.",
-];
-
-/// Whether `sentence` is one of the lockdown threats' sentences, for the dark voice.
-pub fn threat_sentence(sentence: &str) -> bool {
-    LOCKDOWN_THREATS.iter().any(|t| t.split_inclusive(['.', '?', '!']).any(|s| s.trim() == sentence))
-}
 
 /// The fixed sentences of leaving, coming home and bedtime, for rendering ahead of time.
 pub const ROUTINE_ANSWERS: &[&str] = &[
@@ -1291,98 +1269,11 @@ pub fn to_switch_off(on: Vec<Light>, keep: impl Fn(&Light) -> bool) -> Vec<Light
     on.into_iter().filter(|l| !l.status_led() && !(l.group && l.area.is_empty()) && !keep(l)).collect()
 }
 
-/// The scene `scene.create` keeps the lights in while the house is locked down.
-pub const LOCKDOWN_SCENE: &str = "lockdown_restore";
-
-/// Lights in a room (a neighbour's light that shows up in Home Assistant has none), not room
-/// groups, and not status LEDs (network gear, the Voice PE's ring). `color`: it can go red.
-const LOCKDOWN_LIGHTS_TEMPLATE: &str = r#"[{% for s in states.light if area_name(s.entity_id) and s.attributes.entity_id is not defined and 'led' not in (s.name | lower).split(' ') %}{"id": {{ s.entity_id | tojson }}, "color": {{ ((s.attributes.supported_color_modes or []) | select('in', ['hs', 'xy', 'rgb', 'rgbw', 'rgbww']) | list | count > 0) | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
-
-#[derive(Deserialize)]
-struct LockdownLight {
-    id: String,
-    color: bool,
-}
-
-/// Every light that can go red goes full red, the rest go off; a snapshot of them all is kept
-/// first, for standing down. A second lockdown keeps the first snapshot. The red lights.
-pub fn lockdown(ha: &HomeAssistant) -> Result<Vec<String>> {
-    let (red, off) = lockdown_lights(ha)?;
-    if !locked_down(ha) {
-        let all: Vec<&String> = red.iter().chain(&off).collect();
-        ha.send("scene", "create", json!({ "scene_id": LOCKDOWN_SCENE, "snapshot_entities": all }))?;
-    }
-    if !red.is_empty() {
-        ha.send("light", "turn_on", json!({ "entity_id": red, "rgb_color": [255, 0, 0], "brightness_pct": 100 }))?;
-    }
-    if !off.is_empty() {
-        ha.send("light", "turn_off", json!({ "entity_id": off }))?;
-    }
-    Ok(red)
-}
-
-/// The lights a lockdown turns red, and the ones without colour it turns off. Party mode keeps a
-/// snapshot of both, and streams to the red ones.
-pub fn lockdown_lights(ha: &HomeAssistant) -> Result<(Vec<String>, Vec<String>)> {
-    let lights: Vec<LockdownLight> = ha.template_json(LOCKDOWN_LIGHTS_TEMPLATE, "parsing the lockdown lights")?;
-    let ids = |color: bool| lights.iter().filter(|l| l.color == color).map(|l| l.id.clone()).collect::<Vec<_>>();
-    Ok((ids(true), ids(false)))
-}
-
 /// The lights a snapshot scene puts back; `None` when there is no such snapshot.
 pub fn snapshot_lights(ha: &HomeAssistant, scene: &str) -> Result<Option<Vec<String>>> {
     let Ok(state) = ha.state(&format!("scene.{scene}")) else { return Ok(None) };
     let ids = state["attributes"]["entity_id"].as_array().into_iter().flatten();
     Ok(Some(ids.filter_map(|id| id.as_str().map(str::to_owned)).collect()))
-}
-
-/// Hue rooms and zones in Home Assistant, as `[{"id": ..., "members": [...]}]`.
-const HUE_GROUPS_TEMPLATE: &str = r#"[{% for s in states.light if s.attributes.is_hue_group %}{"id": {{ s.entity_id | tojson }}, "members": {{ (s.attributes.entity_id or []) | list | tojson }}}{% if not loop.last %},{% endif %}{% endfor %}]"#;
-
-#[derive(Deserialize)]
-struct HueGroup {
-    id: String,
-    members: Vec<String>,
-}
-
-/// What the lockdown's alert goes to: each Hue room whose lights are all red, as one command the
-/// bridge sends to them together, and the red lights in no such room one by one.
-pub fn alarm_targets(ha: &HomeAssistant, red: &[String]) -> Result<Vec<String>> {
-    let groups: Vec<HueGroup> = ha.template_json(HUE_GROUPS_TEMPLATE, "parsing the Hue rooms")?;
-    Ok(cover(&groups, red))
-}
-
-fn cover(groups: &[HueGroup], red: &[String]) -> Vec<String> {
-    let mut left: Vec<&String> = red.iter().collect();
-    let mut targets = Vec::new();
-    // Rooms before zones: a zone over several rooms would leave a room's own lights to it.
-    let mut groups: Vec<&HueGroup> = groups.iter().filter(|g| !g.members.is_empty()).collect();
-    groups.sort_by_key(|g| g.members.len());
-    for group in groups {
-        if group.members.iter().all(|m| left.contains(&m)) {
-            left.retain(|l| !group.members.contains(l));
-            targets.push(group.id.clone());
-        }
-    }
-    targets.extend(left.into_iter().cloned());
-    targets
-}
-
-/// The Hue bridge's own alert on the lockdown's lights: about 15 seconds of fast pulsing, in step
-/// across a room. Driving the blink from here instead (twice a second) queued up at the bridge.
-pub fn alarm_pulse(ha: &HomeAssistant, targets: &[String]) -> Result<()> {
-    ha.service("light", "turn_on", json!({ "entity_id": targets, "flash": "long" }))
-}
-
-/// The lights back as they were before the lockdown; false when there was none.
-pub fn stand_down(ha: &HomeAssistant) -> Result<bool> {
-    if !locked_down(ha) {
-        return Ok(false);
-    }
-    let scene = format!("scene.{LOCKDOWN_SCENE}");
-    ha.send("scene", "turn_on", json!({ "entity_id": scene }))?;
-    ha.send("scene", "delete", json!({ "entity_id": scene }))?;
-    Ok(true)
 }
 
 /// The scene the lights are kept in while party mode streams to them.
@@ -1395,7 +1286,7 @@ pub fn party_snapshot(ha: &HomeAssistant, keep: bool) -> Result<()> {
     if keep && ha.state(&format!("scene.{PARTY_SCENE}")).is_ok() {
         return Ok(());
     }
-    let (colour, plain) = lockdown_lights(ha)?;
+    let (colour, plain) = crate::lockdown::lockdown_lights(ha)?;
     let all: Vec<&String> = colour.iter().chain(&plain).collect();
     ha.service("scene", "create", json!({ "scene_id": PARTY_SCENE, "snapshot_entities": all }))?;
     Ok(())
@@ -1411,22 +1302,6 @@ pub fn party_restore(ha: &HomeAssistant) -> Result<bool> {
     ha.send("scene", "turn_on", json!({ "entity_id": scene }))?;
     ha.send("scene", "delete", json!({ "entity_id": scene }))?;
     Ok(true)
-}
-
-/// A lockdown's snapshot exists. It outlives an engine restart, not a Home Assistant one.
-pub fn locked_down(ha: &HomeAssistant) -> bool {
-    ha.state(&format!("scene.{LOCKDOWN_SCENE}")).is_ok()
-}
-
-/// Whether a lockdown is on: Home Assistant's snapshot scene once the calls queued so far have
-/// been made, and `known_here` (what this engine started and has not stood down) only when Home
-/// Assistant cannot be asked. A scene lost to a Home Assistant restart or deleted ends it.
-pub fn lockdown_on(ha: &HomeAssistant, known_here: bool) -> bool {
-    lockdown_answer(ha.exists(&format!("scene.{LOCKDOWN_SCENE}")).ok(), known_here)
-}
-
-fn lockdown_answer(scene: Option<bool>, known_here: bool) -> bool {
-    scene.unwrap_or(known_here)
 }
 
 /// "Okay, the lights are off. The music is paused." for a routine; `except` names the room left lit.
@@ -1453,19 +1328,278 @@ pub fn switched_answer(switched: &Switched, except: Option<&str>, lang: Lang) ->
     parts.join(" ")
 }
 
+/// The answer to a house request. `here`: the room the microphone is in; `name`: the assistant's,
+/// for the message on a phone it rings.
+pub fn answer(
+    ha: &mut HomeAssistant,
+    command: &HouseCommand,
+    here: Option<&str>,
+    name: &str,
+    lang: Lang,
+) -> Result<String> {
+    let no = lang == Lang::Norwegian;
+    let say = |english: &str, norwegian: &str| if no { norwegian.to_owned() } else { english.to_owned() };
+    Ok(match command {
+        HouseCommand::Status => {
+            let alerts = alerts::active(ha)?;
+            let lights: Vec<Light> = ha.lights_on()?.into_iter().filter(|l| !l.status_led()).collect();
+            status_answer(&alerts, &lights, &snapshot(ha)?, lang)
+        }
+        HouseCommand::Sun(event) => sun_answer(&ha.state("sun.sun")?, *event, lang)?,
+        HouseCommand::FindPhone(who) => {
+            let phones = phones(ha)?;
+            let picked = pick_phones(&phones, who.as_deref());
+            for phone in &picked {
+                ring(ha, phone, name)?;
+                info!(phone = phone.id, "ringing phone");
+            }
+            rang_answer(&picked, who.as_deref(), lang)
+        }
+        HouseCommand::PhoneBattery(who) => {
+            let phones = phones(ha)?;
+            battery_answer(&pick_phones(&phones, who.as_deref()), who.as_deref(), lang)
+        }
+        HouseCommand::GuestWifi(switch) => {
+            let Some(wifi) = entities(ha, "switch", "guest")?.into_iter().next() else {
+                return Ok(say(
+                    "I can't find a guest Wi-Fi in Home Assistant.",
+                    "Jeg finner ikke gjestenettet i Home Assistant.",
+                ));
+            };
+            match switch {
+                Switch::On | Switch::Off => {
+                    let on = *switch == Switch::On;
+                    ha.service("switch", if on { "turn_on" } else { "turn_off" }, json!({ "entity_id": wifi.id }))?;
+                    match on {
+                        true => say("Okay, the guest Wi-Fi is on.", "Ok, gjestenettet er på."),
+                        false => say("Okay, the guest Wi-Fi is off.", "Ok, gjestenettet er av."),
+                    }
+                }
+                Switch::Status if wifi.state != "on" => say("The guest Wi-Fi is off.", "Gjestenettet er av."),
+                Switch::Status => {
+                    let clients = match (wifi.clients.parse::<u32>(), no) {
+                        (Ok(0), false) => " Nobody is connected.".to_owned(),
+                        (Ok(0), true) => " Ingen er koblet til.".to_owned(),
+                        (Ok(1), false) => " One device is connected.".to_owned(),
+                        (Ok(1), true) => " Én enhet er koblet til.".to_owned(),
+                        (Ok(n), false) => format!(" {n} devices are connected."),
+                        (Ok(n), true) => format!(" {n} enheter er koblet til."),
+                        (Err(_), _) => String::new(),
+                    };
+                    say("The guest Wi-Fi is on.", "Gjestenettet er på.") + &clients
+                }
+            }
+        }
+        HouseCommand::Camera(switch) => {
+            let privacy = entities(ha, "switch", "privacy")?;
+            if privacy.is_empty() {
+                return Ok(say(
+                    "I can't find a camera with a privacy mode.",
+                    "Jeg finner ikke noe kamera med personvernmodus.",
+                ));
+            }
+            let ids: Vec<&str> = privacy.iter().map(|p| p.id.as_str()).collect();
+            match switch {
+                Switch::On => {
+                    ha.service("switch", "turn_off", json!({ "entity_id": ids }))?;
+                    say("Okay, the camera is back on.", "Ok, kameraet er på igjen.")
+                }
+                Switch::Off => {
+                    ha.service("switch", "turn_on", json!({ "entity_id": ids }))?;
+                    say(
+                        "Okay, privacy mode is on. The camera isn't recording.",
+                        "Ok, personvernmodus er på. Kameraet tar ikke opp.",
+                    )
+                }
+                Switch::Status if privacy.iter().any(|p| p.state == "on") => {
+                    say("The camera is in privacy mode.", "Kameraet er i personvernmodus.")
+                }
+                Switch::Status if entities(ha, "camera", "")?.iter().any(|c| c.state == "recording") => {
+                    say("The camera is recording.", "Kameraet tar opp.")
+                }
+                Switch::Status => say("The camera is on, but not recording.", "Kameraet er på, men tar ikke opp."),
+            }
+        }
+        HouseCommand::Alarm(switch) => {
+            let Some(panel) = entities(ha, "alarm_control_panel", "")?.into_iter().next() else {
+                return Ok(say("There's no alarm in Home Assistant.", "Det er ingen alarm i Home Assistant."));
+            };
+            match switch {
+                Switch::Off => say(
+                    "I won't disarm the alarm by voice; anyone at the door could ask. Use the app instead.",
+                    "Jeg slår ikke av alarmen med stemmen; hvem som helst ved døra kunne spurt. Bruk appen.",
+                ),
+                Switch::Status => alarm_sentence(&panel.state, lang)
+                    .unwrap_or_else(|| say("I can't tell whether the alarm is on.", "Jeg vet ikke om alarmen er på.")),
+                Switch::On if panel.state.starts_with("armed") => {
+                    say("The alarm is already armed.", "Alarmen er allerede på.")
+                }
+                Switch::On => {
+                    ha.service("alarm_control_panel", "alarm_arm_away", json!({ "entity_id": panel.id }))?;
+                    info!(panel = panel.id, "alarm armed");
+                    say("Okay, the alarm is armed.", "Ok, alarmen er på.")
+                }
+            }
+        }
+        HouseCommand::Climate(place, reading) => climate_answer(&climate_readings(ha)?, place, *reading, here, lang),
+        HouseCommand::Sensors(SensorQuery::Battery(name)) => {
+            sensors::battery_answer(&sensors::batteries(ha)?, name.as_deref(), lang)
+        }
+        HouseCommand::Sensors(SensorQuery::Leaks) => sensors::leak_answer(&sensors::water_sensors(ha)?, lang),
+    })
+}
+
+/// The question asked before a change that a misheard request must not make on its own: the
+/// camera's privacy mode ("stop the timer" was heard as "Stop the camera.") and arming the alarm.
+pub fn confirm_question(command: &HouseCommand, lang: Lang) -> Option<&'static str> {
+    let no = lang == Lang::Norwegian;
+    Some(match command {
+        HouseCommand::Camera(Switch::Off) if no => "Skal jeg slå på personvernmodus?",
+        HouseCommand::Camera(Switch::Off) => "Turn on privacy mode?",
+        HouseCommand::Camera(Switch::On) if no => "Skal kameraet ta opp igjen?",
+        HouseCommand::Camera(Switch::On) => "Turn privacy mode off?",
+        HouseCommand::Alarm(Switch::On) if no => "Skal jeg slå på alarmen?",
+        HouseCommand::Alarm(Switch::On) => "Arm the alarm?",
+        _ => return None,
+    })
+}
+
+/// Bedtime light colour: warm white.
+const BEDTIME_KELVIN: u32 = 2700;
+
+/// What bedtime leaves on.
+pub fn in_bedroom(light: &Light) -> bool {
+    ha::is_room(&light.area, "bedroom") || ha::is_room(&light.name, "bedroom")
+}
+
+/// The bedroom lights that are on which bedtime dims. A Hue room is also its own lights: the
+/// lights, or the room when that is all there is.
+pub fn bedtime_dimmed(bedroom: &[Light]) -> Vec<&str> {
+    let single: Vec<&Light> = bedroom.iter().filter(|l| !l.group).collect();
+    if single.is_empty() { bedroom.iter().collect() } else { single }.iter().map(|l| l.id.as_str()).collect()
+}
+
+/// The lights coming home switches on, when none of them is on yet: the `home_room` setting, else
+/// the room the microphone is in after dark.
+pub fn home_target(ha: &mut HomeAssistant, home_room: Option<&str>, here: Option<&str>) -> Result<Option<Target>> {
+    let room = match home_room {
+        Some(room) => Some(room),
+        None => here.filter(|_| ha.state("sun.sun").is_ok_and(|s| s["state"] == "below_horizon")),
+    };
+    Ok(room.map(|room| ha.find(room)).transpose()?.flatten())
+}
+
+/// The settings a routine reads.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RoutineSettings<'a> {
+    /// The room coming home lights; else the room the microphone is in, after dark.
+    pub home_room: Option<&'a str>,
+    /// The bedroom lights' brightness at bedtime, in percent.
+    pub bedtime_light: u8,
+}
+
+/// Leaving, coming home and bedtime. Lights a routine switched count as the last lights, so
+/// "undo" or "turn them back on" reverses it. The music coming home starts is the engine's.
+pub fn run_routine(
+    ha: &mut HomeAssistant,
+    routine: Routine,
+    here: Option<&str>,
+    settings: RoutineSettings,
+    lang: Lang,
+) -> Result<Done> {
+    let no = lang == Lang::Norwegian;
+    let mut parts = Vec::new();
+    let mut switched_lights = None;
+    match routine {
+        Routine::Leaving | Routine::Bedtime => {
+            let bedtime = routine == Routine::Bedtime;
+            let keep = |l: &Light| bedtime && in_bedroom(l);
+            let switched = everything_off(ha, keep)?;
+            let except = if bedtime && !switched.lights.is_empty() {
+                Some(if no { "soverommet" } else { "bedroom" })
+            } else {
+                None
+            };
+            parts.push(switched_answer(&switched, except, lang));
+            if bedtime {
+                let bedroom: Vec<Light> = ha.lights_on()?.into_iter().filter(|l| keep(l)).collect();
+                let ids = bedtime_dimmed(&bedroom);
+                if !ids.is_empty() {
+                    let data = json!({
+                        "entity_id": ids,
+                        "brightness_pct": settings.bedtime_light,
+                        "color_temp_kelvin": BEDTIME_KELVIN,
+                    });
+                    ha.send("light", "turn_on", data)?;
+                    parts.push(
+                        if no { "Lyset på soverommet er dempet." } else { "The bedroom lights are dimmed." }.into(),
+                    );
+                }
+            }
+            if !switched.lights.is_empty() {
+                let ids = switched.lights.iter().map(|l| l.id.clone()).collect();
+                let label = if no { "huset" } else { "house" }.to_owned();
+                switched_lights = Some((Target { label, ids, area: true }, false));
+            }
+            parts.extend(alerts::active(ha)?.iter().map(|a| alerts::sentence(a, lang)));
+            if !bedtime && snapshot(ha)?.alarm == "disarmed" {
+                parts.push(
+                    if no {
+                        "Alarmen er av. Si slå på alarmen hvis du vil."
+                    } else {
+                        "The alarm is off. Say arm the alarm to set it."
+                    }
+                    .into(),
+                );
+            }
+            parts.push(
+                match (bedtime, no) {
+                    (false, false) => "See you later.",
+                    (false, true) => "Ha det bra.",
+                    (true, false) => "Good night.",
+                    (true, true) => "God natt.",
+                }
+                .into(),
+            );
+        }
+        Routine::Lockdown | Routine::StandDown | Routine::OpenSource => unreachable!("the worker runs these itself"),
+        Routine::Home => {
+            parts.push(if no { "Velkommen hjem." } else { "Welcome home." }.into());
+            if let Some(target) = home_target(ha, settings.home_room, here)? {
+                let on = ha.lights_on()?;
+                if !on.iter().any(|l| target.ids.contains(&l.id)) {
+                    ha.set(&target, true)?;
+                    let label = target.label.to_lowercase();
+                    parts.push(if no {
+                        format!("Jeg har skrudd på lyset i {label}.")
+                    } else {
+                        format!("I've turned on the {label} lights.")
+                    });
+                    switched_lights = Some((target, true));
+                }
+            }
+            parts.extend(alerts::active(ha)?.iter().map(|a| alerts::sentence(a, lang)));
+            if snapshot(ha)?.alarm.starts_with("armed") {
+                parts.push(if no { "Alarmen er fortsatt på." } else { "The alarm is still armed." }.into());
+            }
+        }
+    }
+    let lights = match switched_lights {
+        Some((target, on)) => Lights::Changed(target, LightChange::Switched(on)),
+        None => Lights::Same,
+    };
+    Ok(Done { lights, ..Done::say(parts.join(" ")) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn home_assistant_decides_whether_a_lockdown_is_on() {
-        // The scene lost to a Home Assistant restart ends a lockdown this engine started.
-        assert!(!lockdown_answer(Some(false), true));
-        // One started before an engine restart.
-        assert!(lockdown_answer(Some(true), false));
-        // Home Assistant unreachable: what this engine knows.
-        assert!(lockdown_answer(None, true));
-        assert!(!lockdown_answer(None, false));
+    fn asks_before_privacy_mode_and_the_alarm() {
+        assert_eq!(confirm_question(&HouseCommand::Camera(Switch::Off), Lang::English), Some("Turn on privacy mode?"));
+        assert_eq!(confirm_question(&HouseCommand::Alarm(Switch::On), Lang::English), Some("Arm the alarm?"));
+        assert_eq!(confirm_question(&HouseCommand::Camera(Switch::Status), Lang::English), None);
     }
 
     #[test]
@@ -1483,22 +1617,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn alarm_covers_whole_red_rooms() {
-        let group = |id: &str, members: &[&str]| HueGroup {
-            id: id.into(),
-            members: members.iter().map(|m| (*m).to_owned()).collect(),
-        };
-        let groups = [
-            group("light.living_room", &["light.round", "light.fresh"]),
-            group("light.kitchen", &["light.plug"]),
-            group("light.bedroom", &["light.bed", "light.window"]),
-        ];
-        let red: Vec<String> = ["light.round", "light.fresh", "light.bed", "light.lamp"].map(String::from).to_vec();
-        // The bedroom's window light is not red, so its bed light goes alone.
-        assert_eq!(cover(&groups, &red), ["light.living_room", "light.bed", "light.lamp"]);
     }
 
     fn words(text: &str) -> Vec<String> {

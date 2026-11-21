@@ -4,8 +4,8 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
-use voice_assistant::house;
 use voice_assistant::lang::Lang;
+use voice_assistant::lockdown;
 use voice_proto::SAMPLE_RATE;
 
 use crate::activity;
@@ -62,7 +62,7 @@ impl Worker {
                 info!("answer interrupted");
                 break;
             }
-            let dark = house::threat_sentence(sentence);
+            let dark = lockdown::threat_sentence(sentence);
             // The dark voice trims its own onset and keeps the pause it opens with.
             let mut started = dark;
             let mut sink = |pcm: &[i16]| {

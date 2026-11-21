@@ -68,6 +68,9 @@ wording such as "AI-generated", and code, docs and PR bodies, are only guarded b
 - A new `Intent` variant does not compile until its arm in `Intent::meta` (`intent/meta.rs`) is written: its
   catalogue skill id, whether it only reads (the web page answers it for real), its lead-in, whether a draft that
   is one is acted on at once, and whether its result is heard, so it needs no spoken answer.
+- A skill's parser, wording and Home Assistant calls live in its `voice-assistant` module. The engine
+  (`voice-engine/src/assistant/`) keeps only what needs the conversation or engine state (hush, undo, party,
+  speech, `Conversation`): a Home Assistant skill returns a `skill::Done` and the worker applies it.
 - Every skill also gets an entry in `voice-assistant/src/catalogue.rs` (what it does, its data source, the
   services it calls, example phrases), with the same id as its `Intent::meta` skill. The `web: true` page shows that
   catalogue, and its tests parse every example, so a phrase listed there must reach the skill.

@@ -3,16 +3,16 @@
 use std::time::Instant;
 
 use tracing::warn;
-use voice_assistant::house::{self, HouseCommand, Switch};
+use voice_assistant::house::{self, confirm_question, HouseCommand, Switch};
 use voice_assistant::intent::{self, Intent};
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
+use voice_assistant::lockdown;
 use voice_assistant::persona::Persona;
 use voice_assistant::timer;
 
 use crate::render::Priority;
 
-use super::home::confirm_question;
 use super::leads::{lead_sentence, LEADS};
 use super::Worker;
 
@@ -78,9 +78,9 @@ impl Worker {
                 "Okay, the party's over.",
                 "There's no party on.",
             ])
-            .chain(house::LOCKDOWN_ANSWERS)
+            .chain(lockdown::LOCKDOWN_ANSWERS)
             .chain(&[house::OPEN_SOURCE_ANSWER])
-            .chain(house::LOCKDOWN_THREATS)
+            .chain(lockdown::LOCKDOWN_THREATS)
             .chain(house::ROUTINE_ANSWERS)
             .chain(Jokes::english())
             .chain(&["Sorry, I didn't catch that."])
