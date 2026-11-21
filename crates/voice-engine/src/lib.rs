@@ -9,6 +9,7 @@ pub mod learned;
 pub mod metrics;
 pub mod party;
 pub mod pipeline;
+pub mod recordings;
 pub mod render;
 pub mod satellite;
 pub mod screen;
