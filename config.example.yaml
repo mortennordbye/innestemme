@@ -50,6 +50,10 @@ listener: parakeet
 # parakeet-repo: parakeet-110m
 # The name check on a wake word; empty uses parakeet-repo. The 0.6B v2 (the default) hears the name more often.
 # parakeet-wake-repo: csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8
+# Threads for that check (4 by default, at most `threads`): the music pauses after a wake only once the
+# check is done, so it needs most of the cores; on 6 cores 2 stay free for the request's draft, which is
+# transcribed at the same time.
+# wake-check-threads: 4
 # whisper-size: base (290 MB) or small (970 MB, more accurate).
 whisper-size: base
 # Whisper encodes the request and 3 s of silence (8 s at the least). true: its full 30 s window,

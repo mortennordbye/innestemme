@@ -12,7 +12,7 @@ As deployed: a Home Assistant Voice PE in the living room, answers on a Sonos.
 |---|---|---|
 | 1. The Voice PE streams its microphone all the time (16 kHz) | `firmware/`, `voice-esphome` | |
 | 2. openWakeWord scores the stream; "Hey Jarvis" above `wake-threshold` starts a request, a lower score from `wake-check-from` only when Parakeet hears the name | `voice-assistant/src/wakeword.rs` | about 1 ms per 80 ms of audio |
-| 3. Music that plays in the room is paused (queued, see below) | `assistant/hush.rs` `hush` | |
+| 3. Parakeet TDT 0.6B checks the wake word's audio for the name, on a thread of its own, while the request is said and transcribed; music in the room is paused once it finds the name (queued, see below) | `assistant/wake.rs` `NameChecker`, `assistant/hush.rs` `hush` | about 0.12 s at 4 threads on an M4 Pro |
 | 4. An energy detector cuts the request: a draft after 0.24 s of quiet, the end after 0.64 s | `voice-assistant/src/vad.rs` | 0.24 or 0.64 s |
 | 5. Parakeet TDT 110M (int8, sherpa-onnx) transcribes the draft while the pause goes on | `parakeet.rs` | about 18 ms per second of audio on an M4 Pro |
 | 6. The rules parse it into an intent; a complete command acts on the draft at once | `intent.rs`, `assistant/quick.rs` `complete_at_once` | under 1 ms |
@@ -30,7 +30,9 @@ after one that waits out the full pause. `docs/benchmarks.md` has the measuremen
 understands Norwegian: `openai/whisper-tiny` picks the language, `NbAiLab/nb-whisper-base` transcribes. Both are
 called once per utterance the energy detector cuts. Parakeet's model is the 110M (`parakeet-repo: parakeet-110m`,
 fetched from the sherpa-onnx release); the name check on a wake word uses the slower 0.6B v2
-(`parakeet-wake-repo`), which hears the name more often and runs while the request is still being spoken. The wake word is either openWakeWord in the engine
+(`parakeet-wake-repo`), which hears the name more often. It runs on a thread of its own with `wake-check-threads` (4)
+of the compute threads, so the listener does not wait for it. The music pauses only once the check is done, so it
+keeps most of the cores; on the cluster's 6, 2 stay free for the request's draft. The wake word is either openWakeWord in the engine
 (`wake-model`, on a satellite's continuous stream) or the name at the start of the transcript ("Homie, what's the
 weather?"), with known misspellings (`dialog.rs`).
 
@@ -38,8 +40,10 @@ weather?"), with known misspellings (`dialog.rs`).
 8 s on the Mac), for recognised requests only, so room chatter is ignored. Not after party mode starts or stops: talk
 over the loud music would be taken as a request ("play"). Speech that repeats an answer of the last 30 s is the Sonos heard back and is dropped. An
 unrecognised request after a wake gets "Sorry, I didn't catch that." only when Parakeet hears the name in the wake
-word itself, so a false wake by the TV stays silent. That check runs as soon as the device wakes, while the
-request is still being said, so the reply does not wait for it. A wake word without the name leaves the music and the TV playing,
+word itself, so a false wake by the TV stays silent. That check runs as soon as the device wakes, on its own
+thread, while the request is still being said and its draft is transcribed. The worker takes the result only when
+it needs it: for the music, for the reply, and before a job that acts or speaks. On the worker thread the check
+held up the request's draft by about 0.25 s on the cluster. A wake word without the name leaves the music and the TV playing,
 and what follows it is taken as in the follow-up window: no small talk, and no long speech unless it opens like a
 request.
 

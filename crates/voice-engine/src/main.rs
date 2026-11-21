@@ -189,6 +189,11 @@ struct Args {
     /// check runs while the request is still being spoken, so the slower model costs nothing there.
     #[arg(long, env = "VOICE_PARAKEET_WAKE_REPO", default_value = voice_assistant::parakeet::LARGE_REPO)]
     parakeet_wake_repo: String,
+    /// Compute threads for that name check's model, at most `threads`. The music waits for the check
+    /// after a wake, so 4 keeps it near its time at 6 threads (2 would take about 0.6 s on the
+    /// cluster), and on 6 cores 2 stay free for the request's draft, transcribed meanwhile.
+    #[arg(long, env = "VOICE_WAKE_CHECK_THREADS", default_value_t = 4)]
+    wake_check_threads: usize,
     /// Run Whisper on the Apple GPU. Needs a build with `--features metal`.
     #[arg(long, env = "VOICE_STT_GPU")]
     stt_gpu: bool,
@@ -507,7 +512,8 @@ fn main() -> Result<()> {
                     if !args.parakeet_wake_repo.is_empty() && args.parakeet_wake_repo != args.parakeet_repo =>
                 {
                     let files = ParakeetFiles::fetch(&args.parakeet_wake_repo)?;
-                    info!(model = %files.encoder.display(), "loading parakeet for the wake word check");
+                    let threads = args.wake_check_threads.clamp(1, threads);
+                    info!(model = %files.encoder.display(), threads, "loading parakeet for the wake word check");
                     Some(Box::new(Parakeet::load(&files, threads)?) as Box<dyn Transcribe>)
                 }
                 _ => None,

@@ -78,7 +78,7 @@ use quick::{bare_stop, complete_at_once, heard_by_itself, music_by_sound};
 use screen::SCREEN_MOMENT;
 use shopping::{LIST_OPEN, LIST_REPLY_WORDS};
 use speech::Spoken;
-use wake::WakeName;
+use wake::{NameChecker, WakeName};
 
 #[cfg(test)]
 pub(crate) use handle::Calls;
@@ -243,6 +243,8 @@ enum Job {
     Woken(Instant, WakeName),
     /// Whether the name is in this audio (24 kHz): a near miss of the wake word.
     CheckName(Vec<i16>, tokio::sync::oneshot::Sender<Option<bool>>),
+    /// The wake word's name check is done: its result waits in `Worker::wake_check`.
+    NameChecked,
     /// A satellite heard nothing after its wake word.
     NothingAsked,
     /// Audio still to transcribe, and when it ended.
@@ -301,7 +303,10 @@ struct Worker {
     player: Player,
     tv: Tv,
     transcriber: Box<dyn Transcribe>,
-    wake_listener: Option<Box<dyn Transcribe>>,
+    /// The name check's own model and thread; without one, the check runs here on `transcriber`.
+    name_checker: Option<NameChecker>,
+    /// The current wake's name check, still out or not yet taken into `wake_named`.
+    wake_check: Option<mpsc::Receiver<Option<bool>>>,
     /// The latest draft and its transcripts.
     draft: Option<(Vec<i16>, Vec<Transcript>)>,
     /// Until then, speech counts without the name: after a bare name, and for a while after each
@@ -467,38 +472,24 @@ impl Worker {
             if let (true, Some(render)) = (heard, &self.render) {
                 render.hold(true);
             }
+            // Jobs that act or speak find the music as the wake's check leaves it, as when the check
+            // ran on this thread. Drafts and utterances are transcribed while it runs.
+            if matches!(
+                job,
+                Job::Act(..) | Job::Ask(..) | Job::Alert(_) | Job::Failed(..) | Job::Announce(_) | Job::Ready
+            ) {
+                self.take_wake_name(true);
+            }
             match job {
                 Job::NothingAsked => {
+                    // A check still out pauses nothing now: the run is over.
+                    self.wake_check = None;
                     self.woken_at = None;
                     self.unhush();
                 }
-                Job::Woken(at, wake) => {
-                    info!("device wake word");
-                    self.woken_at = Some(at);
-                    // A new request: an earlier draft's utterance, if its end was lost, is over.
-                    self.answered_draft = None;
-                    // Until the wake word's voice is told (`Job::Voice`), which follows at once.
-                    self.address(None);
-                    self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
-                    self.emit(AssistantEvent::Listening);
-                    // Checked while the request is still being said: done when a reply needs it,
-                    // it held up "didn't catch that" by a quarter of a second on the cluster.
-                    self.wake_named = match wake {
-                        WakeName::Unknown => None,
-                        WakeName::Check(audio) => self.name_in(&audio),
-                        WakeName::Heard => Some(true),
-                    };
-                    // Most wakes without the name are the TV or the room (Loki, 24-31 Oct: about 48
-                    // of 58), and pausing paused the TV under them. A real one still acts, over the music.
-                    if self.wake_named == Some(false) {
-                        info!("no name in the wake word: the music plays on");
-                    } else {
-                        self.hush();
-                    }
-                }
-                Job::CheckName(audio, reply) => {
-                    let _ = reply.send(self.name_in(&audio));
-                }
+                Job::Woken(at, wake) => self.woken(at, wake),
+                Job::NameChecked => self.take_wake_name(false),
+                Job::CheckName(audio, reply) => self.check_name(audio, reply),
                 Job::Satellite(names) => {
                     // After a restart the device needs the timers again, and those that ended meanwhile are told.
                     let notices = self.timers.connected(Instant::now());
@@ -658,6 +649,8 @@ impl Worker {
 
     /// What was said, as transcribed: a wake word, a request, or nothing for the assistant.
     fn heard(&mut self, candidates: &[Transcript], audio: &[i16], ended: Instant, start: Instant, from_draft: bool) {
+        // The reply to the request depends on the name in the wake, and the music is paused first.
+        self.take_wake_name(true);
         let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);
         // A translation usually drops the name, so a candidate that starts with the wake word is
         // the real transcript. Otherwise the most confident one.

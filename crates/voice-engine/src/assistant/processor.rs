@@ -39,6 +39,7 @@ use crate::screen::Screen;
 use super::handle::AssistantHandle;
 use super::home::watch_alerts;
 use super::pause::Pause;
+use super::wake::NameChecker;
 use super::{unreachable_text, AssistantConfig, AssistantEvent, Job, Worker};
 
 /// Covers the STT's 0.5 s delay plus the room's echo tail.
@@ -151,7 +152,8 @@ impl AssistantProcessor {
             player: Player::new(speaker),
             tv,
             transcriber,
-            wake_listener,
+            name_checker: None,
+            wake_check: None,
             draft: None,
             follow_up_until: None,
             woken_at: None,
@@ -271,8 +273,9 @@ impl AssistantProcessor {
         }
         let start = Instant::now();
         worker.transcriber.transcribe(&[0i16; FRAME_SAMPLES * 12])?;
-        if let Some(listener) = &mut worker.wake_listener {
+        if let Some(mut listener) = wake_listener {
             listener.transcribe(&[0i16; FRAME_SAMPLES * 12])?;
+            worker.name_checker = Some(NameChecker::spawn(listener, worker.config.wake.clone(), jobs.clone())?);
         }
         info!(elapsed = ?start.elapsed(), "listener warmed up");
         std::thread::Builder::new().name("assistant".into()).spawn(move || worker.run(rx))?;
