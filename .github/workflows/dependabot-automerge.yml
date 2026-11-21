@@ -12,5 +12,7 @@ jobs:
       pull-requests: write
     uses: mortennordbye/.github/.github/workflows/dependabot-automerge.yml@f4772051702542c8db5190ad8cae097590b08830 # v1
     with:
-      allow-major: true
+      # A major release can change behaviour that no test hears: sherpa-onnx 2.0 silenced numbers
+      # in speech for two weeks. Majors wait for a review.
+      allow-major: false
     secrets: inherit

@@ -44,6 +44,10 @@ updates:
       # uses the same cache layout, so moving later is safe.
       - dependency-name: hf-hub
         versions: [">=1"]
+      # sherpa-onnx 2.0 dropped espeak-ng: Kokoro skips every word missing from its lexicon, digits
+      # included ("16:03" is spoken as silence). Stay on 1.13 until the engine phonemizes itself.
+      - dependency-name: sherpa-onnx
+        versions: [">=2"]
 
   - package-ecosystem: docker
     directory: /
