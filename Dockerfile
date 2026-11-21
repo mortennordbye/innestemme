@@ -5,7 +5,7 @@
 # Runs on the build machine's own architecture and cross-compiles to x86-64, so a build on an
 # arm64 host does not go through emulation.
 # sherpa-onnx (the Parakeet listener) is a static C++ library: linking it needs the target's libstdc++.
-FROM --platform=$BUILDPLATFORM rust:1.99.1-bookworm@sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c AS chef
+FROM --platform=$BUILDPLATFORM rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS chef
 ARG BUILDARCH
 WORKDIR /src
 # The toolchain and target-cpu settings come first: dependencies compiled without them would be
