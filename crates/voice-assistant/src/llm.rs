@@ -634,6 +634,20 @@ pub fn system_prompt(name: &str, home: Option<&str>, room: Option<&str>, today: 
 mod tests {
     use super::*;
 
+    /// A tool the model is offered but no handler takes would fail only when the model calls it.
+    #[test]
+    fn every_tool_has_a_handler() {
+        let tools = tools();
+        let names: Vec<&str> =
+            tools.as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
+        assert!(!names.is_empty());
+        for name in names {
+            if let Err(error) = tool_to_decision(name, &json!({})) {
+                assert!(!error.to_string().contains("unknown tool"), "{name}: {error:#}");
+            }
+        }
+    }
+
     #[test]
     fn tool_calls_become_skills() {
         let call = |name: &str, args: &str| json!({ "tool_calls": [{ "type": "function", "function": { "name": name, "arguments": args } }] });
