@@ -187,9 +187,17 @@ impl Harness {
     /// miss goes to the name check.
     fn server_wake(mode: Mode) -> Self {
         let mut h = Self::new(mode);
-        h.bridge.wake = Some((Box::new(Scores), 0.5));
-        h.bridge.check_from = Some(0.3);
+        h.bridge.server_wake = Some(WakeListener::new(Box::new(Scores), 0.5, Some(0.3)));
         h
+    }
+
+    fn wake(&self) -> &WakeListener {
+        self.bridge.server_wake.as_ref().unwrap()
+    }
+
+    /// The answer's stream to the player is open.
+    fn player_clip(&self) -> bool {
+        matches!(&self.bridge.delivery, Delivery::Player { answer: Some(PlayerAnswer { clip: Some(_), .. }), .. })
     }
 
     fn take(&mut self) -> Vec<String> {
@@ -282,7 +290,7 @@ impl Harness {
 
     /// The device's run start, with the answer's URL for a device that streams it.
     fn run_start(&self, clip: u32) -> String {
-        match self.bridge.stream_answers {
+        match matches!(self.bridge.delivery, Delivery::UrlStreamed(_)) {
             true => format!("RunStart url={BASE}/speech/{clip:x}.wav"),
             false => "RunStart".into(),
         }
@@ -379,7 +387,7 @@ async fn player_with_server_wake_streams_again_while_the_answer_plays() {
     // The answer's audio still goes to the player's stream.
     assert_eq!(h.speech(1.0).await, NOTHING);
     assert_eq!(h.spoken().await, NOTHING);
-    assert!(h.bridge.clip.is_none());
+    assert!(!h.player_clip());
 }
 
 #[tokio::test(start_paused = true)]
@@ -497,7 +505,7 @@ async fn player_wake_word_over_the_answer_interrupts_it() {
     );
     // A moment of silence announced over the answer stops it.
     assert_eq!(h.announced(1), [format!("{ENTITY} {BASE}/speech/1.wav 40")]);
-    assert!(h.bridge.clip.is_none());
+    assert!(!h.player_clip());
     // The rest of the interrupted answer goes nowhere.
     assert_eq!(h.speech(1.0).await, NOTHING);
     assert_eq!(h.spoken().await, NOTHING);
@@ -746,6 +754,36 @@ async fn player_with_server_wake_stop_while_answering_changes_nothing() {
     assert_eq!(h.after(RUN_END_DELAY).await, ["RunEnd"]);
 }
 
+#[tokio::test(start_paused = true)]
+async fn player_stop_then_stream_again_with_nothing_heard_tells_the_assistant_once() {
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.audio(0.9).await;
+    assert_eq!(h.stop().await, ["RunEnd"]);
+    // The device streams for the wake word again before the request was heard.
+    assert_eq!(h.stream().await, ["accept", "RunStart", "WakeWordStart"]);
+    assert_eq!(h.after(LISTEN_TIMEOUT).await, NOTHING);
+    assert_eq!(h.after(TICK).await, ["assistant: gave_up"]);
+    assert_eq!(h.after(LISTEN_TIMEOUT).await, NOTHING);
+    assert_eq!(h.disconnect(), NOTHING);
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_stop_then_stream_again_still_answers_a_request_heard_later() {
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.audio(0.9).await;
+    h.stop().await;
+    h.stream().await;
+    assert_eq!(
+        h.heard("what time is it").await,
+        ["WakeWordEnd", "SttStart", "SttVadEnd", "SttEnd text=what time is it", "IntentStart"]
+    );
+    assert_eq!(h.answer("It's ten past three.").await, ["IntentEnd continue_conversation=0"]);
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+    assert_eq!(h.after(LISTEN_TIMEOUT + TICK).await, ["RunEnd"]);
+}
+
 // --- No request after the wake word -----------------------------------------------------------
 
 #[tokio::test(start_paused = true)]
@@ -807,6 +845,25 @@ async fn lost_spoken_event_ends_the_run_after_a_minute_of_quiet() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_request_long_after_the_last_answer_is_answered() {
+    for mode in ALL {
+        let mut h = Harness::new(mode);
+        h.start().await;
+        h.heard("what time is it").await;
+        h.answer("It's ten past three.").await;
+        h.speech(0.5).await;
+        h.spoken().await;
+        h.after(Duration::from_secs(300)).await;
+        h.start().await;
+        h.heard("what time is it").await;
+        // The minute of quiet counts from this request, not from the last answer's speech.
+        assert!(!h.after(TICK).await.iter().any(|e| e == "RunEnd"), "{mode:?}");
+        assert!(h.bridge.run == Run::Answering, "{mode:?}");
+        assert!(!h.answer("It's twenty past three.").await.is_empty(), "{mode:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn speaker_answer_still_playing_is_not_quiet() {
     let mut h = Harness::new(Mode::Speaker);
     h.start().await;
@@ -816,7 +873,7 @@ async fn speaker_answer_still_playing_is_not_quiet() {
     // 90 s of audio, sent as it plays: the minute without events is not a lost end.
     assert_eq!(h.after(ANSWER_SILENCE + TICK).await.len(), 1);
     assert_eq!(h.after(Duration::from_secs(30)).await.len(), 1);
-    assert!(h.bridge.outgoing.is_empty());
+    assert!(matches!(&h.bridge.delivery, Delivery::Speaker(stream) if stream.outgoing.is_empty()));
     // The quiet minute counts from the end of the audio sent.
     assert_eq!(h.after(ANSWER_SILENCE - Duration::from_secs(1)).await, NOTHING);
     assert!(h.bridge.run == Run::Answering);
@@ -835,8 +892,8 @@ async fn player_with_server_wake_lost_spoken_event_does_not_interrupt_the_next_w
     assert_eq!(h.after(RUN_END_DELAY).await, ["RunEnd"]);
     h.stream().await;
     assert_eq!(h.after(Duration::from_secs(300)).await, NOTHING);
-    assert!(!h.bridge.player_answer);
-    assert!(h.bridge.clip.is_none());
+    assert!(!h.bridge.player_answer());
+    assert!(!h.player_clip());
     assert_eq!(
         h.audio(0.9).await,
         ["WakeWordEnd", "SttStart", "assistant: woke_on 1536 samples", "assistant: hear_now"]
@@ -880,7 +937,7 @@ async fn near_miss_without_the_name_keeps_streaming() {
     near_miss(&mut h).await;
     h.calls.name_checks.pop_front().unwrap().send(Some(false)).unwrap();
     assert_eq!(h.audio(0.0).await, NOTHING);
-    assert!(h.bridge.checking.is_none());
+    assert!(h.wake().checking.is_none());
     assert!(h.bridge.mic.is_empty());
     // A new run of near misses is checked again.
     assert_eq!(h.audio(0.4).await, NOTHING);
@@ -895,7 +952,7 @@ async fn near_miss_without_the_name_is_cleared_with_logging_off() {
     near_miss(&mut h).await;
     h.calls.name_checks.pop_front().unwrap().send(Some(false)).unwrap();
     assert_eq!(h.audio(0.0).await, NOTHING);
-    assert!(h.bridge.checking.is_none());
+    assert!(h.wake().checking.is_none());
 }
 
 #[tokio::test(start_paused = true)]
@@ -904,7 +961,7 @@ async fn near_miss_check_that_cannot_transcribe_keeps_streaming() {
     near_miss(&mut h).await;
     h.calls.name_checks.pop_front().unwrap().send(None).unwrap();
     assert_eq!(h.audio(0.0).await, NOTHING);
-    assert!(h.bridge.checking.is_none());
+    assert!(h.wake().checking.is_none());
 }
 
 #[tokio::test(start_paused = true)]
@@ -913,10 +970,10 @@ async fn near_miss_check_that_does_not_answer_lets_the_wake_word_go() {
     near_miss(&mut h).await;
     tokio::time::advance(CHECK_TIMEOUT - TICK).await;
     assert_eq!(h.audio(0.0).await, NOTHING);
-    assert!(h.bridge.checking.is_some());
+    assert!(h.wake().checking.is_some());
     tokio::time::advance(TICK).await;
     assert_eq!(h.audio(0.0).await, NOTHING);
-    assert!(h.bridge.checking.is_none());
+    assert!(h.wake().checking.is_none());
     let late = h.calls.name_checks.pop_front().unwrap();
     assert!(late.send(Some(true)).is_err());
     assert_eq!(h.audio(0.0).await, NOTHING);
@@ -929,7 +986,18 @@ async fn near_miss_under_check_from_is_only_logged() {
     for score in [0.22, 0.28, 0.21, 0.1, 0.0] {
         assert_eq!(h.audio(score).await, NOTHING);
     }
-    assert_eq!(h.bridge.near_miss, 0.0);
+    assert_eq!(h.wake().near_miss, 0.0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn near_miss_is_not_carried_into_the_next_stream() {
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    assert_eq!(h.audio(0.35).await, NOTHING);
+    assert_eq!(h.audio(0.4).await, NOTHING);
+    assert_eq!(h.stop().await, ["RunEnd"]);
+    h.stream().await;
+    assert_eq!(h.audio(0.0).await, NOTHING);
 }
 
 #[tokio::test(start_paused = true)]
@@ -940,7 +1008,7 @@ async fn wake_word_during_a_name_check_wakes_at_once() {
         h.audio(0.8).await,
         ["WakeWordEnd", "SttStart", "assistant: woke_on 6144 samples", "assistant: hear_now"]
     );
-    assert!(h.bridge.checking.is_none());
+    assert!(h.wake().checking.is_none());
 }
 
 #[tokio::test(start_paused = true)]

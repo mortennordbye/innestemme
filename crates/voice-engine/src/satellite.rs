@@ -247,32 +247,37 @@ enum Run {
 struct Bridge<'a, D: SatelliteDevice = Device> {
     device: D,
     run: Run,
-    speaker: bool,
     base_url: String,
     speech: &'a SpeechClips,
     /// 24 kHz microphone audio for the engine.
     mic: VecDeque<i16>,
     up: resample::Stream,
-    /// URL devices without streaming: the answer so far, 24 kHz.
-    answer: Vec<i16>,
-    stream_answers: bool,
-    player: Option<Arc<AnswerPlayer>>,
-    /// URL devices with streaming, and the answer player: this run's answer URL and its audio so
-    /// far. For a device it is sent at the run's start; `clip_playing` says whether the device was
-    /// told to start playing it.
-    clip: Option<(String, Arc<Clip>)>,
-    clip_playing: bool,
-    /// Speaker devices: 16 kHz answer audio not yet sent, and pacing.
-    down: resample::Stream,
-    outgoing: VecDeque<i16>,
-    stream_start: Option<Instant>,
-    streamed: usize,
-    spoken: bool,
+    /// How answers reach the room, fixed for the session.
+    delivery: Delivery,
     dump: Option<PathBuf>,
     /// This run's 16 kHz microphone audio, when dumping.
     recording: Vec<i16>,
-    /// Server-side wake word: the detector and its threshold.
-    wake: Option<(Box<dyn WakeScorer>, f32)>,
+    /// The wake word scored here, on the device's continuous stream.
+    server_wake: Option<WakeListener>,
+    /// When the last answer will have played, to listen for a follow-up from then on.
+    follow_up_at: Option<Instant>,
+    /// When to end the device's run while it already streams for the wake word: after an answer
+    /// went to the player, or a run was done without words.
+    run_end_at: Option<Instant>,
+    /// The last event of the answer being given (`Run::Answering` or `player_answer`), for the
+    /// `ANSWER_SILENCE` watchdog.
+    answer_event_at: Option<Instant>,
+    /// A request the device stopped (`Run::Stopped`) before it streamed for the wake word again:
+    /// its wake. The assistant may still hear it, and is told at the listening timeout when it
+    /// does not.
+    unheard_since: Option<Instant>,
+}
+
+/// The server-side wake word: the detector and what it has heard of the current stream.
+struct WakeListener {
+    scorer: Box<dyn WakeScorer>,
+    /// Score from 0 to 1 that counts as the wake word.
+    threshold: f32,
     /// `ServerWake::check_from`.
     check_from: Option<f32>,
     /// The highest score of the current run of scores at or above `NEAR_MISS`.
@@ -284,21 +289,403 @@ struct Bridge<'a, D: SatelliteDevice = Device> {
     checking: Option<NameCheck>,
     /// The last `WAKE_PREROLL` of audio while waiting for the wake word.
     preroll: VecDeque<i16>,
-    /// The answer on the player: when it was announced, and its length so far (24 kHz samples).
-    announced: Option<(Instant, usize)>,
-    /// When the last answer will have played, to listen for a follow-up from then on.
-    follow_up_at: Option<Instant>,
-    /// An answer just announced on the player: when, and the room's quietest level since (dBFS),
-    /// to log when the microphone first hears it.
-    onset: Option<(Instant, f32)>,
-    /// An answer is going to the player while the device already listens for the wake word again,
-    /// so it can be interrupted.
-    player_answer: bool,
-    /// When to end the device's run for `player_answer`.
-    run_end_at: Option<Instant>,
-    /// The last event of the answer being given (`Run::Answering` or `player_answer`), for the
-    /// `ANSWER_SILENCE` watchdog.
-    answer_event_at: Option<Instant>,
+}
+
+impl WakeListener {
+    fn new(scorer: Box<dyn WakeScorer>, threshold: f32, check_from: Option<f32>) -> Self {
+        Self {
+            scorer,
+            threshold,
+            check_from,
+            near_miss: 0.0,
+            near_miss_checked: false,
+            checking: None,
+            preroll: VecDeque::new(),
+        }
+    }
+
+    /// A new stream: nothing from before it (the end of the last wake word or answer, a near miss
+    /// cut off by a stop) can wake it.
+    fn reset(&mut self) {
+        self.scorer.reset();
+        self.preroll.clear();
+        self.checking = None;
+        (self.near_miss, self.near_miss_checked) = (0.0, false);
+    }
+
+    /// Scores a chunk of the stream, until the wake word is heard.
+    fn listen(&mut self, pcm: &[i16], assistant: &AssistantHandle, answer_playing: bool) -> Result<Option<Woken>> {
+        self.preroll.extend(pcm);
+        let excess = self.preroll.len().saturating_sub(WAKE_PREROLL);
+        self.preroll.drain(..excess);
+        if assistant.pause.paused() {
+            return Ok(None);
+        }
+        let threshold = self.threshold;
+        let scored = self.scorer.push(pcm)?;
+        if let Some(check) = &mut self.checking {
+            check.since.extend_from_slice(pcm);
+            match check.answer.try_recv() {
+                Ok(Some(true)) => {
+                    let check = self.checking.take().expect("checked above");
+                    info!(score = format!("{:.2}", check.score), "wake word confirmed by its name");
+                    return Ok(Some(Woken { wake: check.wake, since: Some(check.since) }));
+                }
+                Ok(_) => {
+                    // Taken outside the log call: its fields are not evaluated when INFO is off.
+                    let score = self.checking.take().map_or(0.0, |c| c.score);
+                    info!(score = format!("{score:.2}"), "no name in the wake word");
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) if check.started.elapsed() < CHECK_TIMEOUT => {}
+                Err(_) => {
+                    warn!("the wake word name check did not answer");
+                    self.checking = None;
+                }
+            }
+        }
+        let Some(score) = scored else { return Ok(None) };
+        if score < threshold {
+            // Past its peak, the name, if it was said, is in the preroll.
+            let check = self.check_from.is_some_and(|from| self.near_miss >= from && score < self.near_miss);
+            if check && !self.near_miss_checked && self.checking.is_none() && !answer_playing {
+                self.near_miss_checked = true;
+                let wake: Vec<i16> = self.preroll.iter().copied().collect();
+                let answer = assistant.check_name(resample::to_24k(&wake, DEVICE_RATE));
+                let score = self.near_miss;
+                self.checking = Some(NameCheck { answer, score, wake, since: Vec::new(), started: Instant::now() });
+            }
+            if score >= NEAR_MISS.min(self.check_from.unwrap_or(NEAR_MISS)) {
+                self.near_miss = self.near_miss.max(score);
+            } else if self.near_miss > 0.0 {
+                info!(score = format!("{:.2}", self.near_miss), threshold, "wake word missed");
+                (self.near_miss, self.near_miss_checked) = (0.0, false);
+            }
+            return Ok(None);
+        }
+        info!(score = format!("{score:.2}"), threshold, "wake word");
+        self.checking = None;
+        Ok(Some(Woken { wake: self.preroll.drain(..).collect(), since: None }))
+    }
+}
+
+/// The wake word heard: its 16 kHz audio, and the audio after it that was held back while its name
+/// was checked (and so the name was heard).
+struct Woken {
+    wake: Vec<i16>,
+    since: Option<Vec<i16>>,
+}
+
+/// How a session's answers reach the room, chosen once from the device and the settings. Each
+/// way holds only what it needs.
+enum Delivery {
+    /// Announced on a Home Assistant media player: the device only listens, and gets no speech
+    /// events.
+    Player {
+        player: Arc<AnswerPlayer>,
+        answer: Option<PlayerAnswer>,
+        /// An answer just announced: when, and the room's quietest level since (dBFS), to log when
+        /// the microphone first hears it.
+        onset: Option<(Instant, f32)>,
+    },
+    /// Streamed over the API to a device with a speaker component, at playback pace.
+    Speaker(SpeakerStream),
+    /// A URL sent with the run's start, which the device plays from the answer's first audio on
+    /// (`stream_answers`).
+    UrlStreamed(Option<RunClip>),
+    /// A wav URL of the whole answer once it is spoken: its 24 kHz audio so far.
+    UrlWhole(Vec<i16>),
+}
+
+/// The answer on the player.
+struct PlayerAnswer {
+    /// Its audio so far, streamed to the player. `None` once that stream was ended early (the
+    /// device's run ended): the answer still plays what it has.
+    clip: Option<Arc<Clip>>,
+    announced_at: Instant,
+    /// Its length so far, 24 kHz samples.
+    samples: usize,
+}
+
+/// A speaker device's answer: 16 kHz audio not yet sent, and pacing.
+struct SpeakerStream {
+    down: resample::Stream,
+    outgoing: VecDeque<i16>,
+    /// When its first audio came: playback is paced from then.
+    start: Option<Instant>,
+    streamed: usize,
+    /// The answer is complete: the stream ends once `outgoing` has gone out.
+    spoken: bool,
+}
+
+/// A URL device's run: the answer's URL, sent with the run's start, and its audio so far.
+struct RunClip {
+    url: String,
+    clip: Arc<Clip>,
+    /// The device was told to start playing it.
+    playing: bool,
+}
+
+/// What the end of an answer leaves to the bridge.
+enum AfterSpoken {
+    /// A speaker device's stream ends once its audio has gone out (`tick`).
+    Streaming,
+    /// The device's run ends now.
+    EndRun,
+    /// The answer on the player, when there was one: when it was announced, and its length (24 kHz
+    /// samples).
+    Player(Option<(Instant, usize)>),
+}
+
+impl SpeakerStream {
+    fn new() -> Self {
+        Self {
+            down: resample::Stream::new(SAMPLE_RATE, DEVICE_RATE),
+            outgoing: VecDeque::new(),
+            start: None,
+            streamed: 0,
+            spoken: false,
+        }
+    }
+
+    /// Sends the audio due by now. Returns whether the stream has ended.
+    async fn pace(&mut self, device: &impl SatelliteDevice) -> Result<bool> {
+        let Some(start) = self.start else { return Ok(false) };
+        let allowed = ((start.elapsed() + STREAM_LEAD).as_secs_f64() * DEVICE_RATE as f64) as usize;
+        let n = allowed.saturating_sub(self.streamed).min(self.outgoing.len());
+        if n > 0 {
+            let chunk: Vec<i16> = self.outgoing.drain(..n).collect();
+            device.audio(&chunk).await?;
+            self.streamed += n;
+        }
+        if self.spoken && self.outgoing.is_empty() {
+            device.event(Event::TtsStreamEnd, &[]).await?;
+            self.start = None;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+impl Delivery {
+    fn new(speaker: bool, cfg: &SatelliteConfig) -> Self {
+        match &cfg.answer_player {
+            Some(player) => Delivery::Player { player: player.clone(), answer: None, onset: None },
+            None if speaker => Delivery::Speaker(SpeakerStream::new()),
+            None if cfg.stream_answers => Delivery::UrlStreamed(None),
+            None => Delivery::UrlWhole(Vec::new()),
+        }
+    }
+
+    fn player(&self) -> Option<&Arc<AnswerPlayer>> {
+        match self {
+            Delivery::Player { player, .. } => Some(player),
+            _ => None,
+        }
+    }
+
+    /// A run starts. Returns the URL to send with it, for a device that plays the answer from it.
+    fn on_start(&mut self, player_answer: bool, speech: &SpeechClips, base_url: &str) -> Option<String> {
+        match self {
+            // An answer still going to the player keeps its stream.
+            Delivery::Player { .. } if player_answer => None,
+            Delivery::UrlStreamed(run) => {
+                if let Some(old) = run.take() {
+                    old.clip.finish();
+                }
+                let (path, clip) = speech.open(SAMPLE_RATE);
+                let url = format!("{base_url}{path}");
+                *run = Some(RunClip { url: url.clone(), clip, playing: false });
+                Some(url)
+            }
+            _ => {
+                self.finish_clip();
+                None
+            }
+        }
+    }
+
+    /// The answer's text, before its audio.
+    async fn on_answer(
+        &mut self,
+        text: &str,
+        device: &impl SatelliteDevice,
+        speech: &SpeechClips,
+        base_url: &str,
+    ) -> Result<()> {
+        if let Delivery::Player { player, answer, onset } = self {
+            // Announced before the first audio exists: the call and the player's fetch take longer
+            // than synthesizing the first words.
+            if let Some(clip) = answer.take().and_then(|old| old.clip) {
+                clip.finish();
+            }
+            let (path, clip) = speech.open(SAMPLE_RATE);
+            let url = format!("{base_url}{path}");
+            info!(url, player = player.entity, "answer for the player");
+            let player = player.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(error) = player.announce(&url) {
+                    warn!(error = format!("{error:#}"), "answer player failed");
+                }
+            });
+            *answer = Some(PlayerAnswer { clip: Some(clip), announced_at: Instant::now(), samples: 0 });
+            *onset = Some((Instant::now(), 0.0));
+            return Ok(());
+        }
+        device.event(Event::TtsStart, &[("text", text)]).await?;
+        match self {
+            Delivery::Speaker(stream) => {
+                *stream = SpeakerStream::new();
+                device.event(Event::TtsStreamStart, &[]).await?;
+            }
+            Delivery::UrlStreamed(Some(run)) => run.playing = false,
+            Delivery::UrlWhole(answer) => answer.clear(),
+            Delivery::UrlStreamed(None) | Delivery::Player { .. } => {}
+        }
+        Ok(())
+    }
+
+    /// The answer's audio, 24 kHz.
+    async fn on_speech(&mut self, pcm: &[i16], device: &impl SatelliteDevice) -> Result<()> {
+        match self {
+            Delivery::Player { answer, .. } => {
+                if let Some(answer) = answer {
+                    if let Some(clip) = &answer.clip {
+                        clip.push(pcm);
+                    }
+                    answer.samples += pcm.len();
+                }
+            }
+            Delivery::Speaker(stream) => {
+                let mut down = Vec::with_capacity(pcm.len() * 2 / 3 + 2);
+                stream.down.push(pcm, &mut down);
+                stream.outgoing.extend(down);
+                stream.start.get_or_insert_with(Instant::now);
+            }
+            // Every run answered has its clip: it comes with the run's start, and only the run's
+            // end or a done without words drops it.
+            Delivery::UrlStreamed(run) => {
+                if let Some(run) = run {
+                    run.clip.push(pcm);
+                    if !run.playing {
+                        run.playing = true;
+                        device.event(Event::IntentProgress, &[("tts_start_streaming", "1")]).await?;
+                    }
+                }
+            }
+            Delivery::UrlWhole(answer) => answer.extend_from_slice(pcm),
+        }
+        Ok(())
+    }
+
+    /// The answer is complete.
+    async fn on_spoken(
+        &mut self,
+        device: &impl SatelliteDevice,
+        speech: &SpeechClips,
+        base_url: &str,
+    ) -> Result<AfterSpoken> {
+        let (url, streamed) = match self {
+            Delivery::Player { answer, .. } => {
+                let answer = answer.take();
+                if let Some(clip) = answer.as_ref().and_then(|answer| answer.clip.as_ref()) {
+                    clip.finish();
+                }
+                return Ok(AfterSpoken::Player(answer.map(|answer| (answer.announced_at, answer.samples))));
+            }
+            Delivery::Speaker(stream) => {
+                stream.spoken = true;
+                return Ok(AfterSpoken::Streaming);
+            }
+            Delivery::UrlStreamed(run) => match run.take() {
+                // Already playing; the device ignores this URL.
+                Some(RunClip { url, clip, playing: true }) => {
+                    clip.finish();
+                    (url, true)
+                }
+                // No audio came, so the device was never told to play it.
+                other => {
+                    if let Some(run) = other {
+                        run.clip.finish();
+                    }
+                    (format!("{base_url}{}", speech.put(&[], SAMPLE_RATE)), false)
+                }
+            },
+            Delivery::UrlWhole(answer) => (format!("{base_url}{}", speech.put(answer, SAMPLE_RATE)), false),
+        };
+        info!(url, streamed, "answer for the device");
+        device.event(Event::TtsEnd, &[("url", &url)]).await?;
+        Ok(AfterSpoken::EndRun)
+    }
+
+    /// Ends a streamed answer, or drops a run's URL nobody will play.
+    fn finish_clip(&mut self) {
+        let clip = match self {
+            Delivery::Player { answer: Some(answer), .. } => answer.clip.take(),
+            Delivery::UrlStreamed(run) => run.take().map(|run| run.clip),
+            _ => None,
+        };
+        if let Some(clip) = clip {
+            clip.finish();
+        }
+    }
+
+    /// The wake word was said over the answer on the player: its stream ends, and a moment of
+    /// silence announced over it stops it (stopping the player does not stop an announcement).
+    fn interrupt(&mut self, speech: &SpeechClips, base_url: &str) {
+        let Delivery::Player { player, answer, .. } = self else { return };
+        if let Some(clip) = answer.take().and_then(|answer| answer.clip) {
+            clip.finish();
+        }
+        let url = format!("{base_url}{}", speech.put(&[0; SILENCE], SAMPLE_RATE));
+        let player = player.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = player.announce(&url) {
+                warn!(error = format!("{error:#}"), "could not silence the answer player");
+            }
+        });
+    }
+
+    /// When the audio sent to a speaker device will have played: until then, a quiet assistant is
+    /// not a lost answer, since that audio goes out at playback pace.
+    fn played_until(&self) -> Option<Instant> {
+        let Delivery::Speaker(stream) = self else { return None };
+        let samples = stream.streamed + stream.outgoing.len();
+        stream.start.map(|start| start + Duration::from_secs_f64(samples as f64 / DEVICE_RATE as f64))
+    }
+
+    /// The answer's end was lost: the player's answer no longer counts as playing, and a speaker
+    /// device's stream stops.
+    fn watchdog(&mut self) {
+        match self {
+            Delivery::Player { answer, .. } => {
+                if let Some(clip) = answer.take().and_then(|answer| answer.clip) {
+                    clip.finish();
+                }
+            }
+            Delivery::Speaker(stream) => (stream.spoken, stream.start) = (false, None),
+            Delivery::UrlStreamed(_) | Delivery::UrlWhole(_) => {}
+        }
+    }
+
+    /// Logs how long the player took from the announcement to the answer reaching the room: the
+    /// first audio well above the level the room had just after the announcement.
+    fn watch_onset(&mut self, pcm: &[i16]) {
+        let Delivery::Player { onset, .. } = self else { return };
+        let Some((at, quietest)) = onset else { return };
+        let since = at.elapsed();
+        if since > ONSET_WATCH {
+            info!("answer not heard on the device");
+            *onset = None;
+            return;
+        }
+        let level = dbfs(pcm);
+        if since < ONSET_BASELINE {
+            *quietest = if *quietest == 0.0 { level } else { quietest.min(level) };
+        } else if level > *quietest + ONSET_RISE_DB {
+            info!(after = ?since, "answer heard on the device");
+            *onset = None;
+        }
+    }
 }
 
 async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &SpeechClips) -> Result<()> {
@@ -389,40 +776,23 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
 impl<'a, D: SatelliteDevice> Bridge<'a, D> {
     fn new(device: D, cfg: &SatelliteConfig, base_url: String, speech: &'a SpeechClips) -> Self {
         Self {
-            speaker: device.info().has(feature::SPEAKER),
+            delivery: Delivery::new(device.info().has(feature::SPEAKER), cfg),
             device,
             run: Run::Idle,
             base_url,
             speech,
             mic: VecDeque::new(),
             up: resample::Stream::new(DEVICE_RATE, SAMPLE_RATE),
-            answer: Vec::new(),
-            stream_answers: cfg.stream_answers,
-            player: cfg.answer_player.clone(),
-            clip: None,
-            clip_playing: false,
-            down: resample::Stream::new(SAMPLE_RATE, DEVICE_RATE),
-            outgoing: VecDeque::new(),
-            stream_start: None,
-            streamed: 0,
-            spoken: false,
             dump: cfg.dump.clone(),
             recording: Vec::new(),
-            wake: cfg
+            server_wake: cfg
                 .server_wake
                 .as_ref()
-                .map(|w| (Box::new(WakeDetector::new(w.models.clone())) as Box<dyn WakeScorer>, w.threshold)),
-            check_from: cfg.server_wake.as_ref().and_then(|w| w.check_from),
-            near_miss: 0.0,
-            near_miss_checked: false,
-            checking: None,
-            preroll: VecDeque::new(),
-            announced: None,
+                .map(|w| WakeListener::new(Box::new(WakeDetector::new(w.models.clone())), w.threshold, w.check_from)),
             follow_up_at: None,
-            onset: None,
-            player_answer: false,
             run_end_at: None,
             answer_event_at: None,
+            unheard_since: None,
         }
     }
 
@@ -435,39 +805,32 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                     return self.device.refuse_run().await;
                 }
                 self.device.accept_run().await?;
-                // An answer still going to the player keeps its stream.
-                if !self.player_answer {
-                    self.finish_clip();
-                }
-                if self.stream_answers && !self.speaker && self.player.is_none() {
-                    let (path, clip) = self.speech.open(SAMPLE_RATE);
-                    let url = format!("{}{path}", self.base_url);
-                    self.device.event(Event::RunStart, &[("url", &url)]).await?;
-                    self.clip = Some((url, clip));
-                } else {
-                    self.device.event(Event::RunStart, &[]).await?;
+                let player_answer = self.player_answer();
+                match self.delivery.on_start(player_answer, self.speech, &self.base_url) {
+                    Some(url) => self.device.event(Event::RunStart, &[("url", &url)]).await?,
+                    None => self.device.event(Event::RunStart, &[]).await?,
                 }
                 self.mic.clear();
                 if !woke {
                     self.device.event(Event::WakeWordStart, &[]).await?;
+                    if let Run::Stopped(since) = self.run {
+                        self.unheard_since = Some(since);
+                    }
                     self.run = Run::WakeWord;
-                    if let Some((detector, _)) = &mut self.wake {
-                        // Fresh buffers: the end of the last wake word or answer cannot wake it again.
-                        detector.reset();
-                        self.preroll.clear();
-                        self.checking = None;
+                    if let Some(wake) = &mut self.server_wake {
+                        wake.reset();
                     }
                 } else {
                     info!(wake_word = request.wake_word_phrase, "device woke");
                     self.device.event(Event::SttStart, &[]).await?;
-                    self.run = Run::Listening(Instant::now());
+                    self.listening();
                     assistant.woke();
                 }
             }
             Incoming::Stop => {
                 info!(run = ?self.run, "device ended the run");
                 match self.run {
-                    Run::Listening(since) if self.player.is_some() => {
+                    Run::Listening(since) if self.delivery.player().is_some() => {
                         // The microphone audio still queued holds the end of the request.
                         self.save_recording();
                         self.device.event(Event::RunEnd, &[]).await?;
@@ -479,9 +842,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 }
             }
             Incoming::Audio(pcm) => {
-                self.watch_onset(&pcm);
+                self.delivery.watch_onset(&pcm);
                 assistant.party.feed(&pcm);
-                if self.run == Run::WakeWord && self.wake.is_some() {
+                if self.run == Run::WakeWord && self.server_wake.is_some() {
                     return self.listen_for_wake_word(&pcm, assistant).await;
                 }
                 if self.dump.is_some() && self.run != Run::Idle {
@@ -506,10 +869,11 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 if self.run == Run::WakeWord {
                     self.device.event(Event::WakeWordEnd, &[]).await?;
                     self.device.event(Event::SttStart, &[]).await?;
-                    self.run = Run::Listening(Instant::now());
+                    self.listening();
                 }
             }
             AssistantEvent::Heard { text } => {
+                self.unheard_since = None;
                 if let Run::Stopped(_) = self.run {
                     self.run = Run::Answering;
                     self.answer_event_at = Some(Instant::now());
@@ -527,122 +891,63 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 self.device.event(Event::SttEnd, &[("text", &text)]).await?;
                 self.device.event(Event::IntentStart, &[]).await?;
                 self.run = Run::Answering;
+                // The quiet the watchdog counts starts with this answer, not with the last one's
+                // speech: kept from then, a request more than a minute later lost its answer.
+                self.answer_event_at = Some(Instant::now());
             }
             AssistantEvent::Answer { text } => {
                 if self.run != Run::Answering {
                     return Ok(());
                 }
                 self.answer_event_at = Some(Instant::now());
+                let on_player = self.delivery.player().is_some();
                 // "Which room?", "For how long?": the device listens again once it has spoken. Not with
                 // an answer player: the device would listen at once, to the player's question.
-                let question = text.trim_end().ends_with('?') && self.player.is_none();
+                let question = text.trim_end().ends_with('?') && !on_player;
                 self.device
                     .event(Event::IntentEnd, &[("continue_conversation", if question { "1" } else { "0" })])
                     .await?;
-                (self.answer, self.spoken, self.stream_start, self.streamed) = (Vec::new(), false, None, 0);
-                if let Some(player) = self.player.clone() {
-                    // Announced before the first audio exists: the call and the player's fetch take
-                    // longer than synthesizing the first words.
-                    self.finish_clip();
-                    let (path, clip) = self.speech.open(SAMPLE_RATE);
-                    let url = format!("{}{path}", self.base_url);
-                    info!(url, player = player.entity, "answer for the player");
-                    let announced = url.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(error) = player.announce(&announced) {
-                            warn!(error = format!("{error:#}"), "answer player failed");
-                        }
-                    });
-                    self.clip = Some((url, clip));
-                    self.announced = Some((Instant::now(), 0));
-                    self.onset = Some((Instant::now(), 0.0));
-                    if self.wake.is_some() {
-                        // The device goes back to streaming for the wake word while the player speaks,
-                        // so "Hey Jarvis" over the answer stops it. Its run ends a moment later: a
-                        // run end while it is still stopping the microphone is ignored, and it waits
-                        // for an answer that never comes.
-                        self.player_answer = true;
-                        self.save_recording();
-                        self.mic.clear();
-                        self.run_end_at = Some(Instant::now() + RUN_END_DELAY);
-                    }
-                    return Ok(());
-                }
-                self.device.event(Event::TtsStart, &[("text", &text)]).await?;
-                self.clip_playing = false;
-                self.outgoing.clear();
-                self.down = resample::Stream::new(SAMPLE_RATE, DEVICE_RATE);
-                if self.speaker {
-                    self.device.event(Event::TtsStreamStart, &[]).await?;
+                self.delivery.on_answer(&text, &self.device, self.speech, &self.base_url).await?;
+                if on_player && self.server_wake.is_some() {
+                    // The device goes back to streaming for the wake word while the player speaks,
+                    // so "Hey Jarvis" over the answer stops it. Its run ends a moment later: a
+                    // run end while it is still stopping the microphone is ignored, and it waits
+                    // for an answer that never comes.
+                    self.save_recording();
+                    self.mic.clear();
+                    self.run_end_at = Some(Instant::now() + RUN_END_DELAY);
                 }
             }
             AssistantEvent::Speech(pcm) => {
-                if self.run != Run::Answering && !self.player_answer {
+                if self.run != Run::Answering && !self.player_answer() {
                     return Ok(());
                 }
                 self.answer_event_at = Some(Instant::now());
-                if self.player.is_some() {
-                    if let Some((_, clip)) = &self.clip {
-                        clip.push(&pcm);
-                    }
-                    if let Some((_, samples)) = &mut self.announced {
-                        *samples += pcm.len();
-                    }
-                } else if self.speaker {
-                    let mut down = Vec::with_capacity(pcm.len() * 2 / 3 + 2);
-                    self.down.push(&pcm, &mut down);
-                    self.outgoing.extend(down);
-                    self.stream_start.get_or_insert_with(Instant::now);
-                } else if let Some((_, clip)) = &self.clip {
-                    clip.push(&pcm);
-                    if !self.clip_playing {
-                        self.clip_playing = true;
-                        self.device.event(Event::IntentProgress, &[("tts_start_streaming", "1")]).await?;
-                    }
-                } else {
-                    self.answer.extend_from_slice(&pcm);
-                }
+                self.delivery.on_speech(&pcm, &self.device).await?;
             }
             AssistantEvent::Spoken => {
-                if self.run != Run::Answering && !self.player_answer {
+                if self.run != Run::Answering && !self.player_answer() {
                     return Ok(());
                 }
-                if self.player.is_some() {
-                    // With the stream scored here, the device can listen for a follow-up once the
-                    // player has finished; the stream is not heard before then, so not the answer.
-                    if let (Some((at, samples)), Some(_)) = (self.announced.take(), &self.wake) {
-                        let length = Duration::from_secs_f64(samples as f64 / SAMPLE_RATE as f64);
-                        self.follow_up_at = Some(at + PLAYER_START + length);
-                    }
-                    if std::mem::take(&mut self.player_answer) {
-                        // The device's run already ended when the answer started.
-                        self.finish_clip();
-                        return Ok(());
-                    }
-                    // Ends the player's stream. After a stop from the device (`Run::Stopped`) its run
-                    // has ended already; the second run end is harmless, since every start is
-                    // refused while answering, so it reaches a device with no run.
-                    self.end_run().await?;
-                } else if self.speaker {
-                    // The stream ends once the queued audio has gone out (see `tick`).
-                    self.spoken = true;
-                } else {
-                    let url = match self.clip.take() {
-                        // Already playing; the device ignores this URL.
-                        Some((url, clip)) if self.clip_playing => {
-                            clip.finish();
-                            url
+                let player_answer = self.player_answer();
+                match self.delivery.on_spoken(&self.device, self.speech, &self.base_url).await? {
+                    AfterSpoken::Streaming => {}
+                    AfterSpoken::EndRun => self.end_run().await?,
+                    AfterSpoken::Player(answer) => {
+                        // With the stream scored here, the device can listen for a follow-up once the
+                        // player has finished; the stream is not heard before then, so not the answer.
+                        if let (Some((at, samples)), Some(_)) = (answer, &self.server_wake) {
+                            let length = Duration::from_secs_f64(samples as f64 / SAMPLE_RATE as f64);
+                            self.follow_up_at = Some(at + PLAYER_START + length);
                         }
-                        other => {
-                            if let Some((_, clip)) = other {
-                                clip.finish();
-                            }
-                            format!("{}{}", self.base_url, self.speech.put(&self.answer, SAMPLE_RATE))
+                        // Else the device's run already ended when the answer started.
+                        if !player_answer {
+                            // Ends the device's run. After a stop from the device (`Run::Stopped`)
+                            // it has ended already; the second run end is harmless, since every
+                            // start is refused while answering, so it reaches a device with no run.
+                            self.end_run().await?;
                         }
-                    };
-                    info!(url, streamed = self.clip_playing, "answer for the device");
-                    self.device.event(Event::TtsEnd, &[("url", &url)]).await?;
-                    self.end_run().await?;
+                    }
                 }
             }
             AssistantEvent::Done => match self.run {
@@ -651,9 +956,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 Run::Stopped(_) => self.run = Run::Idle,
                 // Done without words ("pause the music"): as after a spoken answer, the run ends a
                 // moment later, since a run end while the device stops its microphone is ignored.
-                Run::Answering if self.wake.is_some() => {
+                Run::Answering if self.server_wake.is_some() => {
                     self.device.event(Event::IntentEnd, &[("continue_conversation", "0")]).await?;
-                    self.finish_clip();
+                    self.delivery.finish_clip();
                     self.save_recording();
                     self.mic.clear();
                     self.run_end_at = Some(Instant::now() + RUN_END_DELAY);
@@ -684,9 +989,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
             }
             // What Home Assistant announces plays where answers play, or on a room's speaker.
             AssistantEvent::Announcement { text, audio, on, .. }
-                if on != AnnounceOn::Device && self.player.is_some() =>
+                if on != AnnounceOn::Device && self.delivery.player().is_some() =>
             {
-                let Some(player) = self.player.clone() else { return Ok(()) };
+                let Some(player) = self.delivery.player().cloned() else { return Ok(()) };
                 let url = format!("{}{}", self.base_url, self.speech.put(&audio, SAMPLE_RATE));
                 let entity = match on {
                     AnnounceOn::Player(entity) => entity,
@@ -714,101 +1019,53 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
         Ok(())
     }
 
-    /// Logs how long the player took from the announcement to the answer reaching the room: the
-    /// first audio well above the level the room had just after the announcement.
-    fn watch_onset(&mut self, pcm: &[i16]) {
-        let Some((at, quietest)) = &mut self.onset else { return };
-        let since = at.elapsed();
-        if since > ONSET_WATCH {
-            info!("answer not heard on the device");
-            self.onset = None;
-            return;
-        }
-        let level = dbfs(pcm);
-        if since < ONSET_BASELINE {
-            *quietest = if *quietest == 0.0 { level } else { quietest.min(level) };
-        } else if level > *quietest + ONSET_RISE_DB {
-            info!(after = ?since, "answer heard on the device");
-            self.onset = None;
-        }
+    /// An answer is going to the player while the device already listens for the wake word again,
+    /// so it can be interrupted.
+    fn player_answer(&self) -> bool {
+        self.server_wake.is_some() && matches!(self.delivery, Delivery::Player { answer: Some(_), .. })
     }
 
     /// Scores the continuous stream; only audio after the wake word goes on to the engine.
     async fn listen_for_wake_word(&mut self, pcm: &[i16], assistant: &AssistantHandle) -> Result<()> {
-        self.preroll.extend(pcm);
-        let excess = self.preroll.len().saturating_sub(WAKE_PREROLL);
-        self.preroll.drain(..excess);
-        let Some((detector, threshold)) = &mut self.wake else { return Ok(()) };
-        if assistant.pause.paused() {
-            return Ok(());
+        let playing = self.answer_playing();
+        let Some(listener) = &mut self.server_wake else { return Ok(()) };
+        match listener.listen(pcm, assistant, playing)? {
+            Some(Woken { wake, since }) => self.wake(assistant, wake, since).await,
+            None => Ok(()),
         }
-        let threshold = *threshold;
-        let scored = detector.push(pcm)?;
-        if let Some(check) = &mut self.checking {
-            check.since.extend_from_slice(pcm);
-            match check.answer.try_recv() {
-                Ok(Some(true)) => {
-                    let check = self.checking.take().expect("checked above");
-                    info!(score = format!("{:.2}", check.score), "wake word confirmed by its name");
-                    return self.wake(assistant, check.wake, Some(check.since)).await;
-                }
-                Ok(_) => {
-                    // Taken outside the log call: its fields are not evaluated when INFO is off.
-                    let score = self.checking.take().map_or(0.0, |c| c.score);
-                    info!(score = format!("{score:.2}"), "no name in the wake word");
-                }
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) if check.started.elapsed() < CHECK_TIMEOUT => {}
-                Err(_) => {
-                    warn!("the wake word name check did not answer");
-                    self.checking = None;
-                }
-            }
-        }
-        let Some(score) = scored else { return Ok(()) };
-        if score < threshold {
-            // Past its peak, the name, if it was said, is in the preroll.
-            let check = self.check_from.is_some_and(|from| self.near_miss >= from && score < self.near_miss);
-            if check && !self.near_miss_checked && self.checking.is_none() && !self.answer_playing() {
-                self.near_miss_checked = true;
-                let wake: Vec<i16> = self.preroll.iter().copied().collect();
-                let answer = assistant.check_name(resample::to_24k(&wake, DEVICE_RATE));
-                let score = self.near_miss;
-                self.checking = Some(NameCheck { answer, score, wake, since: Vec::new(), started: Instant::now() });
-            }
-            if score >= NEAR_MISS.min(self.check_from.unwrap_or(NEAR_MISS)) {
-                self.near_miss = self.near_miss.max(score);
-            } else if self.near_miss > 0.0 {
-                info!(score = format!("{:.2}", self.near_miss), threshold, "wake word missed");
-                (self.near_miss, self.near_miss_checked) = (0.0, false);
-            }
-            return Ok(());
-        }
-        info!(score = format!("{score:.2}"), threshold, "wake word");
-        self.checking = None;
-        let wake: Vec<i16> = self.preroll.drain(..).collect();
-        self.wake(assistant, wake, None).await
     }
 
     /// An answer is on the player, or has just played and a follow-up may come.
     fn answer_playing(&self) -> bool {
-        self.player_answer || self.follow_up_at.is_some_and(|until| Instant::now() < until)
+        self.player_answer() || self.follow_up_at.is_some_and(|until| Instant::now() < until)
+    }
+
+    /// The device listens for a request after a wake word, which ends with it or at the listening
+    /// timeout, and replaces an unheard one from before.
+    fn listening(&mut self) {
+        self.run = Run::Listening(Instant::now());
+        self.unheard_since = None;
     }
 
     /// Starts listening for the request after the wake word in `wake`. `since`: audio after the
     /// wake word that was held back while its name was checked (and so the name was heard).
     async fn wake(&mut self, assistant: &AssistantHandle, wake: Vec<i16>, since: Option<Vec<i16>>) -> Result<()> {
-        (self.near_miss, self.near_miss_checked) = (0.0, false);
+        if let Some(listener) = &mut self.server_wake {
+            (listener.near_miss, listener.near_miss_checked) = (0.0, false);
+            listener.preroll.clear();
+        }
         let playing = self.follow_up_at.take().is_some_and(|until| Instant::now() < until);
-        if self.player_answer || playing {
-            self.interrupt(assistant);
+        if self.player_answer() || playing {
+            info!("wake word over the answer: interrupting it");
+            assistant.interrupt();
+            self.delivery.interrupt(self.speech, &self.base_url);
         }
         self.device.event(Event::WakeWordEnd, &[]).await?;
         self.device.event(Event::SttStart, &[]).await?;
-        self.preroll.clear();
         if self.dump.is_some() {
             self.recording.clone_from(&wake);
         }
-        self.run = Run::Listening(Instant::now());
+        self.listening();
         match since {
             Some(since) => {
                 assistant.woke_named();
@@ -824,24 +1081,6 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
         // After the wake job: the worker resets whom it addresses on a wake, so the voice must come later.
         assistant.voice_of(&wake);
         Ok(())
-    }
-
-    /// The wake word was said over an answer on the player: stop synthesizing it, end its stream,
-    /// and silence the player by announcing a moment of silence over it (stopping the player
-    /// does not stop an announcement).
-    fn interrupt(&mut self, assistant: &AssistantHandle) {
-        info!("wake word over the answer: interrupting it");
-        assistant.interrupt();
-        self.finish_clip();
-        (self.player_answer, self.announced) = (false, None);
-        if let Some(player) = self.player.clone() {
-            let url = format!("{}{}", self.base_url, self.speech.put(&[0; SILENCE], SAMPLE_RATE));
-            tokio::task::spawn_blocking(move || {
-                if let Err(error) = player.announce(&url) {
-                    warn!(error = format!("{error:#}"), "could not silence the answer player");
-                }
-            });
-        }
     }
 
     /// Paces streamed answer audio and times out a wake word with no request.
@@ -864,7 +1103,8 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 info!("listening for a follow-up");
                 // The listening lights, without the wake sound.
                 self.device.event(Event::SttStart, &[]).await?;
-                let before: Vec<i16> = self.preroll.drain(..).collect();
+                let before: Vec<i16> =
+                    self.server_wake.as_mut().map(|w| w.preroll.drain(..).collect()).unwrap_or_default();
                 if self.dump.is_some() {
                     self.recording = before;
                 }
@@ -881,17 +1121,13 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
             }
             _ => {}
         }
-        if let Some(start) = self.stream_start {
-            let allowed = ((start.elapsed() + STREAM_LEAD).as_secs_f64() * DEVICE_RATE as f64) as usize;
-            let n = allowed.saturating_sub(self.streamed).min(self.outgoing.len());
-            if n > 0 {
-                let chunk: Vec<i16> = self.outgoing.drain(..n).collect();
-                self.device.audio(&chunk).await?;
-                self.streamed += n;
-            }
-            if self.spoken && self.outgoing.is_empty() {
-                self.device.event(Event::TtsStreamEnd, &[]).await?;
-                self.stream_start = None;
+        if self.unheard_since.is_some_and(|since| since.elapsed() > LISTEN_TIMEOUT) {
+            info!("no request after the wake word");
+            self.unheard_since = None;
+            assistant.gave_up();
+        }
+        if let Delivery::Speaker(stream) = &mut self.delivery {
+            if stream.pace(&self.device).await? {
                 self.end_run().await?;
             }
         }
@@ -901,31 +1137,26 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
     /// Ends an answer whose end (`Spoken` or `Done`) was lost, so that later runs are not refused
     /// and a later wake word does not count as said over it.
     async fn watch_answer(&mut self) -> Result<()> {
-        let answering = self.run == Run::Answering || self.player_answer;
-        let played = self.stream_start.map(|start| {
-            let samples = self.streamed + self.outgoing.len();
-            start + Duration::from_secs_f64(samples as f64 / DEVICE_RATE as f64)
-        });
-        let quiet_since = self.answer_event_at.max(played);
+        let answering = self.run == Run::Answering || self.player_answer();
+        let quiet_since = self.answer_event_at.max(self.delivery.played_until());
         let quiet = quiet_since.is_some_and(|at| Instant::now() > at + ANSWER_SILENCE);
         if !answering || !quiet {
             return Ok(());
         }
         warn!(run = ?self.run, "the answer's end did not come: ending it");
-        (self.player_answer, self.announced, self.run_end_at, self.answer_event_at) = (false, None, None, None);
-        (self.spoken, self.stream_start) = (false, None);
+        self.delivery.watchdog();
+        (self.run_end_at, self.answer_event_at) = (None, None);
         if self.run == Run::Answering {
             return self.end_run().await;
         }
         // The device's run already ended when the answer went to the player.
-        self.finish_clip();
         Ok(())
     }
 
     /// The run ends before the assistant heard a request after its wake word: the assistant is
     /// told, or it goes on waiting for one (music held paused, speech held from rendering ahead).
     fn tell_unanswered(&self, assistant: &AssistantHandle) {
-        if matches!(self.run, Run::Listening(_) | Run::Stopped(_)) {
+        if matches!(self.run, Run::Listening(_) | Run::Stopped(_)) || self.unheard_since.is_some() {
             assistant.gave_up();
         }
     }
@@ -956,15 +1187,8 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
         }
     }
 
-    /// Ends a streamed answer, or drops a run's URL nobody will play.
-    fn finish_clip(&mut self) {
-        if let Some((_, clip)) = self.clip.take() {
-            clip.finish();
-        }
-    }
-
     async fn end_run(&mut self) -> Result<()> {
-        self.finish_clip();
+        self.delivery.finish_clip();
         self.save_recording();
         self.run = Run::Idle;
         self.mic.clear();
