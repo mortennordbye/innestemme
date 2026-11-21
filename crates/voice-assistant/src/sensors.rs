@@ -215,15 +215,29 @@ impl Battery {
     }
 }
 
-/// Battery sensors and battery binary sensors (on is low, as Zigbee2MQTT and Ring report it),
-/// except the companion app's (phones). Sensors without a number are kept: a dead battery is the
-/// one that stops reporting.
-const BATTERY_TEMPLATE: &str = r#"{% set phones = integration_entities('mobile_app') %}{% set ns = namespace(out=[]) %}{% for s in states.sensor if s.attributes.device_class == 'battery' and s.entity_id not in phones %}{% set ns.out = ns.out + [{"name": s.name, "level": (s.state | float) if s.state | is_number else none, "state": s.state, "restored": s.attributes.restored or false, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}{% for s in states.binary_sensor if s.attributes.device_class == 'battery' and s.entity_id not in phones %}{% set ns.out = ns.out + [{"name": s.name, "low": (s.state == 'on') if s.state in ['on', 'off'] else none, "state": s.state, "restored": s.attributes.restored or false, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}{{ ns.out | tojson }}"#;
+/// Template statements that collect battery sensors and battery binary sensors (on is low, as
+/// Zigbee2MQTT and Ring report it) into `battery_states.out`, except the companion app's (phones).
+/// Sensors without a number are kept: a dead battery is the one that stops reporting. A macro so
+/// the house snapshot can put it in its own template with `concat!` and stay one Home Assistant
+/// call; its variable names are long so they do not clash with that template's.
+macro_rules! battery_states {
+    () => {
+        r#"{% set battery_phones = integration_entities('mobile_app') %}{% set battery_states = namespace(out=[]) %}{% for s in states.sensor if s.attributes.device_class == 'battery' and s.entity_id not in battery_phones %}{% set battery_states.out = battery_states.out + [{"name": s.name, "level": (s.state | float) if s.state | is_number else none, "state": s.state, "restored": s.attributes.restored or false, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}{% for s in states.binary_sensor if s.attributes.device_class == 'battery' and s.entity_id not in battery_phones %}{% set battery_states.out = battery_states.out + [{"name": s.name, "low": (s.state == 'on') if s.state in ['on', 'off'] else none, "state": s.state, "restored": s.attributes.restored or false, "device": device_id(s.entity_id) or s.entity_id, "area": area_name(s.entity_id) or ''}] %}{% endfor %}"#
+    };
+}
+pub(crate) use battery_states;
+
+const BATTERY_TEMPLATE: &str = concat!(battery_states!(), "{{ battery_states.out | tojson }}");
 
 pub fn batteries(ha: &HomeAssistant) -> Result<Vec<Battery>> {
     let all: Vec<Battery> =
         serde_json::from_str(&ha.template(BATTERY_TEMPLATE)?).context("parsing the battery sensors")?;
-    Ok(per_device(all.into_iter().filter(Battery::counts).collect()))
+    Ok(from_states(all))
+}
+
+/// The batteries that say something, one per device, from what `battery_states!` collects.
+pub fn from_states(all: Vec<Battery>) -> Vec<Battery> {
+    per_device(all.into_iter().filter(Battery::counts).collect())
 }
 
 /// One battery per device: the lowest level, under the shortest name.
@@ -353,12 +367,21 @@ pub fn battery_answer(batteries: &[Battery], name: Option<&str>, lang: Lang) -> 
         }
         return found.iter().map(|b| level_sentence(b, lang)).collect::<Vec<_>>().join(" ");
     }
-    let low: Vec<&Battery> = batteries.iter().filter(|b| b.is_low()).collect();
-    let silent: Vec<&Battery> = batteries.iter().filter(|b| !b.reporting()).collect();
-    let mut parts: Vec<String> = low.iter().map(|b| level_sentence(b, lang)).collect();
-    if parts.is_empty() {
+    let mut parts: Vec<String> = Vec::new();
+    if !batteries.iter().any(Battery::is_low) {
         parts.push(if no { "Ingen batterier er lave." } else { "No batteries are low." }.into());
     }
+    parts.extend(low_sentences(batteries, lang));
+    parts.join(" ")
+}
+
+/// The low batteries and those that stopped reporting, a sentence each; nothing when all are
+/// fine. The battery question and the house status both say these.
+pub fn low_sentences(batteries: &[Battery], lang: Lang) -> Vec<String> {
+    let no = lang == Lang::Norwegian;
+    let low = batteries.iter().filter(|b| b.is_low());
+    let silent: Vec<&Battery> = batteries.iter().filter(|b| !b.reporting()).collect();
+    let mut parts: Vec<String> = low.map(|b| level_sentence(b, lang)).collect();
     parts.extend(silent.iter().take(MOST_SILENT_NAMED).map(|b| level_sentence(b, lang)));
     let more = silent.len().saturating_sub(MOST_SILENT_NAMED);
     if more > 0 {
@@ -368,7 +391,7 @@ pub fn battery_answer(batteries: &[Battery], name: Option<&str>, lang: Lang) -> 
             format!("And {more} more aren't reporting.")
         });
     }
-    parts.join(" ")
+    parts
 }
 
 /// A water sensor and whether it is reporting.
@@ -552,6 +575,22 @@ mod tests {
             "No batteries are low. The a sensor battery isn't reporting. The b sensor battery isn't reporting. The c \
              sensor battery isn't reporting. And 2 more aren't reporting."
         );
+    }
+
+    #[test]
+    fn low_sentences_are_empty_when_all_is_fine() {
+        let fine: Vec<Battery> = batteries().into_iter().filter(|b| !b.is_low()).collect();
+        assert!(low_sentences(&fine, Lang::English).is_empty());
+        assert_eq!(low_sentences(&batteries(), Lang::English), ["The study vibration battery is at 12 percent."]);
+    }
+
+    #[test]
+    fn the_shared_fragment_skips_phones_and_unreported_states() {
+        assert!(BATTERY_TEMPLATE.starts_with(battery_states!()));
+        assert!(BATTERY_TEMPLATE.contains("integration_entities('mobile_app')"));
+        let mut unknown = silent("hall", "d9");
+        unknown.state = "unknown".into();
+        assert_eq!(from_states(vec![unknown, silent("door", "d8")]).len(), 1);
     }
 
     #[test]
