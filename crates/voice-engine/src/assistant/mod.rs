@@ -719,7 +719,11 @@ impl Worker {
         self.timers.forget_stale(Instant::now());
         let timers_asked = self.timers.takes_answer(&request);
         // "Remember what?" is answered like any request: its answer still faces the filters.
-        let pending = self.pending_lights.is_some() || confirming || timers_asked || self.list_is_open();
+        let pending = self.pending_lights.is_some()
+            || self.pending_scene.is_some()
+            || confirming
+            || timers_asked
+            || self.list_is_open();
         // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
         // for murdering his barn it 40 stop" set the volume.
         // A wake word without the name is as unsure as the follow-up window: the TV's "just because
@@ -860,22 +864,26 @@ impl Worker {
             }
             intent => intent,
         };
+        // A question asked by voice waits for a spoken reply: a preview, a refresh ahead of time or
+        // a typed request (a web button, a phone) neither takes nor drops it, as it cannot hear the
+        // reply.
+        let asking = !self.previewing;
         // "Set a timer." "For how long?" "Ten minutes."
-        if self.timers.awaiting_duration() {
+        if asking && self.timers.awaiting_duration() {
             if let Some((answer, notices)) = self.timers.answer_pending(text, lang, Instant::now()) {
                 self.notify(notices);
                 return Some(answer);
             }
             self.timers.clear_pending();
         }
-        if let Some(on) = self.pending_lights.take() {
+        if let Some(on) = self.pending_lights.take_if(|_| asking) {
             if intent == Intent::Unknown {
                 return Some(self.lights(text, on, lang));
             }
         }
         // "Milk and eggs", "og brunost", "add bacon too": more items while the list is open;
         // "actually remove the milk" takes one off, "no, that's it" closes it.
-        if self.list_open.take().is_some_and(|at| at.elapsed() < LIST_OPEN) {
+        if self.list_open.take_if(|_| asking).is_some_and(|at| at.elapsed() < LIST_OPEN) {
             if voice_assistant::shopping::closes_list(text) {
                 return Some(
                     if lang == Lang::Norwegian { "Ok, det var alt." } else { "Okay, that's everything." }.into(),
@@ -896,8 +904,7 @@ impl Worker {
             }
         }
         // "Forget everything I remember?" "Yes." / "Remember what?" "The bins go out on Tuesday."
-        // A preview from the web page neither takes nor drops them.
-        if !self.previewing {
+        if asking {
             let (asked_what, asked_to_forget) = (self.memory.asked_what(), self.memory.asked_to_forget());
             if asked_to_forget {
                 if let Some(yes) = confirmation(text) {
@@ -910,7 +917,7 @@ impl Worker {
                 return Some(self.memory.remember(text, lang));
             }
         }
-        if let Some((command, at)) = self.pending_confirm.take() {
+        if let Some((command, at)) = self.pending_confirm.take_if(|_| asking) {
             match confirmation(text) {
                 Some(true) if at.elapsed() < CONFIRM_WINDOW => return Some(self.house(&command, lang)),
                 Some(false) => {
@@ -922,7 +929,7 @@ impl Worker {
                 _ => {}
             }
         }
-        if let Some(scene) = self.pending_scene.take() {
+        if let Some(scene) = self.pending_scene.take_if(|_| asking) {
             if intent == Intent::Unknown {
                 return Some(self.scene(&format!("{scene} in {text}"), lang));
             }

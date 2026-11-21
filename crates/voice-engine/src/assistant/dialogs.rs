@@ -354,7 +354,6 @@ fn a_scene_room_said_with_the_name_answers_which_room() {
 }
 
 #[test]
-#[ignore = "bug: heard() ignores pending_scene, so the room reply is dropped as not addressed; fixed in step 1"]
 fn a_scene_room_said_without_the_name_answers_which_room() {
     let ha = FakeHa::new();
     let mut dialog = Dialog::new(Some(&ha));
@@ -467,7 +466,6 @@ fn a_preview_keeps_remember_what() {
 }
 
 #[test]
-#[ignore = "bug: compose() while previewing takes pending_lights; fixed in step 1"]
 fn a_refresh_keeps_which_room_for_the_lights() {
     let ha = FakeHa::new();
     let mut dialog = Dialog::new(Some(&ha));
@@ -477,7 +475,6 @@ fn a_refresh_keeps_which_room_for_the_lights() {
 }
 
 #[test]
-#[ignore = "bug: compose() while previewing takes pending_scene; fixed in step 1"]
 fn a_refresh_keeps_which_room_for_a_scene() {
     let ha = FakeHa::new();
     let mut dialog = Dialog::new(Some(&ha));
@@ -487,7 +484,6 @@ fn a_refresh_keeps_which_room_for_a_scene() {
 }
 
 #[test]
-#[ignore = "bug: compose() while previewing takes pending_confirm; fixed in step 1"]
 fn a_refresh_keeps_a_question_waiting_for_yes() {
     let mut dialog = Dialog::new(None);
     assert_eq!(said(dialog.say("Jarvis, arm the alarm")), "Arm the alarm?");
@@ -496,7 +492,6 @@ fn a_refresh_keeps_a_question_waiting_for_yes() {
 }
 
 #[test]
-#[ignore = "bug: compose() while previewing takes the open shopping list; fixed in step 1"]
 fn a_refresh_keeps_the_shopping_list_open() {
     let ha = FakeHa::new();
     let mut dialog = Dialog::new(Some(&ha));
@@ -506,7 +501,6 @@ fn a_refresh_keeps_the_shopping_list_open() {
 }
 
 #[test]
-#[ignore = "bug: compose() while previewing clears the timer question; fixed in step 1"]
 fn a_refresh_keeps_for_how_long() {
     let mut dialog = Dialog::new(None);
     assert_eq!(said(dialog.say("Jarvis, set a timer")), "For how long?");
@@ -515,7 +509,6 @@ fn a_refresh_keeps_for_how_long() {
 }
 
 #[test]
-#[ignore = "bug: typed() takes a pending question as compose() does; fixed in step 1"]
 fn a_web_button_keeps_which_room() {
     let ha = FakeHa::new();
     let mut dialog = Dialog::new(Some(&ha));

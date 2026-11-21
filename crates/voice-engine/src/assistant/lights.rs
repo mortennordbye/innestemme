@@ -34,6 +34,11 @@ fn undoable(at: Instant, gone: Option<Instant>) -> bool {
     gone.is_none_or(|gone| at > gone)
 }
 
+/// The answer when no Home Assistant is set up, in the listener's language.
+fn not_connected(no: bool) -> String {
+    if no { "Home Assistant er ikke koblet til ennå." } else { "Home Assistant isn't connected yet." }.into()
+}
+
 /// "In here", "this room", "her inne", "dette rommet".
 fn mentions_this_room(request: &str) -> bool {
     let text = format!(" {} ", request.to_lowercase().replace(|c: char| !c.is_alphanumeric() && c != ' ', " "));
@@ -109,7 +114,7 @@ impl Worker {
             Ok(None) => return "Say which room, for example: dim the living room.".into(),
             Err(answer) => return answer,
         };
-        let Some(ha) = &mut self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
+        let Some(ha) = &mut self.home_assistant else { return not_connected(no) };
         let lamps = match ha.lights() {
             Ok(lights) => ha::each_lamp(lights, &target.ids),
             Err(error) => return unreachable(&error, no),
@@ -157,7 +162,7 @@ impl Worker {
         let list_at = self.last_list.as_ref().filter(|(_, at)| at.elapsed() < MEMORY).map(|(_, at)| *at);
         if list_at.is_some() && (lights_at.is_none() || list_at > lights_at) {
             let (changes, _) = self.last_list.take().expect("checked above");
-            let Some(ha) = &self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
+            let Some(ha) = &self.home_assistant else { return not_connected(no) };
             // Latest first, so a reply that removed and then added comes back in order.
             let mut answers = Vec::new();
             for change in changes.into_iter().rev() {
@@ -192,7 +197,7 @@ impl Worker {
     /// The lights back as they were before a brightness or colour change.
     fn restore_level(&mut self, target: &Target, lang: Lang) -> String {
         let no = lang == Lang::Norwegian;
-        let Some(ha) = &self.home_assistant else { return "Home Assistant isn't connected yet.".into() };
+        let Some(ha) = &self.home_assistant else { return not_connected(no) };
         let scene = serde_json::json!({ "entity_id": format!("scene.{UNDO_SCENE}") });
         if let Err(error) = ha.send("scene", "turn_on", scene) {
             return unreachable(&error, no);
@@ -264,7 +269,7 @@ impl Worker {
     pub(super) fn switch(&mut self, target: &Target, on: bool, lang: Lang, undo: bool) -> String {
         let no = lang == Lang::Norwegian;
         let Some(ha) = &self.home_assistant else {
-            return "Home Assistant isn't connected yet.".into();
+            return not_connected(no);
         };
         if let Err(error) = ha.set(target, on) {
             return unreachable(&error, no);
