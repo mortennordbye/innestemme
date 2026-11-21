@@ -1333,10 +1333,10 @@ impl Worker {
     fn ring_due_timers(&mut self) {
         for (timer, notices) in self.timers.due(Instant::now()) {
             let text = timer::finished_text(&timer);
-            info!(text, alarm = timer.is_alarm, late = timer.late, "timer done");
+            info!(text, alarm = timer.is_alarm(), late = timer.late, "timer done");
             self.notify(notices);
-            let chime = if timer.is_reminder { tts::reminder_chime() } else { tts::alarm_chime() };
-            let ring = timer.is_alarm || (!timer.is_reminder && timer.late.is_none());
+            let chime = if timer.is_reminder() { tts::reminder_chime() } else { tts::alarm_chime() };
+            let ring = timer.is_alarm() || (!timer.is_reminder() && timer.late.is_none());
             self.announce(&text, chime, timer.lang, ring);
         }
     }

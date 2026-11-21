@@ -280,7 +280,7 @@ fn tool_to_decision(name: &str, args: &Value) -> Result<Decision> {
             let which = Which {
                 name: text("name").filter(|n| n != "all" && !alarm),
                 all: args["all"].as_bool().unwrap_or(false) || text("name").as_deref() == Some("all"),
-                alarm,
+                of: if alarm { timer::Of::Alarms } else { timer::Of::Timers },
                 ..Which::default()
             };
             let command = match text("action").as_deref().unwrap_or("start") {
@@ -725,7 +725,7 @@ mod tests {
             Decision::Act(Intent::Timer(TimerCommand::Alarm { when: at(6, 30) }))
         );
         // The wake-up alarm is reached by name, and stopping it is not cancelling a kitchen timer.
-        let alarm = Which { alarm: true, ..Which::default() };
+        let alarm = Which { of: timer::Of::Alarms, ..Which::default() };
         for name in ["alarm", "Morning alarm", "wake-up", "Vekkerklokka"] {
             let args = format!(r#"{{"action":"cancel","name":"{name}"}}"#);
             assert_eq!(
