@@ -2,12 +2,10 @@
 
 use tracing::{info, warn};
 use voice_assistant::ha::{self, Light};
-use voice_assistant::house::{self, HouseCommand, Routine, Switch};
+use voice_assistant::house::{self, Routine};
 use voice_assistant::intent::{self, Intent};
 use voice_assistant::lang::Lang;
-use voice_assistant::memory::MemoryCommand;
 use voice_assistant::party::PartyCommand;
-use voice_assistant::shopping::ListCommand;
 use voice_assistant::{plan, tv};
 
 use super::home::{bedtime_dimmed, home_target, in_bedroom};
@@ -25,39 +23,7 @@ impl Worker {
     pub(super) fn preview(&mut self, text: &str) -> Preview {
         let request = self.config.wake.strip(text).unwrap_or_else(|| text.to_owned());
         let intent = intent::parse(&request);
-        let reads = matches!(
-            intent,
-            Intent::Weather { .. }
-                | Intent::Time
-                | Intent::Date
-                | Intent::Joke
-                | Intent::Transit(_)
-                | Intent::Power(_)
-                | Intent::LightsStatus { .. }
-                | Intent::WhosHome(_)
-                | Intent::WhereIs { .. }
-                | Intent::Convert(_)
-                | Intent::Memory(MemoryCommand::Recall(_) | MemoryCommand::List)
-                | Intent::Briefing
-                | Intent::News
-                | Intent::Lookup(_)
-                | Intent::Calculate(_)
-                | Intent::Distance(_)
-                | Intent::Thanks
-                | Intent::SmallTalk(_)
-                | Intent::Cancel
-                | Intent::ShoppingList(ListCommand::Read)
-                | Intent::House(
-                    HouseCommand::Status
-                        | HouseCommand::Sun(_)
-                        | HouseCommand::PhoneBattery(_)
-                        | HouseCommand::GuestWifi(Switch::Status)
-                        | HouseCommand::Camera(Switch::Status)
-                        | HouseCommand::Alarm(Switch::Status | Switch::Off)
-                        | HouseCommand::Climate(..)
-                        | HouseCommand::Sensors(_)
-                )
-        );
+        let reads = intent.meta().read_only;
         let answer = match intent {
             _ if reads => {
                 self.previewing = true;

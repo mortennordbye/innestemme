@@ -61,18 +61,22 @@ wording such as "AI-generated", and code, docs and PR bodies, are only guarded b
 
 ## Conventions
 
-- New skills get rules in English and Norwegian (`intent.rs` or their own module), a language model tool in
-  `llm.rs` when phrasing varies, and a case in `examples/llm_eval.rs`. Keep tool descriptions short: every token
-  is in every request and slows answers on a CPU.
+- New skills get rules in English and Norwegian (their own module, or one in `intent/`), a step in
+  `intent::rules` (the order of the steps is part of the logic), a language model tool in `llm.rs` when phrasing
+  varies, and a case in `examples/llm_eval.rs`. Keep tool descriptions short: every token is in every request and
+  slows answers on a CPU. A test fails when a tool has no handler in `tool_to_decision`.
+- A new `Intent` variant does not compile until its arm in `Intent::meta` (`intent/meta.rs`) is written: its
+  catalogue skill id, whether it only reads (the web page answers it for real), its lead-in, whether a draft that
+  is one is acted on at once, and whether its result is heard, so it needs no spoken answer.
 - Every skill also gets an entry in `voice-assistant/src/catalogue.rs` (what it does, its data source, the
-  services it calls, example phrases) and a line in `catalogue::skill_of`. The `web: true` page shows that
+  services it calls, example phrases), with the same id as its `Intent::meta` skill. The `web: true` page shows that
   catalogue, and its tests parse every example, so a phrase listed there must reach the skill.
 - English answers are written plainly ("Okay, the kitchen lights are off."). `persona.rs` turns them into the
   JARVIS style ("sir", openers, remarks) when `honorific` is set, so do not put "sir" or butler wording in a
   skill's own answers. Openers it rewrites: "Okay, ...", "Sorry, ...". New remarks go in its `QUIPS` table.
 - Speech is pre-rendered where possible (`speech_cache.rs`): keep fixed wording in sentences of their own and put
   live data (numbers) in its own sentence, so only that sentence is synthesized. A new slow skill gets a lead-in
-  in `assistant/leads.rs` (`LEADS_*`).
+  (`LEADS_*` in `intent/meta.rs`, listed in `LEADS`).
 - Focus is English for now; Norwegian comes later.
 - Personal values (addresses, Home Assistant URL and token, names) belong in `config.local.yaml` or `.env`, both
   git-ignored, never in code, tests or docs.

@@ -1,10 +1,7 @@
-//! Requests that are acted on at once or without words, and music requests misheard.
+//! Drafts that are not whole requests, and music requests misheard. Which requests are acted
+//! on at once or without words is in `Intent::meta`.
 
-use voice_assistant::ha;
-use voice_assistant::house::{self, HouseCommand};
-use voice_assistant::intent::{self, Intent, LightLevel, MusicCommand};
-use voice_assistant::timer::TimerCommand;
-use voice_assistant::tv::TvCommand;
+use voice_assistant::intent::{self, Intent};
 
 /// "Stop", "stop it": never mind, or the music when it plays.
 pub(super) fn bare_stop(request: &str) -> bool {
@@ -47,103 +44,10 @@ pub(super) fn music_by_sound(request: &str, playing: bool) -> Option<String> {
         .then(|| if playing { "pause the music" } else { "play some music" }.into())
 }
 
-/// An action whose result is heard (the music stops, the next song starts) needs no words, which
-/// would only arrive a second or two later from the speaker.
-pub(super) fn heard_by_itself(intent: &Intent) -> bool {
-    matches!(
-        intent,
-        Intent::Music(
-            MusicCommand::Pause
-                | MusicCommand::Resume
-                | MusicCommand::Stop
-                | MusicCommand::Mute(_)
-                | MusicCommand::Next
-                | MusicCommand::Previous
-                | MusicCommand::Liked
-                | MusicCommand::Playlist(_)
-                | MusicCommand::Song(_)
-                | MusicCommand::Artist(_)
-                | MusicCommand::Album(_)
-        ) | Intent::Tv(TvCommand::Pause | TvCommand::Resume)
-    )
-}
-
-/// Commands that nothing said after them could change, so a draft that is one is acted on. Not
-/// resume: "play" is also the start of "play Careless Whisper"; not louder or quieter: "increase
-/// the sound" may go on "by 25%"; not the date: "what day is it" may go on "tomorrow".
-pub(super) fn complete_at_once(intent: &Intent) -> bool {
-    match intent {
-        // "Turn off the kitchen lights", not "turn off the lights" (may go on "in the kitchen").
-        Intent::Lights { target, .. } => names_light_last(target),
-        // A level or colour ends the request; "dim the kitchen" may go on "to 30 percent".
-        Intent::LightLevel { level: LightLevel::Percent(_) | LightLevel::Color(_), target } => {
-            ha::names_something(target)
-        }
-        // Small talk is a whole short phrase; a bare "hey" is often a request still to come.
-        Intent::SmallTalk(chat) => *chat != voice_assistant::smalltalk::Chat::Hello,
-        // "Pause the music" is acted on at once even though it may go on "in the kitchen": the
-        // command is the most common there is, and one that turns out to name another room is
-        // undone here (`Worker::draft_undo`). A room said ends it too.
-        Intent::Music(MusicCommand::InRoom(_, inner)) => complete_command(&Intent::Music((**inner).clone())),
-        _ => complete_command(intent),
-    }
-}
-
 /// A draft that ends in "and" ("pause the music and ...") is not a whole request, whatever it parses as.
 pub(super) fn goes_on(request: &str) -> bool {
     let last = request.split_whitespace().last().map(voice_assistant::dialog::normalize);
     last.is_some_and(|w| w == "and" || w == "og")
-}
-
-/// Whether a light request ends on what it switches: "the kitchen lights", "the kitchen".
-fn names_light_last(target: &str) -> bool {
-    let words: Vec<String> = target.split_whitespace().map(voice_assistant::dialog::normalize).collect();
-    let last = words.last().map(String::as_str).unwrap_or_default();
-    ha::names_something(target) && (["light", "lights", "lamp", "lamps"].contains(&last) || ha::names_only_room(&words))
-}
-
-fn complete_command(intent: &Intent) -> bool {
-    matches!(
-        intent,
-        Intent::Cancel
-            | Intent::Music(
-                MusicCommand::Pause
-                    | MusicCommand::Stop
-                    | MusicCommand::Mute(_)
-                    | MusicCommand::NowPlaying
-                    | MusicCommand::Shuffle(_)
-                    | MusicCommand::Repeat(_)
-                    | MusicCommand::Next
-                    | MusicCommand::Previous
-                    | MusicCommand::VolumeBy(_)
-                    | MusicCommand::VolumeTo(_)
-            )
-            | Intent::Tv(
-                TvCommand::Pause
-                    | TvCommand::Resume
-                    | TvCommand::Power(_)
-                    | TvCommand::Mute(_)
-                    | TvCommand::Louder
-                    | TvCommand::Quieter
-            )
-            | Intent::Tv(TvCommand::Show(_))
-            | Intent::House(HouseCommand::FindPhone(_) | HouseCommand::Climate(house::Indoors::Room(_), _))
-            | Intent::Routine(_)
-            | Intent::Party(_)
-            | Intent::Time
-            | Intent::Thanks
-            | Intent::Joke
-            // A length is the end of the request: "set a timer for 5 minutes", "stop the timer".
-            | Intent::Timer(
-                TimerCommand::Start { seconds: Some(_), .. }
-                    | TimerCommand::Cancel(_)
-                    | TimerCommand::Pause(_)
-                    | TimerCommand::Resume(_)
-                    | TimerCommand::Remaining(_)
-                    | TimerCommand::Snooze
-                    | TimerCommand::StopAlarm
-            )
-    )
 }
 
 #[cfg(test)]
@@ -171,40 +75,10 @@ mod tests {
     }
 
     #[test]
-    fn quick_commands() {
-        let parse = |text: &str| intent::parse(text);
-        assert!(heard_by_itself(&parse("pause the music")));
-        assert!(heard_by_itself(&parse("next song")));
-        assert!(!heard_by_itself(&parse("turn it up")));
-        assert!(heard_by_itself(&parse("play some music")));
+    fn goes_on_after_and() {
         assert!(goes_on("pause the music and"));
         assert!(goes_on("stopp musikken og"));
         assert!(!goes_on("pause the music"));
         assert!(!goes_on(""));
-        // At once, though it may go on "in the kitchen": then it is undone here.
-        assert!(complete_at_once(&parse("pause the music")));
-        assert!(complete_at_once(&parse("next song")));
-        assert!(complete_at_once(&parse("volume 30")));
-        assert!(complete_at_once(&parse("what's playing")));
-        assert!(complete_at_once(&parse("pause the music in the kitchen")));
-        assert!(complete_at_once(&parse("next song in the bedroom")));
-        assert!(!complete_at_once(&parse("play jazz in the kitchen")));
-        assert!(complete_at_once(&parse("what time is it")));
-        assert!(!complete_at_once(&parse("what day is it")));
-        assert!(!complete_at_once(&parse("turn off the lights")));
-        assert!(!complete_at_once(&parse("play")));
-        assert!(complete_at_once(&parse("turn off the kitchen lights")));
-        assert!(complete_at_once(&parse("turn on the kitchen")));
-        assert!(!complete_at_once(&parse("turn on the lights in")));
-        assert!(complete_at_once(&parse("set the living room to 30 percent")));
-        assert!(!complete_at_once(&parse("dim the living room")));
-        assert!(complete_at_once(&parse("put the weather on the tv")));
-        assert!(complete_at_once(&parse("where is my phone")));
-        assert!(complete_at_once(&parse("what's the temperature in the bedroom")));
-        assert!(!complete_at_once(&parse("what's the temperature")));
-        assert!(complete_at_once(&parse("good night")));
-        assert!(complete_at_once(&parse("initiate lockdown")));
-        assert!(complete_at_once(&parse("how you doing")));
-        assert!(!complete_at_once(&parse("hey")));
     }
 }

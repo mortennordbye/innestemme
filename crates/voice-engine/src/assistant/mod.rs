@@ -74,7 +74,7 @@ use hush::{Hushed, HUSH_CAP, HUSH_QUIET};
 use leads::capitalize;
 use lights::LightChange;
 use lockdown::Alarm;
-use quick::{bare_stop, complete_at_once, heard_by_itself, music_by_sound};
+use quick::{bare_stop, music_by_sound};
 use screen::SCREEN_MOMENT;
 use shopping::{LIST_OPEN, LIST_REPLY_WORDS};
 use speech::Spoken;
@@ -631,7 +631,7 @@ impl Worker {
             return;
         }
         let intent = intent::parse(&request);
-        if intent::split_commands(&request).is_some() || !complete_at_once(&intent) {
+        if intent::split_commands(&request).is_some() || !intent.meta().complete_at_once {
             return;
         }
         let Some((audio, candidates)) = self.draft.take() else { return };
@@ -777,7 +777,7 @@ impl Worker {
             return;
         };
         let failed = ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s));
-        if !failed && intent::split_commands(text).is_none() && heard_by_itself(&intent::parse(text)) {
+        if !failed && intent::split_commands(text).is_none() && intent::parse(text).meta().heard_by_itself {
             let turn = self.turn_for(text, Some(answer.clone()), Outcome::Done, start);
             info!(request = text, answer, skill = turn.skill, after = ?start.elapsed(), "done without words");
             let after_ms = self.speech_ended.take().map(|ended| ended.elapsed().as_millis() as u64);
