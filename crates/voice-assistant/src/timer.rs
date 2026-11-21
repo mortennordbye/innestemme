@@ -121,7 +121,7 @@ impl Clock {
 }
 
 /// Which timers a request is about. Nothing set means "the timer", whichever there is.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Which {
     /// "The pasta timer".
     pub name: Option<String>,
@@ -129,10 +129,33 @@ pub struct Which {
     pub seconds: Option<u32>,
     /// "All timers", "alle timerne".
     pub all: bool,
-    /// "The reminder", "påminnelsen".
-    pub reminder: bool,
+    pub of: Of,
+}
+
+/// The kinds of timer a request is about.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Of {
+    /// "The timer": timers and reminders, never an alarm.
+    #[default]
+    Timers,
+    /// "The reminder", "påminnelsen": reminders only.
+    Reminders,
     /// "My alarm": wake-up alarms, which timer requests leave alone.
-    pub alarm: bool,
+    Alarms,
+}
+
+/// In the field shape `Which` had before `Of`: the golden intent corpus compares this text across
+/// builds, so a change here shows as a change in what the rules read.
+impl std::fmt::Debug for Which {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Which")
+            .field("name", &self.name)
+            .field("seconds", &self.seconds)
+            .field("all", &self.all)
+            .field("reminder", &(self.of == Of::Reminders))
+            .field("alarm", &(self.of == Of::Alarms))
+            .finish()
+    }
 }
 
 const TIMER_WORDS: &[&str] = &["timer", "timers", "timeren", "timerne", "countdown", "nedtelling", "nedtellingen"];
@@ -246,7 +269,7 @@ pub fn parse(text: &str) -> Option<TimerCommand> {
     let which = Which {
         name: timer_name(&words, &used),
         all: has("all") || has("alle") || has("every") || has("everything"),
-        reminder,
+        of: if reminder { Of::Reminders } else { Of::Timers },
         ..Which::default()
     };
     let with_length = Which { seconds, ..which.clone() };
@@ -305,7 +328,7 @@ fn alarm(words: &[String]) -> Option<TimerCommand> {
     if !wake && house_alarm(words) {
         return None;
     }
-    let which = Which { alarm: true, all: has("all") || has("alle"), ..Which::default() };
+    let which = Which { of: Of::Alarms, all: has("all") || has("alle"), ..Which::default() };
     if !wake && first_word(words).is_some_and(|w| QUESTION_WORDS.contains(&w)) {
         return Some(TimerCommand::Remaining(which));
     }
@@ -915,26 +938,56 @@ pub enum State {
     Paused { left: Duration },
 }
 
+/// What a timer is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Kind {
+    /// It rings when it ends.
+    Timer,
+    /// It speaks its message when it ends ("call mom"). One without a message still says it is one.
+    Reminder(Option<String>),
+    /// A wake-up alarm: it rings, and "snooze" sets it again. `at` is its time of day, "07:00",
+    /// for its name.
+    Alarm { at: String },
+}
+
 #[derive(Debug, Clone)]
 pub struct Timer {
     pub id: u32,
     pub name: Option<String>,
-    pub reminder: Option<String>,
+    pub kind: Kind,
     /// The language it was set in, for the words at the end.
     pub lang: Lang,
     pub total: Duration,
     pub state: State,
-    /// A reminder without a message still says it is one.
-    pub is_reminder: bool,
-    /// A wake-up alarm: it rings, and "snooze" sets it again.
-    pub is_alarm: bool,
-    /// An alarm's time of day, "07:00", for its name.
-    pub at: Option<String>,
     /// It ended while the engine was down, at this time of day ("14:30"): it is told late.
     pub late: Option<String>,
 }
 
 impl Timer {
+    pub fn is_alarm(&self) -> bool {
+        matches!(self.kind, Kind::Alarm { .. })
+    }
+
+    pub fn is_reminder(&self) -> bool {
+        matches!(self.kind, Kind::Reminder(_))
+    }
+
+    /// What a reminder says: "call mom".
+    pub fn message(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Reminder(message) => message.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// An alarm's time of day: "07:00".
+    pub fn alarm_at(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Alarm { at } => Some(at),
+            _ => None,
+        }
+    }
+
     pub fn left(&self, now: Instant) -> Duration {
         match self.state {
             State::Running { ends } => ends.saturating_duration_since(now),
@@ -950,15 +1003,13 @@ impl Timer {
     /// Norwegian "pasta-timeren", "timeren på 10 minutter", "påminnelsen", "vekkerklokka på 07:00".
     pub fn label(&self, lang: Lang) -> String {
         let total = self.total.as_secs() as u32;
-        if self.is_alarm {
-            return match (lang, &self.at) {
-                (Lang::English, Some(at)) => format!("the {at} alarm"),
-                (Lang::English, None) => "the alarm".into(),
-                (Lang::Norwegian, Some(at)) => format!("vekkerklokka på {at}"),
-                (Lang::Norwegian, None) => "vekkerklokka".into(),
+        if let Kind::Alarm { at } = &self.kind {
+            return match lang {
+                Lang::English => format!("the {at} alarm"),
+                Lang::Norwegian => format!("vekkerklokka på {at}"),
             };
         }
-        match (lang, &self.name, &self.reminder, self.is_reminder) {
+        match (lang, &self.name, self.message(), self.is_reminder()) {
             (Lang::English, _, Some(message), _) => format!("the reminder to {message}"),
             (Lang::English, _, None, true) => "the reminder".into(),
             (Lang::English, Some(name), ..) => format!("the {name} timer"),
@@ -973,7 +1024,12 @@ impl Timer {
     }
 
     fn matches(&self, which: &Which) -> bool {
-        if which.alarm != self.is_alarm || which.reminder && !self.is_reminder {
+        let kind = match which.of {
+            Of::Timers => !self.is_alarm(),
+            Of::Reminders => self.is_reminder(),
+            Of::Alarms => self.is_alarm(),
+        };
+        if !kind {
             return false;
         }
         if let Some(seconds) = which.seconds {
@@ -984,7 +1040,7 @@ impl Timer {
         match &which.name {
             None => true,
             Some(name) => {
-                let hay = [self.name.as_deref(), self.reminder.as_deref()];
+                let hay = [self.name.as_deref(), self.message()];
                 hay.iter().flatten().any(|h| h.contains(name.as_str()) || name.contains(*h))
             }
         }
@@ -1021,22 +1077,31 @@ impl Notice {
             total_seconds: timer.total.as_secs() as u32,
             seconds_left: timer.left(now).as_secs_f32().ceil() as u32,
             active: timer.is_running() && kind != NoticeKind::Finished,
-            reminder: timer.is_reminder,
+            reminder: timer.is_reminder(),
         }
     }
 }
 
 /// What a new timer is: also a start that is waiting for its duration or time ("Set a timer."
-/// "For how long?").
-#[derive(Debug, Clone, Default)]
-struct Plan {
-    name: Option<String>,
-    reminder: Option<String>,
-    is_reminder: bool,
-    is_alarm: bool,
+/// "For how long?"). An alarm's time of day is known only once it is set, so a plan has no `Kind`.
+#[derive(Debug, Clone)]
+enum Plan {
+    Timer { name: Option<String> },
+    Reminder { message: Option<String> },
+    Alarm { name: Option<String> },
+}
+
+impl Plan {
+    /// "For how long?" takes a duration; "When should I remind you?" and "For what time?" also a
+    /// time of day.
+    fn takes_time_of_day(&self) -> bool {
+        !matches!(self, Plan::Timer { .. })
+    }
 }
 
 /// A timer as kept on disk: wall-clock times, since an `Instant` means nothing after a restart.
+/// The fields stay as they are, flags and all: a build reads the files of the build before it, and
+/// the build before reads its files after a rollback. `restore` makes the `Kind` from them.
 #[derive(Debug, Serialize, Deserialize)]
 struct Kept {
     id: u32,
@@ -1067,10 +1132,8 @@ struct Kept {
 pub struct Timers {
     list: Vec<Timer>,
     next_id: u32,
-    pending: Option<Plan>,
-    /// After "Which one?": the change asked for, and the timers named in the question, in the
-    /// order they were said.
-    choosing: Option<Choosing>,
+    /// The question the last answer asked, waiting for its answer.
+    asked: Option<Asked>,
     /// The alarm that went off last and when, for "snooze" and "stop the alarm".
     rang: Option<(Timer, Instant)>,
     /// The file they are kept in across restarts.
@@ -1099,16 +1162,23 @@ impl Timers {
         let local = timers.local(now);
         for k in kept {
             timers.next_id = timers.next_id.max(k.id);
+            // No build writes an alarm without its time or a message without `is_reminder`; such a
+            // file still reads, the time from its end and the message as a reminder.
+            let kind = if k.is_alarm {
+                let at = k.at.or_else(|| k.ends.map(|ends| hh_mm(ends, local.time_zone())));
+                Kind::Alarm { at: at.unwrap_or_default() }
+            } else if k.is_reminder || k.reminder.is_some() {
+                Kind::Reminder(k.reminder)
+            } else {
+                Kind::Timer
+            };
             let mut timer = Timer {
                 id: k.id,
                 name: k.name,
-                reminder: k.reminder,
+                kind,
                 lang: if k.norwegian { Lang::Norwegian } else { Lang::English },
                 total: Duration::from_secs(k.total_seconds),
                 state: State::Paused { left: Duration::from_secs(k.left_seconds.unwrap_or(0)) },
-                is_reminder: k.is_reminder,
-                is_alarm: k.is_alarm,
-                at: k.at,
                 late: k.late,
             };
             if let Some(ends) = k.ends {
@@ -1117,8 +1187,8 @@ impl Timers {
                     timer.state = State::Running { ends: now + left.unsigned_abs() };
                 } else {
                     let late = left.unsigned_abs();
-                    let limit = if timer.is_alarm { LATE_ALARM } else { LATE_TIMER };
-                    if !timer.is_reminder && timer.late.is_none() && late > limit {
+                    let limit = if timer.is_alarm() { LATE_ALARM } else { LATE_TIMER };
+                    if !timer.is_reminder() && timer.late.is_none() && late > limit {
                         info!(label = timer.label(Lang::English), late = ?late, "ended while down; dropped");
                         timers.dropped.push(Notice::of(&timer, NoticeKind::Cancelled, now));
                         continue;
@@ -1137,7 +1207,8 @@ impl Timers {
     }
 
     /// The same timers on a fixed clock: `at` is the local time `local`.
-    pub fn with_clock(mut self, at: Instant, local: Zoned) -> Self {
+    #[cfg(test)]
+    fn with_clock(mut self, at: Instant, local: Zoned) -> Self {
         self.clock = Some((at, local));
         self
     }
@@ -1164,7 +1235,7 @@ impl Timers {
             .map(|t| Kept {
                 id: t.id,
                 name: t.name.clone(),
-                reminder: t.reminder.clone(),
+                reminder: t.message().map(str::to_owned),
                 norwegian: t.lang == Lang::Norwegian,
                 total_seconds: t.total.as_secs(),
                 ends: match t.state {
@@ -1178,9 +1249,9 @@ impl Timers {
                     State::Running { .. } => None,
                     State::Paused { left } => Some(left.as_secs()),
                 },
-                is_reminder: t.is_reminder,
-                is_alarm: t.is_alarm,
-                at: t.at.clone(),
+                is_reminder: t.is_reminder(),
+                is_alarm: t.is_alarm(),
+                at: t.alarm_at().map(str::to_owned),
                 late: t.late.clone(),
             })
             .collect();
@@ -1218,7 +1289,7 @@ impl Timers {
         let done: Vec<(Timer, Vec<Notice>)> = done
             .into_iter()
             .map(|t| {
-                let notices = match (t.late.is_some(), t.is_alarm) {
+                let notices = match (t.late.is_some(), t.is_alarm()) {
                     (true, false) => vec![Notice::of(&t, NoticeKind::Cancelled, now)],
                     // The device did not hear of it before the restart.
                     (true, true) => {
@@ -1226,7 +1297,7 @@ impl Timers {
                     }
                     (false, _) => vec![Notice::of(&t, NoticeKind::Finished, now)],
                 };
-                if t.is_alarm {
+                if t.is_alarm() {
                     self.rang = Some((t.clone(), now));
                 }
                 (t, notices)
@@ -1255,84 +1326,90 @@ impl Timers {
         self.rang.as_ref().is_some_and(|(_, at)| now.saturating_duration_since(*at) < RINGS_FOR)
     }
 
-    /// True when the last answer asked "For how long?" or "When?".
+    /// True when the last answer asked a question that waits for its answer: "For how long?",
+    /// "When?" or "Which one?".
+    pub fn asking(&self) -> bool {
+        self.asked.is_some()
+    }
+
+    /// The name `asking` had. The engine's callers keep it until the worker rework moves them to
+    /// `asking`, so the two changes do not touch the same lines.
     pub fn awaiting_duration(&self) -> bool {
-        self.pending.is_some() || self.choosing.is_some()
+        self.asking()
     }
 
     /// True while a "Which one?" waits for its answer.
     pub fn choosing(&self) -> bool {
-        self.choosing.is_some()
+        matches!(self.asked, Some(Asked::Which(_)))
     }
 
     /// Drops a "Which one?" whose window has passed, so it no longer waits for an answer.
     pub fn forget_stale(&mut self, now: Instant) {
-        if self.choosing.as_ref().is_some_and(|c| now.saturating_duration_since(c.at) > CHOICE_WINDOW) {
-            self.choosing = None;
+        if matches!(&self.asked, Some(Asked::Which(c)) if now.saturating_duration_since(c.at) > CHOICE_WINDOW) {
+            self.asked = None;
         }
     }
 
     /// True when `text` is for the question asked: anything after "For how long?", and only an
     /// answer ("the first one", "the pasta one") after "Which one?".
     pub fn takes_answer(&self, text: &str) -> bool {
-        if self.pending.is_some() {
-            return true;
+        match &self.asked {
+            None => false,
+            Some(Asked::When(_)) => true,
+            // It must name one of those listed too: "sorry", "okay" or "kitchen" is no answer.
+            Some(Asked::Which(asked)) => {
+                answer_of(text).is_some_and(|answer| chosen(&answer, &asked.listed, Instant::now()).is_some())
+            }
         }
-        let Some(asked) = &self.choosing else { return false };
-        // It must name one of those listed too: "sorry", "okay" or "kitchen" is no answer.
-        answer_of(text).is_some_and(|answer| chosen(&answer, &asked.listed, Instant::now()).is_some())
     }
 
     /// Forgets a question that was not answered.
     pub fn clear_pending(&mut self) {
-        self.pending = None;
-        self.choosing = None;
+        self.asked = None;
     }
 
     /// The answer to "For how long?" or "When should I remind you?": starts the pending timer when
     /// `text` names a duration, or for a reminder or an alarm a time of day.
     pub fn answer_pending(&mut self, text: &str, lang: Lang, now: Instant) -> Option<(String, Vec<Notice>)> {
-        if self.choosing.is_some() {
-            return self.answer_choice(text, lang, now);
-        }
-        let pending = self.pending.as_ref()?;
-        let when = if pending.is_reminder || pending.is_alarm { when(text)? } else { When::In(duration(text)?) };
-        let plan = self.pending.take()?;
+        let plan = match &self.asked {
+            None => return None,
+            Some(Asked::Which(_)) => return self.answer_choice(text, lang, now),
+            Some(Asked::When(plan)) => plan,
+        };
+        let when = if plan.takes_time_of_day() { when(text)? } else { When::In(duration(text)?) };
+        let Some(Asked::When(plan)) = self.asked.take() else { return None };
         let started = self.start(plan, when, lang, now);
         self.save(now);
         Some(started)
     }
 
     pub fn run(&mut self, command: TimerCommand, lang: Lang, now: Instant) -> (String, Vec<Notice>) {
-        self.pending = None;
-        self.choosing = None;
+        self.asked = None;
         let no = lang == Lang::Norwegian;
         let answer = match command {
             TimerCommand::Start { seconds: None, name } => {
-                self.pending = Some(Plan { name, ..Plan::default() });
+                self.asked = Some(Asked::When(Plan::Timer { name }));
                 (if no { "Hvor lenge?" } else { "For how long?" }.into(), vec![])
             }
             TimerCommand::Start { seconds: Some(seconds), name } => {
-                self.start(Plan { name, ..Plan::default() }, When::In(seconds), lang, now)
+                self.start(Plan::Timer { name }, When::In(seconds), lang, now)
             }
             TimerCommand::Remind { when: None, message } => {
-                self.pending = Some(Plan { reminder: message, is_reminder: true, ..Plan::default() });
+                self.asked = Some(Asked::When(Plan::Reminder { message }));
                 (if no { "Når skal jeg minne deg på det?" } else { "When should I remind you?" }.into(), vec![])
             }
             TimerCommand::Remind { when: Some(when), message } => {
-                self.start(Plan { reminder: message, is_reminder: true, ..Plan::default() }, when, lang, now)
+                self.start(Plan::Reminder { message }, when, lang, now)
             }
             TimerCommand::Alarm { when: None } => {
-                self.pending = Some(Plan { is_alarm: true, ..Plan::default() });
+                self.asked = Some(Asked::When(Plan::Alarm { name: None }));
                 (if no { "Når skal jeg vekke deg?" } else { "For what time?" }.into(), vec![])
             }
-            TimerCommand::Alarm { when: Some(when) } => {
-                self.start(Plan { is_alarm: true, ..Plan::default() }, when, lang, now)
-            }
+            TimerCommand::Alarm { when: Some(when) } => self.start(Plan::Alarm { name: None }, when, lang, now),
             TimerCommand::MoveAlarm(to) => self.move_alarm(to, lang, now),
             TimerCommand::Snooze => self.snooze(SNOOZE, lang, now),
             TimerCommand::StopAlarm => self.stop_alarm(lang, now),
-            TimerCommand::Remaining(which) if which.alarm => (self.alarms(lang, now), vec![]),
+            TimerCommand::Remaining(which) if which.of == Of::Alarms => (self.alarms(lang, now), vec![]),
             TimerCommand::Remaining(which) => (self.remaining(&which, lang, now), vec![]),
             TimerCommand::Cancel(which) => self.change(&which, lang, now, Change::Cancel),
             TimerCommand::Pause(which) => self.change(&which, lang, now, Change::Pause),
@@ -1348,7 +1425,7 @@ impl Timers {
         let local = self.local(now);
         let (seconds, target) = match when {
             When::In(seconds) => (seconds, None),
-            When::At(clock) => match clock.next(&local, plan.is_alarm) {
+            When::At(clock) => match clock.next(&local, matches!(plan, Plan::Alarm { .. })) {
                 Some(at) => ((at.timestamp().as_second() - local.timestamp().as_second()).max(1) as u32, Some(at)),
                 None => {
                     let text =
@@ -1360,21 +1437,23 @@ impl Timers {
         self.next_id += 1;
         let total = Duration::from_secs(seconds as u64);
         let ends = target.clone().unwrap_or_else(|| self.local(now + total));
+        let (name, kind) = match plan {
+            Plan::Timer { name } => (name, Kind::Timer),
+            Plan::Reminder { message } => (None, Kind::Reminder(message)),
+            Plan::Alarm { name } => (name, Kind::Alarm { at: ends.strftime("%H:%M").to_string() }),
+        };
         let timer = Timer {
             id: self.next_id,
-            name: plan.name,
-            reminder: plan.reminder,
+            name,
+            kind,
             lang,
             total,
             state: State::Running { ends: now + total },
-            is_reminder: plan.is_reminder,
-            is_alarm: plan.is_alarm,
-            at: plan.is_alarm.then(|| ends.strftime("%H:%M").to_string()),
             late: None,
         };
         let length = say_duration(seconds, lang);
         // The fixed words in a sentence of their own, rendered ahead; the time in the next.
-        let text = match (lang, &timer.name, timer.is_reminder, timer.is_alarm, &target) {
+        let text = match (lang, &timer.name, timer.is_reminder(), timer.is_alarm(), &target) {
             (Lang::English, .., true, None) => format!("Okay, your alarm is set. It goes off in {length}."),
             (Lang::English, .., true, Some(_)) => {
                 format!("Okay, your alarm is set. It goes off {}.", say_at(&ends, &local, lang))
@@ -1410,15 +1489,15 @@ impl Timers {
                 return self.snooze(by.min(i64::from(u32::MAX)) as u32, lang, now);
             }
         }
-        let alarms: Vec<usize> = (0..self.list.len()).filter(|&i| self.list[i].is_alarm).collect();
+        let alarms: Vec<usize> = (0..self.list.len()).filter(|&i| self.list[i].is_alarm()).collect();
         let index = match (alarms.as_slice(), to) {
-            ([], Move::To(when)) => return self.start(Plan { is_alarm: true, ..Plan::default() }, when, lang, now),
+            ([], Move::To(when)) => return self.start(Plan::Alarm { name: None }, when, lang, now),
             ([], Move::By(_)) => return (no_alarm(no), vec![]),
             ([one], _) => *one,
             (several, _) => {
                 // Which one: the same question a cancel asks, kept for the answer.
-                self.choosing = Some(Choosing::new(Choice::Move(to), several, &self.list, now));
-                return self.change(&Which { alarm: true, ..Which::default() }, lang, now, Change::Ask);
+                self.asked = Some(Asked::Which(Choosing::new(Choice::Move(to), several, &self.list, now)));
+                return self.change(&Which { of: Of::Alarms, ..Which::default() }, lang, now, Change::Ask);
             }
         };
         self.move_alarm_at(index, to, lang, now)
@@ -1443,8 +1522,7 @@ impl Timers {
         };
         let old = self.list.remove(index);
         let count = self.list.len();
-        let (failed, mut notices) =
-            self.start(Plan { name: old.name.clone(), is_alarm: true, ..Plan::default() }, when, lang, now);
+        let (failed, mut notices) = self.start(Plan::Alarm { name: old.name.clone() }, when, lang, now);
         if self.list.len() == count {
             // A time that could not be read: the old alarm stays.
             self.list.insert(index, old);
@@ -1467,7 +1545,7 @@ impl Timers {
             return (if no { "Ingen vekkerklokke har ringt." } else { "There's no alarm to snooze." }.into(), vec![]);
         }
         let Some((alarm, _)) = self.rang.take() else { return (String::new(), vec![]) };
-        let plan = Plan { name: alarm.name, is_alarm: true, ..Plan::default() };
+        let plan = Plan::Alarm { name: alarm.name };
         let (_, notices) = self.start(plan, When::In(seconds), lang, now);
         let length = say_duration(seconds, lang);
         let text =
@@ -1484,8 +1562,8 @@ impl Timers {
                 vec![],
             );
         }
-        if self.list.iter().any(|t| t.is_alarm) {
-            return self.change(&Which { alarm: true, ..Which::default() }, lang, now, Change::Cancel);
+        if self.list.iter().any(|t| t.is_alarm()) {
+            return self.change(&Which { of: Of::Alarms, ..Which::default() }, lang, now, Change::Cancel);
         }
         (if no { "Ingen vekkerklokke ringer." } else { "There's no alarm ringing." }.into(), vec![])
     }
@@ -1494,7 +1572,7 @@ impl Timers {
     fn alarms(&self, lang: Lang, now: Instant) -> String {
         let no = lang == Lang::Norwegian;
         let local = self.local(now);
-        let mut alarms: Vec<&Timer> = self.list.iter().filter(|t| t.is_alarm).collect();
+        let mut alarms: Vec<&Timer> = self.list.iter().filter(|t| t.is_alarm()).collect();
         alarms.sort_by_key(|t| t.left(now));
         let times: Vec<String> = alarms.iter().map(|t| say_at(&self.local(now + t.left(now)), &local, lang)).collect();
         match (times.as_slice(), no) {
@@ -1508,7 +1586,7 @@ impl Timers {
 
     /// The timers of the kind a request is about: alarms, or the others.
     fn of_kind(&self, which: &Which) -> Vec<usize> {
-        (0..self.list.len()).filter(|&i| self.list[i].is_alarm == which.alarm).collect()
+        (0..self.list.len()).filter(|&i| self.list[i].is_alarm() == (which.of == Of::Alarms)).collect()
     }
 
     /// The timers a request means. A name that matches nothing still means the only timer there
@@ -1516,7 +1594,7 @@ impl Timers {
     fn select(&self, which: &Which) -> Vec<usize> {
         let found: Vec<usize> = (0..self.list.len()).filter(|&i| self.list[i].matches(which)).collect();
         let kind = self.of_kind(which);
-        if found.is_empty() && kind.len() == 1 && which.seconds.is_none() && !which.reminder {
+        if found.is_empty() && kind.len() == 1 && which.seconds.is_none() && which.of != Of::Reminders {
             return kind;
         }
         found
@@ -1555,7 +1633,8 @@ impl Timers {
     fn change(&mut self, which: &Which, lang: Lang, now: Instant, change: Change) -> (String, Vec<Notice>) {
         let no = lang == Lang::Norwegian;
         let found = self.select(which);
-        let (noun, noun_no) = if which.alarm { ("alarms", "vekkerklokker") } else { ("timers", "timere") };
+        let alarm = which.of == Of::Alarms;
+        let (noun, noun_no) = if alarm { ("alarms", "vekkerklokker") } else { ("timers", "timere") };
         let targets = match found.as_slice() {
             [] if self.of_kind(which).is_empty() => return (none_running(which, no), vec![]),
             [] => return (not_found(which, no), vec![]),
@@ -1563,7 +1642,7 @@ impl Timers {
             several if which.all => several.to_vec(),
             several => {
                 if change != Change::Ask {
-                    self.choosing = Some(Choosing::new(Choice::Change(change), several, &self.list, now));
+                    self.asked = Some(Asked::Which(Choosing::new(Choice::Change(change), several, &self.list, now)));
                 }
                 let labels: Vec<String> = several.iter().map(|&i| self.list[i].label(lang)).collect();
                 let text = if no {
@@ -1574,7 +1653,7 @@ impl Timers {
                 return (text, vec![]);
             }
         };
-        self.apply(targets, which.alarm, lang, now, change)
+        self.apply(targets, alarm, lang, now, change)
     }
 
     /// The answer to "Which one?": "the first one", "the 7 o'clock one", "the pasta one", "both".
@@ -1582,7 +1661,7 @@ impl Timers {
     /// words are taken as a new request.
     fn answer_choice(&mut self, text: &str, lang: Lang, now: Instant) -> Option<(String, Vec<Notice>)> {
         let no = lang == Lang::Norwegian;
-        let asked = self.choosing.take()?;
+        let Some(Asked::Which(asked)) = self.asked.take() else { return None };
         if now.saturating_duration_since(asked.at) > CHOICE_WINDOW {
             return None;
         }
@@ -1591,7 +1670,7 @@ impl Timers {
         if answer == Answer::Both && asked.listed.len() != 2 {
             let count = asked.listed.len();
             let text = if no { format!("Det er {count}. Hvilken?") } else { format!("There are {count}. Which one?") };
-            self.choosing = Some(Choosing { at: now, ..asked });
+            self.asked = Some(Asked::Which(Choosing { at: now, ..asked }));
             return Some((text, vec![]));
         }
         // In the order they were said, as they were then; one that has ended since is gone.
@@ -1611,7 +1690,7 @@ impl Timers {
                 }
             },
             Choice::Change(change) => {
-                let alarm = self.list[found[0]].is_alarm;
+                let alarm = self.list[found[0]].is_alarm();
                 self.apply(found, alarm, lang, now, change)
             }
         };
@@ -1707,6 +1786,14 @@ enum Choice {
 
 /// How long a "Which one?" waits for its answer, as long as a question waiting for "yes".
 const CHOICE_WINDOW: Duration = Duration::from_secs(30);
+
+/// A question asked, waiting for its answer. One at a time: a new request drops it.
+enum Asked {
+    /// "For how long?", "When should I remind you?", "For what time?": the timer to start.
+    When(Plan),
+    /// "Which one?".
+    Which(Choosing),
+}
 
 /// A "Which one?" asked: what for, the timers it listed in the order said, and when.
 struct Choosing {
@@ -1903,7 +1990,7 @@ fn chosen(answer: &Answer, listed: &[Timer], now: Instant) -> Option<Vec<usize>>
     let all = || (0..listed.len()).map(|k| (k, &listed[k]));
     let one = |found: Vec<usize>| (found.len() == 1).then_some(found);
     let hour_of = |t: &Timer| {
-        t.at.as_deref()
+        t.alarm_at()
             .and_then(|at| at.split_once(':'))
             .and_then(|(h, m)| Some((h.parse::<u8>().ok()?, m.parse::<u8>().ok()?)))
     };
@@ -1941,7 +2028,7 @@ fn chosen(answer: &Answer, listed: &[Timer], now: Instant) -> Option<Vec<usize>>
         Answer::Named(name) => one(all()
             .filter(|(_, t)| {
                 let own: Vec<String> =
-                    [t.name.as_deref(), t.reminder.as_deref()].iter().flatten().flat_map(|h| tokens(h)).collect();
+                    [t.name.as_deref(), t.message()].iter().flatten().flat_map(|h| tokens(h)).collect();
                 name.iter().all(|w| own.contains(w))
             })
             .map(|(k, _)| k)
@@ -1964,7 +2051,7 @@ fn left_of(notices: &[Notice], lang: Lang) -> String {
 }
 
 fn none_running(which: &Which, no: bool) -> String {
-    if which.alarm {
+    if which.of == Of::Alarms {
         return no_alarm(no);
     }
     if no { "Ingen timere er i gang." } else { "There are no timers running." }.into()
@@ -2039,10 +2126,10 @@ pub const ENGLISH_ANSWERS: &[&str] = &[
 /// What to say when a timer ends.
 pub fn finished_text(timer: &Timer) -> String {
     let no = timer.lang == Lang::Norwegian;
-    if timer.is_alarm {
+    if timer.is_alarm() {
         return if no { "På tide å stå opp." } else { "Time to wake up." }.into();
     }
-    let on_time = match (timer.lang, &timer.reminder, timer.is_reminder) {
+    let on_time = match (timer.lang, timer.message(), timer.is_reminder()) {
         (Lang::English, Some(message), _) => format!("Reminder: {message}."),
         (Lang::English, None, true) => "This is your reminder.".into(),
         (Lang::English, None, false) => {
@@ -2054,7 +2141,7 @@ pub fn finished_text(timer: &Timer) -> String {
             format!("{} er ferdig.", capitalize(&timer.label(Lang::Norwegian)))
         }
     };
-    match (&timer.late, timer.is_reminder, no) {
+    match (&timer.late, timer.is_reminder(), no) {
         (None, ..) => on_time,
         (Some(due), true, false) => format!("{on_time} It was due at {due}."),
         (Some(due), true, true) => format!("{on_time} Den skulle kommet klokka {due}."),
@@ -2231,7 +2318,7 @@ mod tests {
         assert_eq!(parse("hvor lang tid er det igjen på timeren?"), Some(Remaining(Which::default())));
         assert_eq!(parse("hvor lang tid er det igjen"), Some(Remaining(Which::default())));
         assert_eq!(parse("what timers do I have"), Some(Remaining(Which::default())));
-        assert_eq!(parse("cancel the reminder"), Some(Cancel(Which { reminder: true, ..Which::default() })));
+        assert_eq!(parse("cancel the reminder"), Some(Cancel(Which { of: Of::Reminders, ..Which::default() })));
         // Not timers.
         assert_eq!(parse("what time is it"), None);
         assert_eq!(parse("turn off the lights"), None);
@@ -2303,11 +2390,11 @@ mod tests {
         let t0 = Instant::now();
         let mut timers = Timers::default();
         assert_eq!(timers.run(Start { seconds: None, name: None }, Lang::English, t0).0, "For how long?");
-        assert!(timers.awaiting_duration());
+        assert!(timers.asking());
         assert!(timers.answer_pending("banana", Lang::English, t0).is_none());
         let (text, _) = timers.answer_pending("five minutes", Lang::English, t0).unwrap();
         assert_eq!(text, "Timer set for 5 minutes.");
-        assert!(!timers.awaiting_duration());
+        assert!(!timers.asking());
     }
 
     #[test]
@@ -2462,7 +2549,7 @@ mod tests {
 
     #[test]
     fn wake_up_alarms() {
-        let alarm = Which { alarm: true, ..Which::default() };
+        let alarm = Which { of: Of::Alarms, ..Which::default() };
         assert_eq!(parse("Wake me up at 7."), Some(Alarm { when: clock(7, 0, None, false) }));
         assert_eq!(parse("set an alarm for 6:30"), Some(Alarm { when: clock(6, 30, None, false) }));
         assert_eq!(parse("set an alarm for seven"), Some(Alarm { when: clock(7, 0, None, false) }));
@@ -2497,7 +2584,7 @@ mod tests {
         for (text, command) in [
             ("Stop the alarm.", StopAlarm),
             ("Snooze.", Snooze),
-            ("Is my alarm set?", Remaining(Which { alarm: true, ..Which::default() })),
+            ("Is my alarm set?", Remaining(Which { of: Of::Alarms, ..Which::default() })),
         ] {
             assert_eq!(crate::intent::parse(text), crate::intent::Intent::Timer(command), "{text}");
         }
@@ -2542,24 +2629,53 @@ mod tests {
         assert!(ENGLISH_ANSWERS.iter().all(|a| crate::speech_cache::CachedTts::cacheable(a)));
     }
 
-    /// A file kept by the build before the shared store still reads, and is written back the same.
-    #[test]
-    fn a_file_from_the_previous_build_reads_and_writes_the_same() {
-        let kept = include_str!("../testdata/timers.json");
-        let dir = std::env::temp_dir().join(format!("innestemme-timers-previous-{}", std::process::id()));
+    /// `kept`, a file written by an earlier build, read at 14:00 and written back. The bytes must
+    /// be the same: then this build reads that build's files, and that build reads this one's.
+    fn read_and_write_back(name: &str, kept: &str, check: impl FnOnce(&Timers, Instant)) {
+        let dir = std::env::temp_dir().join(format!("innestemme-timers-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("timers.json");
         std::fs::write(&path, kept).unwrap();
         let t0 = Instant::now();
         let timers = Timers::restore(path.clone(), t0, Some((t0, local(14, 0))));
-        let labels: Vec<String> = timers.list().iter().map(|t| t.label(Lang::English)).collect();
-        let expected = ["the pasta timer", "the reminder to call the plumber", "the eggs timer", "the 14:25 alarm"];
-        assert_eq!(labels[..4], expected);
-        assert_eq!(timers.list()[4].lang, Lang::Norwegian);
-        assert_eq!(timers.list()[2].left(t0), Duration::from_secs(120));
+        check(&timers, t0);
         timers.save(t0);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), kept);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file kept by the build before the shared store still reads, and is written back the same.
+    #[test]
+    fn a_file_from_the_previous_build_reads_and_writes_the_same() {
+        read_and_write_back("previous", include_str!("../testdata/timers.json"), |timers, t0| {
+            let labels: Vec<String> = timers.list().iter().map(|t| t.label(Lang::English)).collect();
+            let expected = ["the pasta timer", "the reminder to call the plumber", "the eggs timer", "the 14:25 alarm"];
+            assert_eq!(labels[..4], expected);
+            assert_eq!(timers.list()[4].lang, Lang::Norwegian);
+            assert_eq!(timers.list()[2].left(t0), Duration::from_secs(120));
+            let kinds: Vec<&Kind> = timers.list().iter().map(|t| &t.kind).collect();
+            let reminder = Kind::Reminder(Some("call the plumber".into()));
+            let alarm = Kind::Alarm { at: "14:25".into() };
+            assert_eq!(kinds, [&Kind::Timer, &reminder, &Kind::Timer, &alarm, &Kind::Timer]);
+        });
+    }
+
+    /// Each kind as the build before `Kind` kept it: a reminder with no message, a paused alarm, a
+    /// Norwegian reminder at a time of day and a plain timer.
+    #[test]
+    fn every_kind_from_the_previous_build_reads_and_writes_the_same() {
+        read_and_write_back("kinds", include_str!("../testdata/timers_kinds.json"), |timers, t0| {
+            let kinds: Vec<&Kind> = timers.list().iter().map(|t| &t.kind).collect();
+            let alarm = Kind::Alarm { at: "07:00".into() };
+            let call = Kind::Reminder(Some("ringe mamma".into()));
+            assert_eq!(kinds, [&Kind::Reminder(None), &alarm, &call, &Kind::Timer]);
+            let labels: Vec<String> = timers.list().iter().map(|t| t.label(t.lang)).collect();
+            assert_eq!(labels, ["the reminder", "the 07:00 alarm", "påminnelsen", "the 5 minute timer"]);
+            assert!(!timers.list()[1].is_running());
+            assert_eq!(timers.list()[1].left(t0), Duration::from_secs(17 * 3600));
+            assert_eq!(finished_text(&timers.list()[0]), "This is your reminder.");
+            assert_eq!(finished_text(&timers.list()[2]), "Påminnelse: ringe mamma.");
+        });
     }
 
     #[test]
@@ -2651,7 +2767,7 @@ mod tests {
 
     #[test]
     fn alarm_clock_questions_are_the_wake_up_alarm() {
-        let alarm = Some(Remaining(Which { alarm: true, ..Which::default() }));
+        let alarm = Some(Remaining(Which { of: Of::Alarms, ..Which::default() }));
         for text in
             ["Is the alarm clock set?", "is there an alarm set", "Er vekkerklokka stilt?", "okay, is my alarm set"]
         {
@@ -2726,7 +2842,7 @@ mod tests {
         assert_eq!(text, "Okay, snoozing for 10 minutes.");
         assert_eq!(notices[0].total_seconds, 600);
         assert_eq!(timers.list().len(), 1);
-        timers.run(Cancel(Which { alarm: true, ..Which::default() }), Lang::English, morning);
+        timers.run(Cancel(Which { of: Of::Alarms, ..Which::default() }), Lang::English, morning);
         // Two alarms: which one.
         timers.run(parse("wake me up at 7").unwrap(), Lang::English, t0);
         timers.run(parse("wake me up at 9").unwrap(), Lang::English, t0);
@@ -2749,7 +2865,7 @@ mod tests {
             "alarm status",
             "my alarm",
         ] {
-            assert_eq!(parse(text), Some(Remaining(Which { alarm: true, ..Which::default() })), "{text}");
+            assert_eq!(parse(text), Some(Remaining(Which { of: Of::Alarms, ..Which::default() })), "{text}");
         }
         assert_eq!(parse("I need an alarm"), Some(Alarm { when: None }));
     }
@@ -2950,9 +3066,9 @@ mod tests {
         assert!(!timers.takes_answer("with a 40 year tariff for murdering his barn"));
         // The question goes once its window has passed.
         timers.forget_stale(t0 + Duration::from_secs(10));
-        assert!(timers.awaiting_duration());
+        assert!(timers.asking());
         timers.forget_stale(t0 + Duration::from_secs(31));
-        assert!(!timers.awaiting_duration());
+        assert!(!timers.asking());
         // A Norwegian compound name.
         let mut timers = timers_at(t0, 12, 0);
         two_timers(&mut timers);
@@ -3006,7 +3122,7 @@ mod tests {
         timers.run(parse("add an alarm for 7").unwrap(), Lang::English, t0);
         let (text, _) = timers.run(parse("move my alarm to 7:30").unwrap(), Lang::English, t0);
         assert!(text.ends_with("Which one?"), "{text}");
-        assert!(timers.awaiting_duration());
+        assert!(timers.asking());
         let (text, notices) = timers.answer_pending("the 7 o'clock one", Lang::English, t0).unwrap();
         assert_eq!(text, "Okay, your alarm is moved. It goes off tomorrow at 07:30.");
         assert_eq!(notices.len(), 2);
@@ -3018,14 +3134,14 @@ mod tests {
         let (text, _) = timers.answer_pending("the first one", Lang::English, t0).unwrap();
         assert_eq!(text, "The 06:00 alarm is cancelled.");
         assert_eq!(timers.list().len(), 1);
-        assert!(!timers.awaiting_duration());
+        assert!(!timers.asking());
         // An answer that names none of them is a new request.
         timers.run(parse("set a pasta timer for 10 minutes").unwrap(), Lang::English, t0);
         timers.run(parse("set an egg timer for 5 minutes").unwrap(), Lang::English, t0);
         let (text, _) = timers.run(parse("cancel the timer").unwrap(), Lang::English, t0);
         assert!(text.ends_with("Which one?"), "{text}");
         assert!(timers.answer_pending("what's the weather", Lang::English, t0).is_none());
-        assert!(!timers.awaiting_duration());
+        assert!(!timers.asking());
         timers.run(parse("cancel the timer").unwrap(), Lang::English, t0);
         let (text, _) = timers.answer_pending("the pasta one", Lang::English, t0).unwrap();
         assert_eq!(text, "The pasta timer is cancelled.");

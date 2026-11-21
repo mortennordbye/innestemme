@@ -190,7 +190,7 @@ fn timer(command: &TimerCommand) -> Meta {
         TimerCommand::Start { seconds, .. } => of(false).done(seconds.is_some()),
         TimerCommand::Remind { .. } | TimerCommand::Add { .. } => of(false),
         TimerCommand::Pause(_) | TimerCommand::Resume(_) => of(false).done(true),
-        TimerCommand::Cancel(which) | TimerCommand::Remaining(which) => of(which.alarm).done(true),
+        TimerCommand::Cancel(which) | TimerCommand::Remaining(which) => of(which.of == timer::Of::Alarms).done(true),
         TimerCommand::Alarm { .. } | TimerCommand::MoveAlarm(_) => of(true),
         TimerCommand::Snooze | TimerCommand::StopAlarm => of(true).done(true),
     }
