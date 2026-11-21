@@ -24,16 +24,17 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::time::Instant; // The system's monotonic clock, which tests can pause and advance.
 use tracing::{info, warn};
 use voice_assistant::resample;
 use voice_assistant::timer::NoticeKind;
 use voice_assistant::wakeword::{WakeDetector, WakeModels};
-use voice_esphome::proto::{feature, Announce, Event, TimerEvent, TimerUpdate, REQUEST_USE_WAKE_WORD};
+use voice_esphome::proto::{feature, Announce, DeviceInfo, Event, TimerEvent, TimerUpdate, REQUEST_USE_WAKE_WORD};
 use voice_esphome::{Device, Incoming};
 use voice_proto::{Codec, Header, Kind, HEADER_LEN, MAX_DATAGRAM, PACKET_SAMPLES, SAMPLE_RATE};
 
@@ -139,6 +140,57 @@ impl AnswerPlayer {
     }
 }
 
+/// What the bridge sends to the device. A trait only so that tests can record it.
+trait SatelliteDevice {
+    fn info(&self) -> &DeviceInfo;
+    async fn accept_run(&self) -> Result<()>;
+    async fn refuse_run(&self) -> Result<()>;
+    async fn event(&self, event: Event, data: &[(&str, &str)]) -> Result<()>;
+    async fn audio(&self, pcm: &[i16]) -> Result<()>;
+    async fn timer(&self, update: &TimerUpdate) -> Result<()>;
+    async fn announce(&self, announce: &Announce) -> Result<()>;
+}
+
+impl SatelliteDevice for Device {
+    fn info(&self) -> &DeviceInfo {
+        &self.info
+    }
+    async fn accept_run(&self) -> Result<()> {
+        Device::accept_run(self).await
+    }
+    async fn refuse_run(&self) -> Result<()> {
+        Device::refuse_run(self).await
+    }
+    async fn event(&self, event: Event, data: &[(&str, &str)]) -> Result<()> {
+        Device::event(self, event, data).await
+    }
+    async fn audio(&self, pcm: &[i16]) -> Result<()> {
+        Device::audio(self, pcm).await
+    }
+    async fn timer(&self, update: &TimerUpdate) -> Result<()> {
+        Device::timer(self, update).await
+    }
+    async fn announce(&self, announce: &Announce) -> Result<()> {
+        Device::announce(self, announce).await
+    }
+}
+
+/// Scores the device's stream for the wake word. A trait only so that tests can set the scores
+/// without a model.
+trait WakeScorer: Send {
+    fn reset(&mut self);
+    fn push(&mut self, pcm: &[i16]) -> Result<Option<f32>>;
+}
+
+impl WakeScorer for WakeDetector {
+    fn reset(&mut self) {
+        WakeDetector::reset(self);
+    }
+    fn push(&mut self, pcm: &[i16]) -> Result<Option<f32>> {
+        WakeDetector::push(self, pcm)
+    }
+}
+
 /// Keeps a satellite connected, reconnecting with backoff.
 pub async fn run(cfg: SatelliteConfig, assistant: AssistantHandle, speech: Arc<SpeechClips>) {
     let mut backoff = Duration::from_secs(1);
@@ -185,8 +237,8 @@ enum Run {
     Answering,
 }
 
-struct Bridge<'a> {
-    device: Device,
+struct Bridge<'a, D: SatelliteDevice = Device> {
+    device: D,
     run: Run,
     speaker: bool,
     base_url: String,
@@ -213,7 +265,7 @@ struct Bridge<'a> {
     /// This run's 16 kHz microphone audio, when dumping.
     recording: Vec<i16>,
     /// Server-side wake word: the detector and its threshold.
-    wake: Option<(WakeDetector, f32)>,
+    wake: Option<(Box<dyn WakeScorer>, f32)>,
     /// `ServerWake::check_from`.
     check_from: Option<f32>,
     /// The highest score of the current run of scores at or above `NEAR_MISS`.
@@ -275,38 +327,7 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
     let mut events = assistant.subscribe();
     assistant.satellite(vec![device.info.friendly_name.clone(), device.info.name.clone()]);
 
-    let mut b = Bridge {
-        speaker: device.info.has(feature::SPEAKER),
-        device,
-        run: Run::Idle,
-        base_url,
-        speech,
-        mic: VecDeque::new(),
-        up: resample::Stream::new(DEVICE_RATE, SAMPLE_RATE),
-        answer: Vec::new(),
-        stream_answers: cfg.stream_answers,
-        player: cfg.answer_player.clone(),
-        clip: None,
-        clip_playing: false,
-        down: resample::Stream::new(SAMPLE_RATE, DEVICE_RATE),
-        outgoing: VecDeque::new(),
-        stream_start: None,
-        streamed: 0,
-        spoken: false,
-        dump: cfg.dump.clone(),
-        recording: Vec::new(),
-        wake: cfg.server_wake.as_ref().map(|w| (WakeDetector::new(w.models.clone()), w.threshold)),
-        check_from: cfg.server_wake.as_ref().and_then(|w| w.check_from),
-        near_miss: 0.0,
-        near_miss_checked: false,
-        checking: None,
-        preroll: VecDeque::new(),
-        announced: None,
-        follow_up_at: None,
-        onset: None,
-        player_answer: false,
-        run_end_at: None,
-    };
+    let mut b = Bridge::new(device, cfg, base_url, speech);
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let (mut seq, mut packet, mut rx) = (0u32, [0u8; MAX_DATAGRAM], [0u8; MAX_DATAGRAM]);
@@ -352,7 +373,45 @@ async fn session(cfg: &SatelliteConfig, assistant: &AssistantHandle, speech: &Sp
     result
 }
 
-impl Bridge<'_> {
+impl<'a, D: SatelliteDevice> Bridge<'a, D> {
+    fn new(device: D, cfg: &SatelliteConfig, base_url: String, speech: &'a SpeechClips) -> Self {
+        Self {
+            speaker: device.info().has(feature::SPEAKER),
+            device,
+            run: Run::Idle,
+            base_url,
+            speech,
+            mic: VecDeque::new(),
+            up: resample::Stream::new(DEVICE_RATE, SAMPLE_RATE),
+            answer: Vec::new(),
+            stream_answers: cfg.stream_answers,
+            player: cfg.answer_player.clone(),
+            clip: None,
+            clip_playing: false,
+            down: resample::Stream::new(SAMPLE_RATE, DEVICE_RATE),
+            outgoing: VecDeque::new(),
+            stream_start: None,
+            streamed: 0,
+            spoken: false,
+            dump: cfg.dump.clone(),
+            recording: Vec::new(),
+            wake: cfg
+                .server_wake
+                .as_ref()
+                .map(|w| (Box::new(WakeDetector::new(w.models.clone())) as Box<dyn WakeScorer>, w.threshold)),
+            check_from: cfg.server_wake.as_ref().and_then(|w| w.check_from),
+            near_miss: 0.0,
+            near_miss_checked: false,
+            checking: None,
+            preroll: VecDeque::new(),
+            announced: None,
+            follow_up_at: None,
+            onset: None,
+            player_answer: false,
+            run_end_at: None,
+        }
+    }
+
     async fn device_message(&mut self, message: Incoming, assistant: &AssistantHandle) -> Result<()> {
         match message {
             Incoming::Start(request) => {
@@ -583,7 +642,7 @@ impl Bridge<'_> {
             },
             AssistantEvent::Timer(notice) => {
                 // Reminders end in speech (an announcement), not in the device's alarm.
-                if !self.device.info.has(feature::TIMERS) || notice.reminder {
+                if !self.device.info().has(feature::TIMERS) || notice.reminder {
                     return Ok(());
                 }
                 let event = match notice.kind {
@@ -622,7 +681,7 @@ impl Bridge<'_> {
             }
             AssistantEvent::Announcement { text, audio, timer_ring, .. } => {
                 // A device that shows timers rings for them itself.
-                if timer_ring && self.device.info.has(feature::TIMERS) || !self.device.info.has(feature::ANNOUNCE) {
+                if timer_ring && self.device.info().has(feature::TIMERS) || !self.device.info().has(feature::ANNOUNCE) {
                     return Ok(());
                 }
                 let url = format!("{}{}", self.base_url, self.speech.put(&audio, SAMPLE_RATE));
@@ -870,3 +929,6 @@ fn dbfs(pcm: &[i16]) -> f32 {
     let power = pcm.iter().map(|&s| f64::from(s) * f64::from(s)).sum::<f64>() / pcm.len().max(1) as f64;
     (10.0 * (power / (32768.0 * 32768.0)).max(1e-12).log10()) as f32
 }
+
+#[cfg(test)]
+mod tests;
