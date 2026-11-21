@@ -432,10 +432,11 @@ fn main() -> Result<()> {
     voice_assistant::ha::set_power_cycle(args.power_cycle.iter().chain(&args.bedtime_power_cycle).cloned().collect());
 
     let threads = args.threads.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
-    voice_rt::threads::configure_compute_threads(threads);
+    // Sets an environment variable: before the compute pool's threads exist.
     if matches!(args.english_tts, EnglishTts::Phonon) {
         voice_assistant::phonon::set_threads(threads);
     }
+    voice_rt::threads::configure_compute_threads(threads);
     info!(
         threads,
         avx = candle::utils::with_avx(),
