@@ -8,6 +8,8 @@
 //! Half duplex: while a request is being handled or its reply plays, and for a second after, the
 //! microphone is ignored so the assistant does not answer itself through a laptop speaker.
 
+#[cfg(test)]
+mod dialogs;
 mod follow_up;
 mod handle;
 mod home;

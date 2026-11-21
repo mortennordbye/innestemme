@@ -20,6 +20,7 @@ Guidance for coding agents (Claude Code and others) working in this repository.
 | What Parakeet hears in each wake word | `cargo run --release -p voice-assistant --example wake_text -- hey_jarvis target/utterances/run-*.wav` |
 | Party mode from the Mac's microphone | `set -a; . ./.env; set +a; cargo run --release -p voice-engine --example party -- normal 60` (or `fast`, `relaxed`) |
 | Answer latency against `main` | `scripts/latency-bench/` (fake satellite and Home Assistant; steps in `docs/development.md`) |
+| Text rules against `main` | `scripts/corpus/fetch.sh`, then `scripts/corpus/compare.sh` (every heard text from Loki; steps in `docs/development.md`) |
 | Container image | `docker build .` |
 
 ## Layout

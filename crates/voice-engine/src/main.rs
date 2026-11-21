@@ -844,3 +844,44 @@ fn main() -> Result<()> {
         .await
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    /// Every `*.yaml` under `dir`, at any depth.
+    fn yaml_under(dir: &Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().map(Result::unwrap) {
+            let path = entry.path();
+            if path.is_dir() {
+                yaml_under(&path, found);
+            } else if path.extension().is_some_and(|e| e == "yaml") {
+                found.push(path);
+            }
+        }
+    }
+
+    /// The sample settings files go through the same layers as at startup, which refuse unknown keys
+    /// and values an option cannot take. The root's other `config.*.yaml` are personal and git-ignored.
+    #[test]
+    fn sample_configs_parse() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut files = vec![root.join("config.example.yaml")];
+        yaml_under(&root.join("scripts"), &mut files);
+        assert!(files.len() >= 3, "{files:?}");
+        for file in files {
+            let raw: Vec<OsString> =
+                ["voice-engine", "--config"].map(OsString::from).into_iter().chain([file.clone().into()]).collect();
+            let layered = settings::layered(&Args::command(), &raw, &|_| None)
+                .unwrap_or_else(|error| panic!("{}: {error:#}", file.display()));
+            let matches = layered
+                .apply(Args::command())
+                .try_get_matches_from(raw)
+                .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+            Args::from_arg_matches(&matches).unwrap_or_else(|error| panic!("{}: {error}", file.display()));
+        }
+    }
+}
