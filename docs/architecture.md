@@ -45,7 +45,9 @@ thread, while the request is still being said and its draft is transcribed. The 
 it needs it: for the music, for the reply, and before a job that acts or speaks. On the worker thread the check
 held up the request's draft by about 0.25 s on the cluster. A wake word without the name leaves the music and the TV playing,
 and what follows it is taken as in the follow-up window: no small talk, and no long speech unless it opens like a
-request.
+request. A question asked back waits a limited time for its reply: "Which room?" (lights or a scene) and the "yes"
+before a camera or alarm change for 30 s, the open shopping list for 60 s after the last item, "Remember what?" and
+the timers' "Which one?" by their own windows. No lead-in plays while one waits, and a new request drops it.
 
 **Sir or ma'am.** With `honorific-female` set, the end of the audio before each wake word (1.5 s) goes to a
 speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how

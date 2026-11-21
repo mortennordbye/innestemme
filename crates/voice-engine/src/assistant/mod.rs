@@ -8,6 +8,7 @@
 //! Half duplex: while a request is being handled or its reply plays, and for a second after, the
 //! microphone is ignored so the assistant does not answer itself through a laptop speaker.
 
+mod conversation;
 #[cfg(test)]
 mod dialogs;
 mod follow_up;
@@ -43,7 +44,7 @@ use voice_assistant::house::{HouseCommand, Routine};
 use voice_assistant::intent::{self, Intent, MusicCommand};
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
-use voice_assistant::llm::{self, Decision, Llm, Turn};
+use voice_assistant::llm::{self, Decision, Llm};
 use voice_assistant::lookup::Lookup;
 use voice_assistant::memory::{Memory, MemoryCommand};
 use voice_assistant::music::Player;
@@ -68,33 +69,29 @@ use crate::render::RenderAhead;
 use crate::screen::Screen;
 use crate::unhandled::{Reason, UnhandledLog};
 
+use conversation::{AfterAnswer, Awaiting, Conversation, TurnEnd, Wake};
 use follow_up::room_talk;
 use home::{confirm_question, confirmation};
-use hush::{Hushed, HUSH_CAP, HUSH_QUIET};
+use hush::{HUSH_CAP, HUSH_QUIET};
 use leads::capitalize;
 use lights::LightChange;
 use lockdown::Alarm;
 use quick::{bare_stop, music_by_sound};
 use screen::SCREEN_MOMENT;
-use shopping::{LIST_OPEN, LIST_REPLY_WORDS};
+use shopping::LIST_REPLY_WORDS;
 use speech::Spoken;
 use wake::{NameChecker, WakeName};
 
+pub use handle::AssistantHandle;
 #[cfg(test)]
 pub(crate) use handle::Calls;
-pub use handle::AssistantHandle;
 pub use pause::Pause;
 pub use processor::AssistantProcessor;
 
 /// How often the worker checks that the language model's prompt is still the one it warmed.
 const WARM_CHECK: Duration = Duration::from_secs(600);
-/// Earlier exchanges the language model sees, for follow-ups ("and tomorrow?").
-const HISTORY_TURNS: usize = 4;
-const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// After a bare name or an answer, speech within this time needs no name.
 const FOLLOW_UP: Duration = Duration::from_secs(8);
-/// How long "Turn on privacy mode?" waits for its "yes".
-const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 /// How often the home's forecast and electricity prices are fetched while idle, so asking for them
 /// needs no request and no lead-in.
 const DATA_REFRESH: Duration = Duration::from_secs(240);
@@ -305,51 +302,23 @@ struct Worker {
     transcriber: Box<dyn Transcribe>,
     /// The name check's own model and thread; without one, the check runs here on `transcriber`.
     name_checker: Option<NameChecker>,
-    /// The current wake's name check, still out or not yet taken into `wake_named`.
+    /// The current wake's name check, still out or not yet taken into its `Wake`.
     wake_check: Option<mpsc::Receiver<Option<bool>>>,
-    /// The latest draft and its transcripts.
-    draft: Option<(Vec<i16>, Vec<Transcript>)>,
-    /// Until then, speech counts without the name: after a bare name, and for a while after each
-    /// answer, like a person who is still looking at you. Only recognised requests are acted on.
-    follow_up_until: Option<Instant>,
-    /// A satellite woke on its own wake word and nothing has been answered since.
-    woken_at: Option<Instant>,
-    /// Whether that wake word's audio held the assistant's name, when the engine detected it.
-    wake_named: Option<bool>,
+    /// The questions asked back, the wake, the follow-up window and what follows the answer.
+    conversation: Conversation,
     /// Sentences spoken lately, to tell the answer coming back through the microphone from a request.
     said: VecDeque<(Instant, String)>,
-    /// A command was acted on from this draft: a later draft or the utterance that starts with
-    /// the same audio is that speech going on, and is not answered again.
-    answered_draft: Option<Vec<i16>>,
-    /// What undoes the music command answered from the draft, for a request that goes on to name
-    /// another room.
-    draft_undo: Option<MusicCommand>,
-    /// The music was paused for a request, and when something was last heard. It plays on after
-    /// the answer, unless the request was to stop it.
-    hushed: Option<Hushed>,
     /// When the speaker stopped talking, for how long the answer took to start.
     speech_ended: Option<Instant>,
-    /// Recent exchanges, oldest first, for the language model.
-    history: VecDeque<(Instant, Turn)>,
     /// The lights switched last, how, and when, for "turn them back on" and "reverse that".
     last_lights: Option<(Target, LightChange, Instant)>,
-    /// "Turn off the lights" named no room and there was nothing to refer back to: the next
-    /// answer is the room.
-    pending_lights: Option<bool>,
     shopping: ShoppingList,
     /// The last change to the shopping list and when, for "undo".
     last_list: Option<(Vec<Change>, Instant)>,
-    /// "Add to the shopping list" named nothing: the next answer is the items.
-    /// When an item was last added: the list takes more without "add" until `LIST_OPEN` later.
-    list_open: Option<Instant>,
     /// The audio of the request being answered, for a second listener (Norwegian items).
     request_audio: Vec<i16>,
     /// The request being answered, recorded in `activity` once its answer is out.
     turn: Option<activity::Turn>,
-    /// A scene request that exists in several rooms: the next answer is the room.
-    pending_scene: Option<String>,
-    /// A camera or alarm change waiting for "yes": a misheard request must not switch them.
-    pending_confirm: Option<(HouseCommand, Instant)>,
     timers: Timers,
     /// Notes: "remember that the spare key is in the kitchen drawer".
     memory: Memory,
@@ -395,17 +364,8 @@ struct Worker {
     /// Party mode was started by "what do you think about open source?": ending it also stops
     /// its song and gives the TV back.
     open_source_party: bool,
-    /// The answer opens no follow-up window.
-    follow_up_closed: bool,
     /// Which threat the next lockdown ends on.
     threat_turn: usize,
-    /// `after_answer` starts as the answer starts playing, not when it has played.
-    music_under_answer: bool,
-    /// Music to start or stop, and the volume to set, once the answer has played: the lockdown's
-    /// music and its stand-down.
-    after_answer: Option<(MusicCommand, Option<f64>)>,
-    /// When the answer will have played, for `after_answer`.
-    after_answer_at: Option<Instant>,
     /// The lockdown's lights blinking.
     alarm: Option<Alarm>,
     /// When the forecast and prices were last fetched ahead of a question.
@@ -415,10 +375,10 @@ struct Worker {
 impl Worker {
     /// A wake, a request or its answer, or the few seconds after it that still count.
     fn talking(&self) -> bool {
-        self.woken_at.is_some()
-            || self.hushed.is_some()
+        self.conversation.wake.is_some()
+            || self.conversation.hushed.is_some()
             || self.busy.load(Relaxed)
-            || self.follow_up_until.is_some_and(|until| Instant::now() < until)
+            || self.conversation.follow_up()
     }
 
     fn run(mut self, jobs: mpsc::Receiver<Job>) {
@@ -431,7 +391,7 @@ impl Worker {
             // During a conversation, to let rendering ahead go on soon after it.
             let wait = if self.talking() { wait.min(Duration::from_secs(1)) } else { wait };
             let wait = wait.min(DATA_REFRESH);
-            let wait = match self.after_answer_at {
+            let wait = match self.conversation.after_answer_at() {
                 Some(at) => wait.min(at.saturating_duration_since(Instant::now())),
                 None => wait,
             };
@@ -439,6 +399,7 @@ impl Worker {
                 Ok(job) => job,
                 Err(RecvTimeoutError::Timeout) => {
                     if self
+                        .conversation
                         .hushed
                         .as_ref()
                         .is_some_and(|h| h.last_heard.elapsed() > HUSH_QUIET || h.at.elapsed() > HUSH_CAP)
@@ -446,7 +407,7 @@ impl Worker {
                         self.unhush();
                     }
                     self.ring_due_timers();
-                    if self.after_answer_at.is_some_and(|at| Instant::now() >= at) {
+                    if self.conversation.after_answer_at().is_some_and(|at| Instant::now() >= at) {
                         self.run_after_answer();
                     }
                     let talking = self.talking();
@@ -466,7 +427,7 @@ impl Worker {
             if heard && self.pause.paused() {
                 continue;
             }
-            if let (true, Some(hushed)) = (heard, &mut self.hushed) {
+            if let (true, Some(hushed)) = (heard, &mut self.conversation.hushed) {
                 hushed.last_heard = Instant::now();
             }
             if let (true, Some(render)) = (heard, &self.render) {
@@ -481,12 +442,7 @@ impl Worker {
                 self.take_wake_name(true);
             }
             match job {
-                Job::NothingAsked => {
-                    // A check still out pauses nothing now: the run is over.
-                    self.wake_check = None;
-                    self.woken_at = None;
-                    self.unhush();
-                }
+                Job::NothingAsked => self.end_turn(TurnEnd::Silent),
                 Job::Woken(at, wake) => self.woken(at, wake),
                 Job::NameChecked => self.take_wake_name(false),
                 Job::CheckName(audio, reply) => self.check_name(audio, reply),
@@ -552,9 +508,8 @@ impl Worker {
                 }
                 Job::Ready => {
                     info!("ready");
-                    (self.follow_up_until, self.last_lights, self.pending_lights) = (None, None, None);
-                    self.woken_at = None;
-                    self.history.clear();
+                    self.last_lights = None;
+                    self.conversation.restart();
                     self.play(&tts::ready_chime());
                 }
             }
@@ -565,15 +520,15 @@ impl Worker {
         // The utterance ended in the pause the draft was taken in: same speech, more silence.
         let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
         // Kept only for the rest of a request answered from its draft.
-        let undo = self.draft_undo.take();
+        let undo = self.conversation.draft_undo.take();
         // Audio that does not start with the answered draft is a new utterance: the draft's own
         // end was lost while the engine was deaf to its answer.
-        if let Some(draft) = self.answered_draft.take().filter(|draft| audio.starts_with(draft)) {
+        if let Some(draft) = self.conversation.answered_draft.take().filter(|draft| audio.starts_with(draft)) {
             if audio.len() <= draft.len() + closing {
                 info!("answered from the draft");
                 return;
             }
-            self.draft_undo = undo;
+            self.conversation.draft_undo = undo;
         }
         // The utterance ends after a stretch of silence; the speaker stopped before it.
         let silence = Duration::from_secs_f32((vad::END_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
@@ -588,6 +543,7 @@ impl Worker {
         let transcriber = &mut self.transcriber;
         let start = Instant::now();
         let draft = self
+            .conversation
             .draft
             .take()
             .filter(|(draft, _)| audio.len() == draft.len() + closing && audio.starts_with(draft))
@@ -605,7 +561,7 @@ impl Worker {
             }
         };
         self.heard(&candidates, audio, ended, start, from_draft);
-        self.draft_undo = None;
+        self.conversation.draft_undo = None;
     }
 
     /// A draft that is a whole command with nothing that could follow ("pause the music", "what
@@ -614,15 +570,15 @@ impl Worker {
         // A later draft of an utterance already answered from a draft is the same request again:
         // "Hey Jarvis stop the party" was answered twice, 0.6 s apart (16 Nov). The utterance's end
         // still takes the rest of it.
-        let Some((audio, candidates)) = &self.draft else { return };
-        if self.answered_draft.as_ref().is_some_and(|answered| audio.starts_with(answered)) {
+        let Some((audio, candidates)) = &self.conversation.draft else { return };
+        if self.conversation.answered_draft.as_ref().is_some_and(|answered| audio.starts_with(answered)) {
             return;
         }
         let Some(first) = candidates.first() else { return };
-        let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);
+        let follow_up = self.conversation.follow_up();
         let request = match self.config.wake.strip(&first.text) {
             Some(rest) if !rest.is_empty() => rest,
-            None if self.woken_at.is_some() => first.text.clone(),
+            None if self.conversation.wake.is_some() => first.text.clone(),
             None if follow_up && !room_talk(&first.text) => first.text.clone(),
             _ => return,
         };
@@ -634,7 +590,7 @@ impl Worker {
         if intent::split_commands(&request).is_some() || !intent.meta().complete_at_once {
             return;
         }
-        let Some((audio, candidates)) = self.draft.take() else { return };
+        let Some((audio, candidates)) = self.conversation.draft.take() else { return };
         let undo = match &intent {
             Intent::Music(command) => self.draft_undo(command),
             _ => None,
@@ -642,16 +598,16 @@ impl Worker {
         let pause = Duration::from_secs_f32((vad::DRAFT_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
         let now = Instant::now();
         self.speech_ended = now.checked_sub(pause);
-        self.answered_draft = Some(audio.clone());
+        self.conversation.answered_draft = Some(audio.clone());
         self.heard(&candidates, &audio, now, now, true);
-        self.draft_undo = undo;
+        self.conversation.draft_undo = undo;
     }
 
     /// What was said, as transcribed: a wake word, a request, or nothing for the assistant.
     fn heard(&mut self, candidates: &[Transcript], audio: &[i16], ended: Instant, start: Instant, from_draft: bool) {
         // The reply to the request depends on the name in the wake, and the music is paused first.
         self.take_wake_name(true);
-        let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);
+        let follow_up = self.conversation.follow_up();
         // A translation usually drops the name, so a candidate that starts with the wake word is
         // the real transcript. Otherwise the most confident one.
         let heard = match candidates.iter().position(|c| self.config.wake.strip(&c.text).is_some()) {
@@ -662,7 +618,7 @@ impl Worker {
         let request = match self.config.wake.strip(&heard.text) {
             Some(rest) if rest.is_empty() => {
                 info!("wake word");
-                self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
+                self.conversation.follow_up_until = Some(Instant::now() + FOLLOW_UP);
                 self.emit(AssistantEvent::Listening);
                 self.hush();
                 self.play(&tts::wake_chime());
@@ -670,7 +626,7 @@ impl Worker {
             }
             Some(rest) => (rest, true),
             // While the device's wake run lasts, a request counts however long the pause before it.
-            None if follow_up || self.woken_at.is_some() => (heard.text.clone(), false),
+            None if follow_up || self.conversation.wake.is_some() => (heard.text.clone(), false),
             None => {
                 info!(text = heard.text, "not addressed");
                 self.not_understood(&heard.text, audio, ended, heard.lang, start);
@@ -685,9 +641,9 @@ impl Worker {
         }
         // A bare "stop" right after an answer comes before any pause for a wake word: ask whether
         // music plays, as only then does it mean the music.
-        let playing = self.hushed.is_some() || (bare_stop(&request) && self.music_playing());
+        let playing = self.conversation.hushed.is_some() || (bare_stop(&request) && self.music_playing());
         let request = match music_by_sound(&request, playing) {
-            Some(meant) if addressed || self.woken_at.is_some() => {
+            Some(meant) if addressed || self.conversation.wake.is_some() => {
                 info!(heard = request, meant, "music request by its shape");
                 meant
             }
@@ -704,25 +660,25 @@ impl Worker {
                 info!(heard = pair.said, meant = pair.meant, "correction learned");
             }
         }
-        // A question waiting for "yes" only takes a yes or a no: other words without the name are the room.
-        let confirming =
-            (self.pending_confirm.is_some() || self.memory.asked_to_forget()) && confirmation(&request).is_some();
-        // A "Which one?" left unanswered goes; one still open takes only an answer ("the first
-        // one"), so other words without the name still face the room-talk filter.
+        // A "Which one?" left unanswered goes.
         self.timers.forget_stale(Instant::now());
-        let timers_asked = self.timers.takes_answer(&request);
-        // "Remember what?" is answered like any request: its answer still faces the filters.
-        let pending = self.pending_lights.is_some()
-            || self.pending_scene.is_some()
-            || confirming
-            || timers_asked
-            || self.list_is_open();
+        let pending = match self.awaiting() {
+            // A question waiting for "yes" only takes a yes or a no: other words without the name
+            // are the room.
+            Some(Awaiting::Confirm | Awaiting::Forget) => confirmation(&request).is_some(),
+            // "Which one?" takes only an answer ("the first one"), so other words without the name
+            // still face the room-talk filter.
+            Some(Awaiting::TimerDuration | Awaiting::WhichTimer) => self.timers.takes_answer(&request),
+            Some(Awaiting::LightsRoom | Awaiting::SceneRoom | Awaiting::ListItems) => true,
+            // "Remember what?" is answered like any request: its answer still faces the filters.
+            Some(Awaiting::RememberWhat) | None => false,
+        };
         // The follow-up window hears the room and the end of the answer too: "with a 40 year tariff
         // for murdering his barn it 40 stop" set the volume.
         // A wake word without the name is as unsure as the follow-up window: the TV's "just because
         // 2 bitches ..." set the volume to 70 percent, its "Sorry." was told "Don't mention it.".
-        let unnamed = self.woken_at.is_some() && self.wake_named == Some(false);
-        let room = !addressed && (self.woken_at.is_none() || unnamed) && room_talk(&request);
+        let unnamed = self.conversation.unnamed();
+        let room = !addressed && (self.conversation.wake.is_none() || unnamed) && room_talk(&request);
         let chat = !addressed && unnamed && matches!(parsed, Intent::SmallTalk(_));
         if !pending && (room || chat || (!addressed && unknown && self.config.llm.is_none())) {
             info!(text = heard.text, "not addressed");
@@ -730,7 +686,7 @@ impl Worker {
             return;
         }
         self.busy.store(true, Relaxed);
-        self.request_addressed = addressed || (self.woken_at.is_some() && !unnamed);
+        self.request_addressed = addressed || (self.conversation.wake.is_some() && !unnamed);
         self.request_audio = audio.to_vec();
         self.answer(&request, heard.lang, start);
         self.request_audio.clear();
@@ -738,7 +694,7 @@ impl Worker {
 
     fn transcribe_draft(&mut self, audio: Vec<i16>) {
         let transcriber = &mut self.transcriber;
-        self.draft = match transcriber.transcribe(&audio) {
+        self.conversation.draft = match transcriber.transcribe(&audio) {
             Ok(candidates) => Some((audio, candidates)),
             Err(error) => {
                 warn!(%error, "draft transcription failed");
@@ -763,16 +719,12 @@ impl Worker {
         }
         let Some(answer) = self.compose(text, lang) else {
             info!(request = text, "conversation ended");
-            self.follow_up_until = None;
-            self.pending_lights = None;
-            self.timers.clear_pending();
+            // Nothing asked back waits on once the conversation is over ("never mind").
+            self.forget_questions();
             if lead.is_some() {
                 self.finish(spoken, start);
             } else {
-                self.emit(AssistantEvent::Done);
-                self.unhush();
-                self.woken_at = None;
-                self.busy.store(false, Relaxed);
+                self.end_turn(TurnEnd::Ended);
             }
             return;
         };
@@ -782,12 +734,8 @@ impl Worker {
             info!(request = text, answer, skill = turn.skill, after = ?start.elapsed(), "done without words");
             let after_ms = self.speech_ended.take().map(|ended| ended.elapsed().as_millis() as u64);
             self.config.activity.record(activity::Turn { after_ms, ..turn });
-            self.history.push_back((Instant::now(), Turn { user: text.to_owned(), assistant: answer }));
-            self.follow_up_until = (!std::mem::take(&mut self.follow_up_closed)).then(|| Instant::now() + FOLLOW_UP);
-            self.emit(AssistantEvent::Done);
-            self.unhush();
-            self.woken_at = None;
-            self.busy.store(false, Relaxed);
+            self.conversation.remember(text, answer);
+            self.end_turn(TurnEnd::Done);
             return;
         }
         let turn = self.turn_for(text, Some(answer.clone()), Outcome::Answered, start);
@@ -800,10 +748,7 @@ impl Worker {
         } else if ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s) || answer.contains(&format!(". {s}"))) {
             self.unhandled(Reason::Apologised, text, Some(&answer));
         }
-        self.history.push_back((Instant::now(), Turn { user: text.to_owned(), assistant: answer.clone() }));
-        while self.history.len() > HISTORY_TURNS {
-            self.history.pop_front();
-        }
+        self.conversation.remember(text, answer.clone());
         let answer = match &mut self.persona {
             Some(persona) if lang == Lang::English && (lead.is_some() || plain) => persona.after_lead(&answer),
             Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
@@ -861,70 +806,9 @@ impl Worker {
         // a typed request (a web button, a phone) neither takes nor drops it, as it cannot hear the
         // reply.
         let asking = !self.previewing;
-        // "Set a timer." "For how long?" "Ten minutes."
-        if asking && self.timers.awaiting_duration() {
-            if let Some((answer, notices)) = self.timers.answer_pending(text, lang, Instant::now()) {
-                self.notify(notices);
-                return Some(answer);
-            }
-            self.timers.clear_pending();
-        }
-        if let Some(on) = self.pending_lights.take_if(|_| asking) {
-            if intent == Intent::Unknown {
-                return Some(self.lights(text, on, lang));
-            }
-        }
-        // "Milk and eggs", "og brunost", "add bacon too": more items while the list is open;
-        // "actually remove the milk" takes one off, "no, that's it" closes it.
-        if self.list_open.take_if(|_| asking).is_some_and(|at| at.elapsed() < LIST_OPEN) {
-            if voice_assistant::shopping::closes_list(text) {
-                return Some(
-                    if lang == Lang::Norwegian { "Ok, det var alt." } else { "Okay, that's everything." }.into(),
-                );
-            }
-            if intent == Intent::Unknown && text.split_whitespace().count() <= LIST_REPLY_WORDS {
-                let changes = voice_assistant::shopping::open_list_commands(text);
-                // "Remove milk and add bread", "add bread and put milk on", "check if we have eggs":
-                // each change in turn. A single "add X" goes the way of plain items, which may be
-                // heard again in Norwegian.
-                if changes.len() > 1 || changes.iter().any(|c| !matches!(c, ListCommand::Add(_))) {
-                    return Some(self.shopping_changes(changes, lang));
-                }
-                let items = self.items_heard(text);
-                if !items.is_empty() {
-                    return Some(self.shopping_list(ListCommand::Add(items), lang, true));
-                }
-            }
-        }
-        // "Forget everything I remember?" "Yes." / "Remember what?" "The bins go out on Tuesday."
         if asking {
-            let (asked_what, asked_to_forget) = (self.memory.asked_what(), self.memory.asked_to_forget());
-            if asked_to_forget {
-                if let Some(yes) = confirmation(text) {
-                    return Some(self.memory.answer_forget(yes, lang));
-                }
-            }
-            self.memory.clear_question();
-            let meant = self.request_addressed || !room_talk(text);
-            if asked_what && meant && matches!(intent, Intent::Unknown | Intent::Lookup(_)) {
-                return Some(self.memory.remember(text, lang));
-            }
-        }
-        if let Some((command, at)) = self.pending_confirm.take_if(|_| asking) {
-            match confirmation(text) {
-                Some(true) if at.elapsed() < CONFIRM_WINDOW => return Some(self.house(&command, lang)),
-                Some(false) => {
-                    return Some(
-                        if lang == Lang::Norwegian { "Ok, jeg lar det være." } else { "Okay, I'll leave it." }.into(),
-                    )
-                }
-                // Anything else is a new request, and the question is dropped.
-                _ => {}
-            }
-        }
-        if let Some(scene) = self.pending_scene.take_if(|_| asking) {
-            if intent == Intent::Unknown {
-                return Some(self.scene(&format!("{scene} in {text}"), lang));
+            if let Some(answer) = self.reply(text, &intent, lang) {
+                return Some(answer);
             }
         }
         // "Where is the spare key": a note about it, unless a person, a zone, a phone or a known place
@@ -945,12 +829,7 @@ impl Worker {
         if intent == Intent::Unknown {
             if let Some(llm) = &self.config.llm {
                 let system = self.system_prompt();
-                let history: Vec<Turn> = self
-                    .history
-                    .iter()
-                    .filter(|(at, _)| at.elapsed() < HISTORY_MAX_AGE)
-                    .map(|(_, turn)| turn.clone())
-                    .collect();
+                let history = self.conversation.recent_turns();
                 let start = Instant::now();
                 match llm.decide(&system, &history, text, lang) {
                     Ok(Decision::Act(intent)) => {
@@ -972,6 +851,79 @@ impl Worker {
             }
         }
         self.act(intent, lang)
+    }
+
+    /// The answer to the question asked back, when `text` answers it. Whatever was waiting is
+    /// dropped either way: the next words were its reply, or something else.
+    fn reply(&mut self, text: &str, intent: &Intent, lang: Lang) -> Option<String> {
+        let awaiting = self.awaiting();
+        // Taken before the answer, which may ask again ("Which room?").
+        let lights = self.conversation.pending_lights.take();
+        let scene = self.conversation.pending_scene.take();
+        let confirm = self.conversation.pending_confirm.take();
+        self.conversation.list_open = None;
+        let unknown = *intent == Intent::Unknown;
+        let answer = match awaiting? {
+            // "Set a timer." "For how long?" "Ten minutes."
+            Awaiting::TimerDuration | Awaiting::WhichTimer => {
+                self.timers.answer_pending(text, lang, Instant::now()).map(|(answer, notices)| {
+                    self.notify(notices);
+                    answer
+                })
+            }
+            Awaiting::LightsRoom => match lights {
+                Some((on, _)) if unknown => Some(self.lights(text, on, lang)),
+                _ => None,
+            },
+            // "Milk and eggs", "og brunost", "add bacon too": more items while the list is open;
+            // "actually remove the milk" takes one off, "no, that's it" closes it.
+            Awaiting::ListItems => self.list_reply(text, unknown, lang),
+            // "Forget everything I remember?" "Yes."
+            Awaiting::Forget => confirmation(text).map(|yes| self.memory.answer_forget(yes, lang)),
+            // "Remember what?" "The bins go out on Tuesday."
+            Awaiting::RememberWhat => {
+                self.memory.clear_question();
+                let meant = self.request_addressed || !room_talk(text);
+                (meant && matches!(intent, Intent::Unknown | Intent::Lookup(_)))
+                    .then(|| self.memory.remember(text, lang))
+            }
+            Awaiting::Confirm => match (confirmation(text), confirm) {
+                (Some(true), Some((command, _))) => Some(self.house(&command, lang)),
+                (Some(false), _) => {
+                    Some(if lang == Lang::Norwegian { "Ok, jeg lar det være." } else { "Okay, I'll leave it." }.into())
+                }
+                // Anything else is a new request.
+                _ => None,
+            },
+            Awaiting::SceneRoom => match scene {
+                Some((scene, _)) if unknown => Some(self.scene(&format!("{scene} in {text}"), lang)),
+                _ => None,
+            },
+        };
+        if answer.is_none() {
+            self.timers.clear_pending();
+            self.memory.clear_question();
+        }
+        answer
+    }
+
+    /// A reply while the shopping list is open: items, changes, or the list closed.
+    fn list_reply(&mut self, text: &str, unknown: bool, lang: Lang) -> Option<String> {
+        if voice_assistant::shopping::closes_list(text) {
+            return Some(if lang == Lang::Norwegian { "Ok, det var alt." } else { "Okay, that's everything." }.into());
+        }
+        if !unknown || text.split_whitespace().count() > LIST_REPLY_WORDS {
+            return None;
+        }
+        let changes = voice_assistant::shopping::open_list_commands(text);
+        // "Remove milk and add bread", "add bread and put milk on", "check if we have eggs": each
+        // change in turn. A single "add X" goes the way of plain items, which may be heard again in
+        // Norwegian.
+        if changes.len() > 1 || changes.iter().any(|c| !matches!(c, ListCommand::Add(_))) {
+            return Some(self.shopping_changes(changes, lang));
+        }
+        let items = self.items_heard(text);
+        (!items.is_empty()).then(|| self.shopping_list(ListCommand::Add(items), lang, true))
     }
 
     /// A note's sentences are synthesized, never kept by the speech cache: here as they are, and in
@@ -1038,13 +990,9 @@ impl Worker {
         self.previewing = true;
         let answer = self.compose(text, Lang::English).unwrap_or_default();
         self.previewing = false;
-        self.follow_up_closed = false;
         let turn = self.turn_for(text, Some(answer.clone()), Outcome::Done, start);
         self.config.activity.record(turn);
-        // What follows an answer (the lockdown's music) follows at once: there is none to wait out.
-        if self.after_answer.is_some() {
-            self.after_answer_at = Some(Instant::now());
-        }
+        self.conversation.typed_done();
         answer
     }
 
@@ -1112,7 +1060,7 @@ impl Worker {
                 let here = named.is_some_and(|room| self.is_this_room(room));
                 // The draft acted here at once, and the request went on to name another room: what
                 // it did here is undone.
-                if let (Some(undo), Some(room)) = (self.draft_undo.take(), named) {
+                if let (Some(undo), Some(room)) = (self.conversation.draft_undo.take(), named) {
                     if !here {
                         info!(room, ?undo, "the request named another room: undoing it here");
                         self.player.run(self.home_assistant.as_ref(), &undo, lang);
@@ -1144,14 +1092,14 @@ impl Worker {
                     _ => false,
                 };
                 if clears {
-                    self.hushed = None;
+                    self.conversation.hushed = None;
                 }
                 if command == MusicCommand::Stop || inner == Some(&MusicCommand::Stop) {
                     self.party_off();
                 }
                 let held: Vec<String> =
-                    self.hushed.iter().flat_map(|h| h.players.iter().map(|p| p.id.clone())).collect();
-                self.player.paused_for_request(self.hushed.is_some(), &held);
+                    self.conversation.hushed.iter().flat_map(|h| h.players.iter().map(|p| p.id.clone())).collect();
+                self.player.paused_for_request(self.conversation.hushed.is_some(), &held);
                 self.player.run(self.home_assistant.as_ref(), &command, lang)
             }
             Intent::Timer(command) => {
@@ -1256,7 +1204,7 @@ impl Worker {
             Intent::Tv(command) => self.tv.run(self.home_assistant.as_ref(), &command, lang),
             Intent::House(command) => match confirm_question(&command, lang) {
                 Some(question) => {
-                    self.pending_confirm = Some((command, Instant::now()));
+                    self.conversation.pending_confirm = Some((command, Instant::now()));
                     question.into()
                 }
                 None => self.house(&command, lang),
@@ -1264,7 +1212,7 @@ impl Worker {
             Intent::Routine(routine) => {
                 // Leaving and bedtime pause the music themselves; coming home may start new music.
                 if routine != Routine::Home || self.config.home_music.is_some() {
-                    self.hushed = None;
+                    self.conversation.hushed = None;
                 }
                 match routine {
                     Routine::Lockdown => self.lockdown(lang),

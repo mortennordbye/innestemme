@@ -16,7 +16,7 @@ use crate::unhandled::Reason;
 
 use super::follow_up::sounds_like_a_request;
 use super::hush::Hushed;
-use super::{AssistantEvent, Job, Worker, FOLLOW_UP};
+use super::{AssistantEvent, Job, Wake, Worker, FOLLOW_UP};
 
 /// A short utterance that starts this soon after a device's wake word holds the end of the wake
 /// word ("Oh", "What?"), not the request. A longer one is the name and the request in one breath.
@@ -106,22 +106,21 @@ impl Worker {
     /// A satellite woke, at `at`: listen for the request.
     pub(super) fn woken(&mut self, at: Instant, wake: WakeName) {
         info!("device wake word");
-        self.woken_at = Some(at);
+        self.conversation.wake = Some(Wake { at, named: None });
         // A new request: an earlier draft's utterance, if its end was lost, is over.
-        self.answered_draft = None;
+        self.conversation.answered_draft = None;
         // Until the wake word's voice is told (`Job::Voice`), which follows at once.
         self.address(None);
-        self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
+        self.conversation.follow_up_until = Some(Instant::now() + FOLLOW_UP);
         self.emit(AssistantEvent::Listening);
         // A check still out from an earlier wake is for a run that is over.
         self.wake_check = None;
-        self.wake_named = None;
         match wake {
             WakeName::Unknown => self.hush_if_named(),
             // The music waits for the check's result.
             WakeName::Check(audio) => self.check_wake(audio),
             WakeName::Heard => {
-                self.wake_named = Some(true);
+                self.conversation.set_wake_named(Some(true));
                 self.hush_if_named();
             }
         }
@@ -138,7 +137,8 @@ impl Worker {
                 self.wake_check = Some(check);
             }
             None => {
-                self.wake_named = name_in(self.transcriber.as_mut(), &self.config.wake, &audio);
+                let named = name_in(self.transcriber.as_mut(), &self.config.wake, &audio);
+                self.conversation.set_wake_named(named);
                 self.hush_if_named();
             }
         }
@@ -154,7 +154,7 @@ impl Worker {
         }
     }
 
-    /// Takes the wake's name check into `wake_named` when it is done, or with `wait`, waits for it:
+    /// Takes the wake's name check into its `Wake` when it is done, or with `wait`, waits for it:
     /// the reply to the request and the music need it.
     pub(super) fn take_wake_name(&mut self, wait: bool) {
         let Some(check) = &self.wake_check else { return };
@@ -177,14 +177,14 @@ impl Worker {
             Err(TryRecvError::Disconnected) => None,
         };
         self.wake_check = None;
-        self.wake_named = named;
+        self.conversation.set_wake_named(named);
         self.hush_if_named();
     }
 
     /// Most wakes without the name are the TV or the room (Loki, 24-31 Oct: about 48 of 58), and
     /// pausing paused the TV under them. A real one still acts, over the music.
     fn hush_if_named(&mut self) {
-        if self.wake_named == Some(false) {
+        if self.conversation.unnamed() {
             info!("no name in the wake word: the music plays on");
         } else {
             self.hush();
@@ -194,8 +194,8 @@ impl Worker {
     /// A device woke on its wake word and the request was not understood: say so, once, rather
     /// than end the run in silence, which sounds as if the device never woke.
     pub(super) fn not_understood(&mut self, text: &str, audio: &[i16], ended: Instant, lang: Lang, start: Instant) {
-        let Some(woken) = self.woken_at else {
-            if self.follow_up_until.is_some_and(|until| Instant::now() < until) {
+        let Some(woken) = self.conversation.wake.as_ref().map(|wake| wake.at) else {
+            if self.conversation.follow_up() {
                 self.unhandled(Reason::FollowUpIgnored, text, None);
             }
             return;
@@ -216,7 +216,7 @@ impl Worker {
         // it is worse than none; a real request said wrong is said again. Whether the name was in
         // the wake word tells best. It is no gate for requests: it misses the name in about one
         // real wake in twenty.
-        let addressed = match self.wake_named.take() {
+        let addressed = match self.conversation.wake.as_mut().and_then(|wake| wake.named.take()) {
             Some(named) => named,
             None => sounds_like_a_request(text),
         };
@@ -236,9 +236,9 @@ impl Worker {
         self.busy.store(true, Relaxed);
         self.emit(AssistantEvent::Heard { text: text.to_owned() });
         // The music stays paused for a second try; it plays on if none comes.
-        let hushed = self.hushed.take();
+        let hushed = self.conversation.hushed.take();
         self.say(answer.to_owned(), lang, start);
-        self.hushed = hushed.map(|h| Hushed { last_heard: Instant::now(), ..h });
+        self.conversation.hushed = hushed.map(|h| Hushed { last_heard: Instant::now(), ..h });
     }
 
     /// Whom the next answers address, by how the wake word's voice sounded. Follow-ups keep it.
@@ -372,10 +372,10 @@ mod tests {
         let mut woken = woken("hey jarvis");
         woken.worker.woken(Instant::now(), wake_audio());
         woken.worker.take_wake_name(false);
-        assert_eq!(woken.worker.wake_named, None, "taken before it was done");
+        assert_eq!(woken.worker.conversation.wake_named(), None, "taken before it was done");
         std::thread::sleep(CHECK + Duration::from_millis(100));
         woken.worker.take_wake_name(false);
-        assert_eq!(woken.worker.wake_named, Some(true));
+        assert_eq!(woken.worker.conversation.wake_named(), Some(true));
         assert!(woken.worker.wake_check.is_none());
     }
 
@@ -386,7 +386,7 @@ mod tests {
         woken.worker.woken(Instant::now(), WakeName::Heard);
         std::thread::sleep(CHECK + Duration::from_millis(100));
         woken.worker.take_wake_name(true);
-        assert_eq!(woken.worker.wake_named, Some(true));
+        assert_eq!(woken.worker.conversation.wake_named(), Some(true));
     }
 
     #[test]
