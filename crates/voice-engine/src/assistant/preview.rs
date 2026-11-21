@@ -2,14 +2,14 @@
 
 use tracing::{info, warn};
 use voice_assistant::ha::{self, Light};
-use voice_assistant::house::{self, Routine};
+use voice_assistant::house::{self, bedtime_dimmed, home_target, in_bedroom, Routine};
 use voice_assistant::intent::{self, Intent};
 use voice_assistant::lang::Lang;
+use voice_assistant::lockdown;
 use voice_assistant::party::PartyCommand;
+use voice_assistant::skill::LightChange;
 use voice_assistant::{plan, tv};
 
-use super::home::{bedtime_dimmed, home_target, in_bedroom};
-use super::lights::LightChange;
 use super::{Preview, Worker};
 
 /// Whether any lamp of `ids` is on, a group through its own state.
@@ -128,7 +128,7 @@ impl Worker {
                     }
                     // The bridge streams to its colour lights; the rest keep what they show.
                     PartyCommand::On { .. } => {
-                        let (colour, _) = house::lockdown_lights(ha).map_err(failed)?;
+                        let (colour, _) = lockdown::lockdown_lights(ha).map_err(failed)?;
                         plan.set(lamps, &colour, |_| plan::Effect::new("party", "follows the music"));
                     }
                     PartyCommand::Status => {}
@@ -163,7 +163,7 @@ impl Worker {
                         }
                     }
                     Routine::Home => {
-                        let found = home_target(ha, config, here.as_deref()).map_err(failed)?;
+                        let found = home_target(ha, config.home_room.as_deref(), here.as_deref()).map_err(failed)?;
                         let found = found.ok_or("Coming home would switch no lights now.")?;
                         let lit = plan_lit(lamps, &found.ids);
                         plan.set(lamps, &found.ids, |l| match lit {
@@ -175,7 +175,7 @@ impl Worker {
                         }
                     }
                     Routine::Lockdown => {
-                        let (red, off) = house::lockdown_lights(ha).map_err(failed)?;
+                        let (red, off) = lockdown::lockdown_lights(ha).map_err(failed)?;
                         plan.set(lamps, &red, |_| plan::Effect::new("red", "red, pulsing"));
                         plan.set(lamps, &off, |_| plan::Effect::switch(false));
                         plan.also.push(format!(
@@ -184,7 +184,7 @@ impl Worker {
                         ));
                     }
                     Routine::StandDown => {
-                        let ids = house::snapshot_lights(ha, house::LOCKDOWN_SCENE).map_err(failed)?;
+                        let ids = house::snapshot_lights(ha, lockdown::LOCKDOWN_SCENE).map_err(failed)?;
                         let ids = ids.ok_or("There is no lockdown to end.")?;
                         plan.set(lamps, &ids, |_| plan::Effect::new("restore", "put back"));
                     }
@@ -192,7 +192,7 @@ impl Worker {
                         return Err("Party mode needs a Hue bridge.".into())
                     }
                     Routine::OpenSource => {
-                        let (colour, _) = house::lockdown_lights(ha).map_err(failed)?;
+                        let (colour, _) = lockdown::lockdown_lights(ha).map_err(failed)?;
                         plan.set(lamps, &colour, |_| plan::Effect::new("party", "follows the music"));
                         plan.also.push(format!("Plays {}.", config.open_source_music));
                     }

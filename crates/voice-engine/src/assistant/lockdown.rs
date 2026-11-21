@@ -1,64 +1,20 @@
-//! The lockdown and standing down, and the music after an answer.
+//! The lockdown and standing down, and the music after an answer. The lockdown's Home Assistant
+//! calls, its blinking and its answers are in [`voice_assistant::lockdown`]; what is here ends
+//! party mode for it, puts the screen on the TV and plays the music after the answer, which all
+//! need the engine's state.
 
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Instant, SystemTime};
 
 use tracing::{info, warn};
-use voice_assistant::ha::{self, HomeAssistant};
+use voice_assistant::ha;
+use voice_assistant::house;
 use voice_assistant::intent::MusicCommand;
 use voice_assistant::lang::Lang;
+use voice_assistant::lockdown::{self, Alarm};
 use voice_assistant::music::Player;
-use voice_assistant::{house, tv};
+use voice_assistant::tv;
 
 use super::{not_connected, unreachable, AfterAnswer, Worker};
-
-/// The Hue alert the lockdown's lights pulse with lasts about 15 seconds: started again before it ends.
-const ALARM_REPEAT: Duration = Duration::from_secs(14);
-/// A lockdown nobody stands down stops blinking after this and stays red.
-const ALARM_LONGEST: Duration = Duration::from_secs(30 * 60);
-
-/// The lockdown's red lights blinking, on a thread of their own with their own Home Assistant
-/// client, so answers are not held up.
-pub(super) struct Alarm {
-    stop: Arc<AtomicBool>,
-    thread: std::thread::JoinHandle<()>,
-}
-
-impl Alarm {
-    fn start(ha: HomeAssistant, red: Vec<String>) -> std::io::Result<Self> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = stop.clone();
-        let thread = std::thread::Builder::new().name("alarm".into()).spawn(move || {
-            // The lights go red on the write queue; a pulse before that would flash the old colours.
-            ha.flush();
-            let start = Instant::now();
-            let targets = house::alarm_targets(&ha, &red).unwrap_or_else(|error| {
-                warn!(error = format!("{error:#}"), "no Hue rooms for the lockdown; each light alone");
-                red
-            });
-            info!(?targets, "lockdown blink");
-            while !stopped.load(Relaxed) && start.elapsed() < ALARM_LONGEST {
-                if let Err(error) = house::alarm_pulse(&ha, &targets) {
-                    warn!(error = format!("{error:#}"), "lockdown blink failed");
-                }
-                // In short sleeps, so standing down is not kept waiting.
-                let pulse = Instant::now();
-                while !stopped.load(Relaxed) && pulse.elapsed() < ALARM_REPEAT {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-            info!(after = ?start.elapsed(), "lockdown blink stopped");
-        })?;
-        Ok(Self { stop, thread })
-    }
-
-    /// Waits for a pulse in flight, so nothing is started after this returns.
-    fn stop(self) {
-        self.stop.store(true, Relaxed);
-        let _ = self.thread.join();
-    }
-}
 
 impl Worker {
     /// Every light red, the volume up and the lockdown music on. Just for fun: nothing is locked.
@@ -76,7 +32,7 @@ impl Worker {
         if party {
             info!("party mode ended for the lockdown");
         }
-        let locked = house::lockdown(self.home_assistant.as_ref().expect("checked above"));
+        let locked = lockdown::lockdown(self.home_assistant.as_ref().expect("checked above"));
         if party {
             self.party_kept_for_lockdown(locked.is_ok());
         }
@@ -87,7 +43,7 @@ impl Worker {
                 self.locked_down = true;
                 // Undo would put a look from before the lockdown back over its red lights.
                 self.light_undo_gone = Some(Instant::now());
-                let blinking = self.alarm.as_ref().is_some_and(|a| !a.thread.is_finished());
+                let blinking = self.alarm.as_ref().is_some_and(Alarm::blinking);
                 if !blinking && !red.is_empty() {
                     match Alarm::start(ha.detached(), red) {
                         Ok(alarm) => self.alarm = Some(alarm),
@@ -97,14 +53,9 @@ impl Worker {
             }
             Err(error) => return unreachable(&error, no),
         }
-        let mut level = f64::from(self.config.lockdown_volume) / 100.0;
-        if let Ok(entity) = self.player.check(ha) {
-            let volume = ha.state(&entity).ok().and_then(|s| s["attributes"]["volume_level"].as_f64());
-            // Music already playing louder than the setting stays as loud: a lockdown never quietens it.
-            level = level.max(volume.unwrap_or(0.0));
-            // A second lockdown keeps the volume from before the first.
-            self.lockdown_volume = self.lockdown_volume.or(volume);
-        }
+        let (level, volume) = lockdown::music_level(ha, &mut self.player, self.config.lockdown_volume);
+        // A second lockdown keeps the volume from before the first.
+        self.lockdown_volume = self.lockdown_volume.or(volume);
         self.screen_on_tv();
         // The lockdown's music replaces what was paused for the request.
         self.conversation.hushed = None;
@@ -115,12 +66,12 @@ impl Worker {
         if !self.screen.showing("lockdown") {
             self.show("lockdown", serde_json::json!({ "since": since }), None);
         }
-        if no {
-            return "Nedstengning startet. Huset er forseglet.".into();
+        let answer = lockdown::started_answer(lang, self.threat_turn);
+        // Norwegian has no threats to take turns.
+        if !no {
+            self.threat_turn += 1;
         }
-        let threat = house::LOCKDOWN_THREATS[self.threat_turn % house::LOCKDOWN_THREATS.len()];
-        self.threat_turn += 1;
-        format!("Lockdown initiated. The house is sealed. {threat}")
+        answer
     }
 
     /// Puts the screen on the TV, turned on first when it is off. On a thread of its own: the TV
@@ -217,7 +168,7 @@ impl Worker {
         };
         // Only with a lockdown to end: "stand down" without one leaves a party and its restore be.
         // Home Assistant's scene decides; what this engine knows only when it can't be asked.
-        let locked_down = house::lockdown_on(ha, self.locked_down);
+        let locked_down = lockdown::lockdown_on(ha, self.locked_down);
         if locked_down {
             self.party_off_for_stand_down();
         } else if self.open_source_party && self.party_off() {
@@ -232,7 +183,7 @@ impl Worker {
         if locked_down {
             self.light_undo_gone = Some(Instant::now());
         }
-        let restored = match house::stand_down(ha) {
+        let restored = match lockdown::stand_down(ha) {
             Ok(restored) => restored,
             Err(error) => return unreachable(&error, no),
         };
@@ -245,7 +196,7 @@ impl Worker {
         let restored = restored || party;
         let volume = self.lockdown_volume.take();
         if !restored && volume.is_none() {
-            return if no { "Det er ingen nedstengning å avslutte." } else { "There is no lockdown to end." }.into();
+            return lockdown::stood_down_answer(false, lang);
         }
         // The music was paused for the request: it stays paused under the answer, then stops.
         self.conversation.hushed = None;
@@ -255,6 +206,6 @@ impl Worker {
         if self.screen.showing("lockdown") {
             self.hide();
         }
-        if no { "Avblåst. Alt er som før." } else { "Standing down. Everything is back as it was." }.into()
+        lockdown::stood_down_answer(true, lang)
     }
 }

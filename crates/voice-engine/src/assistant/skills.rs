@@ -1,4 +1,5 @@
-//! Skills answered by the worker itself: weather, people, briefing, distance, party, scenes, scripts.
+//! Skills answered by the worker itself: weather, people, briefing, distance, party; and scenes and
+//! scripts, whose Home Assistant calls and answers are in [`voice_assistant::scenes`].
 
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::Arc;
@@ -9,12 +10,14 @@ use voice_assistant::ha::{self, HomeAssistant};
 use voice_assistant::house;
 use voice_assistant::intent::{Day, Focus, MusicCommand};
 use voice_assistant::lang::Lang;
+use voice_assistant::lockdown;
 use voice_assistant::party::{Pace, PartyCommand};
+use voice_assistant::scenes::{self, ByName};
 use voice_assistant::shopping::ListCommand;
+use voice_assistant::skill::Done;
 
 use crate::party;
 
-use super::screen::SCREEN_MOMENT;
 use super::{not_connected, time_of_day, unreachable, AfterAnswer, Worker};
 
 /// How long the Hue bridge takes to let go of the lights once party mode's stream stops; calls
@@ -135,7 +138,7 @@ impl Worker {
         // last party's snapshot is still the look from before it.
         let restore_called_off = self.party_restore.take().is_some_and(PendingRestore::cancel);
         if let Some(ha) = &self.home_assistant {
-            let locked_down = house::lockdown_on(ha, self.locked_down);
+            let locked_down = lockdown::lockdown_on(ha, self.locked_down);
             self.locked_down = locked_down;
             // Left set by a lockdown that was stood down elsewhere, or one Home Assistant forgot.
             self.party_under_lockdown &= locked_down;
@@ -234,9 +237,9 @@ impl Worker {
         let locked_here = self.locked_down;
         let restore = PendingRestore::spawn(wait, move || {
             let ha = HomeAssistant::new(&url, &token);
-            let put_back = match after_party(house::lockdown_on(&ha, locked_here)) {
+            let put_back = match after_party(lockdown::lockdown_on(&ha, locked_here)) {
                 // Red again; the party's snapshot stays for standing down.
-                AfterParty::LockdownRed => house::lockdown(&ha).map(|_| true),
+                AfterParty::LockdownRed => lockdown::lockdown(&ha).map(|_| true),
                 AfterParty::PartyScene => house::party_restore(&ha),
             };
             if let Err(error) = put_back {
@@ -461,73 +464,20 @@ impl Worker {
     }
 
     pub(super) fn scene(&mut self, request: &str, lang: Lang) -> String {
-        let no = lang == Lang::Norwegian;
-        let here = self.room.clone();
-        let Some(ha) = &mut self.home_assistant else {
-            return not_connected(no);
-        };
-        let scenes = match ha.scenes() {
-            Ok(scenes) => scenes.to_vec(),
-            Err(error) => return unreachable(&error, no),
-        };
-        let scene = match ha::resolve_scene(&scenes, request, here.as_deref()) {
-            ha::SceneMatch::Found(scene) => scene.clone(),
-            ha::SceneMatch::WhichRoom => {
-                self.conversation.pending_scene = Some((request.to_owned(), Instant::now()));
-                return if no { "Hvilket rom?" } else { "Which room?" }.into();
-            }
-            ha::SceneMatch::NotFound if no => return "Jeg fant ikke den scenen.".into(),
-            ha::SceneMatch::NotFound => return "I couldn't find that scene.".into(),
-        };
-        if let Err(error) = ha.activate(&scene) {
-            return unreachable(&error, no);
-        }
-        info!(scene = scene.id, request, "scene activated");
-        // Undo would otherwise jump back past the scene, to the look before an earlier dimming.
-        self.forget_light_undo();
-        self.show("scene", serde_json::json!({ "name": scene.name }), Some(SCREEN_MOMENT));
-        let name = scene.name.to_lowercase();
-        if no {
-            format!("Ok, {name}.")
-        } else {
-            format!("Okay, {name}.")
-        }
+        let room = self.room.clone();
+        self.home_skill(lang, |ha| scenes::scene(ha, request, room.as_deref(), lang))
     }
 
     pub(super) fn script(&mut self, request: &str, lang: Lang) -> String {
-        let no = lang == Lang::Norwegian;
-        let Some(ha) = &mut self.home_assistant else {
-            return not_connected(no);
-        };
-        let script = match ha.scripts() {
-            Ok(scripts) => ha::resolve_script(scripts, request).cloned(),
-            Err(error) => return unreachable(&error, no),
-        };
-        let Some(script) = script else {
-            return if no { "Jeg fant ikke det skriptet." } else { "I couldn't find that script." }.into();
-        };
-        if let Err(error) = ha.activate(&script) {
-            return unreachable(&error, no);
-        }
-        info!(script = script.id, request, "script started");
-        let name = script.name.to_lowercase();
-        if no {
-            format!("Ok, kjører {name}.")
-        } else {
-            format!("Okay, running {name}.")
-        }
+        self.home_skill(lang, |ha| scenes::script(ha, request, lang).map(Done::say))
     }
 
     /// A script or scene whose whole name is the request; `None` when there is none.
     pub(super) fn by_exact_name(&mut self, request: &str, lang: Lang) -> Option<String> {
-        let ha = self.home_assistant.as_mut()?;
-        let script = ha.scripts().ok().and_then(|scripts| ha::exact(scripts, request).cloned());
-        if script.is_some() {
-            return Some(self.script(request, lang));
-        }
-        let ha = self.home_assistant.as_mut()?;
-        let scene = ha.scenes().ok().and_then(|scenes| ha::exact(scenes, request).cloned())?;
-        Some(self.scene(&scene.name, lang))
+        Some(match scenes::by_exact_name(self.home_assistant.as_mut()?, request)? {
+            ByName::Script => self.script(request, lang),
+            ByName::Scene(name) => self.scene(&name, lang),
+        })
     }
 }
 
