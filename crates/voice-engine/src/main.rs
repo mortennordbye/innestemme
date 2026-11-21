@@ -148,6 +148,10 @@ struct Args {
     /// Write every detected utterance here as a wav, for tuning recognition on real voices.
     #[arg(long, env = "VOICE_DUMP_UTTERANCES")]
     dump_utterances: Option<PathBuf>,
+    /// Delete recordings in `dump-utterances` older than this many days (checked every hour).
+    /// Default: keep them all.
+    #[arg(long, env = "VOICE_DUMP_KEEP_DAYS", value_parser = clap::value_parser!(u32).range(1..))]
+    dump_keep_days: Option<u32>,
     /// Log requests no skill handled here, one JSON object per line, to see what to build next.
     /// The web page lists the latest. Corrections learned from repeats are kept next to it, in
     /// `learned.json`.
@@ -699,6 +703,10 @@ fn main() -> Result<()> {
         let metrics = Arc::new(Metrics::default());
         let http = tokio::net::TcpListener::bind(args.metrics_bind).await.context("binding metrics listener")?;
         let speech = Arc::new(SpeechClips::default());
+        if let (Some(dir), Some(days)) = (args.dump_utterances.clone(), args.dump_keep_days) {
+            info!(dir = %dir.display(), days, "recordings kept");
+            tokio::spawn(voice_engine::recordings::keep(dir, days));
+        }
         let voice = match args.english_tts {
             EnglishTts::Say => {
                 format!("macOS say{}", args.say_voice.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
