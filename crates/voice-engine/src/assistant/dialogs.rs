@@ -35,6 +35,15 @@ impl Transcribe for Deaf {
     }
 }
 
+/// A listener that hears the same text in everything.
+struct Hears(&'static str);
+
+impl Transcribe for Hears {
+    fn transcribe(&mut self, _: &[i16]) -> anyhow::Result<Vec<Transcript>> {
+        Ok(vec![Transcript { lang: Lang::English, text: self.0.to_owned(), score: 0.0 }])
+    }
+}
+
 /// What the fake Home Assistant has, and the service calls made to it.
 #[derive(Default)]
 struct House {
@@ -414,6 +423,22 @@ fn a_whole_request_is_answered_from_its_draft() {
     // The utterance's own end, 0.4 s later, is the same request: not answered again.
     dialog.worker.utterance(&whole, Instant::now());
     assert_eq!(dialog.answers(), None);
+}
+
+#[test]
+fn a_request_that_goes_on_after_its_draft_is_answered_again() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    let (draft, _) = draft_audio();
+    assert!(dialog.draft("Jarvis, what's on the shopping list?", &draft).is_some());
+    // The speaker went on after the pause: the longer utterance is a second request, and the
+    // first answer stands. The cost of a draft acted on too soon.
+    let mut longer = draft.clone();
+    longer.resize(draft.len() + 30 * FRAME_SAMPLES, 1000);
+    dialog.worker.transcriber = Box::new(Hears("Jarvis, what's on the shopping list for the weekend?"));
+    dialog.worker.utterance(&longer, Instant::now());
+    let answer = said(dialog.answers());
+    assert!(answer.contains("shopping list is empty"), "{answer}");
 }
 
 #[test]

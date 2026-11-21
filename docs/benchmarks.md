@@ -441,13 +441,14 @@ pauses: 7 between the wake word and the request, 2 inside a request.
 
 No mid pause in the set parses to a known intent, but 2 mid pauses inside a request are too few to show that
 a general rule (any complete intent, without a reason for each) is safe; 23 of the 156 utterances of October
-hold a pause of 0.48-0.56 s. So only the list is wider, each intent with a reason in `Intent::meta`: what is
-next, the TV's status, volume and screen, the shopping list read out, who is home, leaks, the house status,
-the guest Wi-Fi, the news and "good morning". None of these is in the test set, so the gain shows only live:
-0.4 s on each such request. The weather, the power prices, the date, the sun, a scene, the lights' status
-and undo still wait, as they often go on ("... tomorrow", "... in Oslo", "... in the kitchen"). A general
+hold a pause of 0.48-0.56 s. So only the list is wider, each intent with a reason in `Intent::meta`: the
+TV's status and volume, the shopping list read out, who is home, leaks, the house status, the guest Wi-Fi
+and the news. None of these is in the test set, so the gain shows only live: 0.4 s on each such request.
+The weather, the power prices, the date, the sun, a scene, the lights' status, undo, the briefing, what is
+next and closing the screen still wait, as they often go on ("... tomorrow", "... in Oslo", "... in the
+kitchen"). When the speaker goes on after a draft acted on, the longer utterance is a second request. A general
 rule waits for a week of requests, with Smart Turn v3.2 and turn-1-mini.
 
-One draft in the set is misheard in a way the whole utterance is not: the draft of a "play some music" came
-out as "thanks to music", which parses as thanks and is acted on at once (already so on `main`); the
-utterance, "takes some music", is taken as music by its shape.
+One of the 10 drafts at a real end is misheard as another request than its utterance and is acted on at
+once (already so on `main`): `act_on_draft` does not apply the music-by-its-shape fixes that the utterance
+gets.
