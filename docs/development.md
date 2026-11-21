@@ -59,6 +59,7 @@ recordings in `target/utterances`. Say so before anything plays on the real spea
 | `cargo run --release -p voice-engine --example party -- normal 60` | party mode from the Mac's microphone (Hue keys in `.env`; `normal`, `fast` or `relaxed`) |
 | `scripts/latency-bench/` | end of speech to answer, a build against `main`, with a fake Home Assistant ([benchmarks.md](benchmarks.md)) |
 | `scripts/replay/` | a build on a real day of Voice PE runs, live vs build per request (below) |
+| `scripts/testset/` | the live recordings as a test set for speech models, with reference transcripts (below) |
 | `voice-bench` | per-frame step times of the audio path ([benchmarks.md](benchmarks.md)) |
 
 ### The latency bench
@@ -78,8 +79,9 @@ Assistant reads from the real one in `.env` and never makes a service call; `run
 
 ### Replaying a real day
 
-The cluster's engine keeps each Voice PE run as a wav (`dump-utterances`), the last 7 days of them counted from the newest
-(`dump-keep-days`), so a week away keeps the week before it. A
+The cluster's engine keeps each Voice PE run as a wav (`dump-utterances`, on its own backed-up volume at
+`/recordings`), the last 365 days of them counted from the newest (`dump-keep-days`), so time away keeps the
+days before it. A
 replay runs a build on one day of them and compares it with what the live engine did:
 
 ```
@@ -102,6 +104,23 @@ it is now, not as it was; the clock, weather and prices are today's; wake words 
 recorded. Runs reuse one speech cache, `target/replay/cache/<voice>-sherpa-<version>`, so only the first fills it (the
 common sentences first; `run.sh` waits at most `CACHE_WAIT`, 600 s). A new voice or sherpa-onnx version gets
 a cache of its own; another change to how speech sounds gets one with `CACHE=<name>`.
+
+### The test set
+
+The same recordings are the test set for a new listener, end-of-turn model or other speech change:
+
+```
+bash scripts/testset/sync.sh     # new runs and utterances to target/testset/
+bash scripts/testset/label.sh    # reference.tsv for new utterances: Whisper large-v3-turbo on Metal
+cargo run --release -p voice-assistant --example stt_eval -- target/testset/utterances/*.wav > whisper.tsv
+cargo run -p voice-assistant --example stt_score -- target/testset/reference.tsv whisper.tsv
+```
+
+`runs/` holds each run at 16 kHz from the wake word to the end of the answer, as the device heard it (the
+answer from the speaker is in it); `utterances/` holds each request as the engine cut it, at 24 kHz. The
+reference is a machine transcript: right for clear requests, noisy for room talk and the TV, so check by ear
+where a result turns on a few files. The runs from before the move on 2026-11-21 are in `/models/recordings`
+(`REC=/proc/1/root/models/recordings bash scripts/testset/sync.sh`).
 
 ## The audio path on its own
 

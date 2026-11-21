@@ -1,7 +1,8 @@
 //! Times the engine's Whisper on recorded utterances, set up as the engine sets it up (English,
 //! context prompt), and prints `<file>\t<ms>\t<text>` per utterance.
 //! `RAYON_NUM_THREADS=4 cargo run --release -p voice-assistant --example stt_eval -- target/utterances/utterance-*.wav`
-//! WHISPER_SIZE picks the model (default base); WINDOW=short uses the short window instead of the full one.
+//! WHISPER_SIZE picks the model (default base); WINDOW=short uses the short window instead of the full one;
+//! GPU=1 runs on Metal (build with `--features metal`).
 
 use std::time::Instant;
 
@@ -14,7 +15,7 @@ fn main() -> Result<()> {
     let size = std::env::var("WHISPER_SIZE").unwrap_or_else(|_| "base".into());
     let window = (std::env::var("WINDOW").as_deref() == Ok("short")).then_some(Window::DEFAULT);
     let files = WhisperFiles::fetch(&default_repo(false, &size))?;
-    let mut t = Transcriber::load(&files, None, voice_assistant::stt::device(false)?)?
+    let mut t = Transcriber::load(&files, None, voice_assistant::stt::device(std::env::var_os("GPU").is_some())?)?
         .with_wake_prompt(WakePrompt::Context, "Jarvis")
         .with_window(window);
     t.restrict(Lang::English);
