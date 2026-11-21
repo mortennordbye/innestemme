@@ -8,11 +8,12 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use hf_hub::{Repo, RepoType};
 use ptts::checkpoint::{Checkpoint, ResolveOptions};
 use ptts::synth::{DeviceKind, Quant, Synth};
 
 use crate::lang::Lang;
+use crate::models::HubRepo;
+use crate::resample::to_i16;
 use crate::tts::Tts;
 
 /// The English model, with its tokenizer and config.
@@ -38,21 +39,20 @@ impl PhononFiles {
     /// `int8`: the q8 weights, faster on the cluster's CPU (4.5x against 3.2x real time on 4
     /// threads) and loaded in half the time.
     pub fn fetch(voice: &str, int8: bool) -> Result<Self> {
-        let api = hf_hub::api::sync::ApiBuilder::from_env().build()?;
-        let model = api.repo(Repo::with_revision(MODEL_REPO.into(), RepoType::Model, MODEL_REVISION.into()));
+        let model = HubRepo::at(MODEL_REPO, Some(MODEL_REVISION))?;
         let weights = if int8 { "model.q8.gguf" } else { "model.safetensors" };
         let mut config = None;
         for file in ["config.json", "tokenizer.json", weights] {
-            let path = model.get(file).with_context(|| format!("fetching {MODEL_REPO}/{file}"))?;
+            let path = model.get(file)?;
             if file == "config.json" {
                 config = Some(path);
             }
         }
         let model = config.context("no config.json")?.parent().context("config.json without a folder")?.to_owned();
-        let voices = api.repo(Repo::with_revision(VOICES_REPO.into(), RepoType::Model, VOICES_REVISION.into()));
-        let catalogue = voices.get("voices.jsonl").with_context(|| format!("fetching {VOICES_REPO}/voices.jsonl"))?;
+        let voices = HubRepo::at(VOICES_REPO, Some(VOICES_REVISION))?;
+        let catalogue = voices.get("voices.jsonl")?;
         let file = voice_file(&std::fs::read_to_string(&catalogue)?, voice)?;
-        let voice = voices.get(&file).with_context(|| format!("fetching {VOICES_REPO}/{file}"))?;
+        let voice = voices.get(&file)?;
         Ok(Self { model, voice })
     }
 
@@ -109,7 +109,7 @@ impl Tts for Phonon {
     fn speak(&mut self, text: &str, _lang: Lang, sink: &mut dyn FnMut(&[i16])) -> Result<()> {
         let mut spoken = false;
         for chunk in self.synth.stream(text).context("Phonon")? {
-            let pcm: Vec<i16> = chunk?.iter().map(|s| (s.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
+            let pcm: Vec<i16> = chunk?.iter().copied().map(to_i16).collect();
             if !pcm.is_empty() {
                 spoken = true;
                 sink(&pcm);

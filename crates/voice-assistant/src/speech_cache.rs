@@ -16,6 +16,7 @@ use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::lang::Lang;
+use crate::store;
 use crate::tts::Tts;
 
 /// Sentences with numbers that are kept anyway, digits as `#`, and the largest number each may
@@ -122,12 +123,8 @@ impl CachedTts {
             self.spoken.retain(|_, n| *n > 1);
         }
         if let Some(path) = spoken_path(self.dir.as_deref()) {
-            let partial = path.with_extension("part");
-            let result = serde_json::to_vec(&self.spoken)
-                .map_err(std::io::Error::other)
-                .and_then(|bytes| std::fs::write(&partial, bytes))
-                .and_then(|()| std::fs::rename(&partial, &path));
-            if let Err(error) = result {
+            let result = serde_json::to_vec(&self.spoken).map_err(std::io::Error::other);
+            if let Err(error) = result.and_then(|bytes| store::write_cache(&path, &bytes)) {
                 warn!(%error, "could not keep the count of spoken sentences");
             }
         }
@@ -188,9 +185,8 @@ impl CachedTts {
     fn store(&mut self, text: &str, pcm: Vec<i16>) {
         if let Some(path) = self.path(text) {
             let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
-            // Written aside and renamed, so a crash never leaves half a sentence to play back.
-            let partial = path.with_extension("part");
-            if let Err(error) = std::fs::write(&partial, bytes).and_then(|()| std::fs::rename(&partial, &path)) {
+            // Never half a sentence to play back after a crash.
+            if let Err(error) = store::write_cache(&path, &bytes) {
                 warn!(%error, "could not store speech");
             }
         }

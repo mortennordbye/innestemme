@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineWhisperModelConfig};
 
-use crate::whisper::resample_24k_to_16k;
+use crate::models::HubRepo;
+use crate::resample::resample_24k_to_16k;
 
 /// sherpa-onnx's export of whisper-small: the smallest that writes Norwegian groceries well
 /// (docs/benchmarks.md).
@@ -24,9 +25,8 @@ impl NorwegianFiles {
     /// `repo` is `csukuangfj/sherpa-onnx-whisper-<size>`; its files are named after the size.
     pub fn fetch(repo: &str) -> Result<Self> {
         let size = repo.rsplit('-').next().unwrap_or("small");
-        let api = hf_hub::api::sync::ApiBuilder::from_env().build()?;
-        let repo_api = api.model(repo.to_owned());
-        let get = |file: String| repo_api.get(&file).with_context(|| format!("fetching {repo}/{file}"));
+        let repo = HubRepo::model(repo)?;
+        let get = |file: String| repo.get(&file);
         Ok(Self {
             encoder: get(format!("{size}-encoder.int8.onnx"))?,
             decoder: get(format!("{size}-decoder.int8.onnx"))?,

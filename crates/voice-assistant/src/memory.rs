@@ -7,7 +7,6 @@
 //! is broken"), so each form is narrow: a note is a sentence after "remember that", and forgetting
 //! never takes a timer, an alarm or the shopping list.
 
-use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -16,6 +15,7 @@ use tracing::warn;
 
 use crate::dialog::normalize;
 use crate::lang::Lang;
+use crate::store;
 
 /// Notes kept at most. Answers read them aloud, so a long list is no use; the cap also bounds the
 /// file.
@@ -603,27 +603,6 @@ struct Note {
     saved: jiff::Timestamp,
 }
 
-/// The notes in `text`, one by one: an entry that does not read loses only itself. A file that is
-/// not a list at all is set aside under a name of its own rather than overwritten by the next save.
-fn read_kept(text: &str, path: &std::path::Path) -> Vec<Note> {
-    let entries: Vec<serde_json::Value> = match serde_json::from_str(text) {
-        Ok(entries) => entries,
-        Err(error) => {
-            let aside = path.with_extension(format!("bad-{}", jiff::Timestamp::now().as_second()));
-            warn!(%error, path = %path.display(), aside = %aside.display(), "could not read the kept notes; set aside");
-            let _ = std::fs::rename(path, aside);
-            return Vec::new();
-        }
-    };
-    entries
-        .into_iter()
-        .filter_map(|entry| {
-            serde_json::from_value(entry).inspect_err(|error| warn!(%error, "a kept note did not read; dropped")).ok()
-        })
-        .take(MAX_NOTES)
-        .collect()
-}
-
 /// A question waiting for its answer.
 #[derive(Debug, Clone)]
 enum Asked {
@@ -643,16 +622,15 @@ pub struct Memory {
 }
 
 impl Memory {
-    /// Kept in `path`, and read back from it. A file that is there but cannot be read (permissions,
-    /// a disk error) is left as it is, and nothing is saved over it.
+    /// Kept in `path`, and read back from it (see [`store::read_list`]). A file that is there but
+    /// cannot be read (permissions, a disk error) is left as it is, and nothing is saved over it.
     pub fn kept_in(path: PathBuf) -> Self {
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Self { notes: read_kept(&text, &path), store: Some(path), ..Self::default() },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self { store: Some(path), ..Self::default() },
-            Err(error) => {
-                warn!(%error, path = %path.display(), "could not read the kept notes; they are not saved this run");
-                Self::default()
+        match store::read_list::<Note>(&path, "kept notes") {
+            Ok(mut notes) => {
+                notes.truncate(MAX_NOTES);
+                Self { notes, store: Some(path), ..Self::default() }
             }
+            Err(_) => Self::default(),
         }
     }
 
@@ -666,15 +644,7 @@ impl Memory {
 
     fn save(&self) {
         let Some(path) = &self.store else { return };
-        // Written aside, flushed to the disk and renamed, so a crash never leaves half a file.
-        let partial = path.with_extension("part");
-        let result = serde_json::to_vec_pretty(&self.notes).map_err(std::io::Error::other).and_then(|bytes| {
-            let mut file = std::fs::File::create(&partial)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            std::fs::rename(&partial, path)
-        });
-        if let Err(error) = result {
+        if let Err(error) = store::write_json(path, &self.notes) {
             warn!(%error, path = %path.display(), "could not keep the notes");
         }
     }
@@ -1197,6 +1167,22 @@ mod tests {
         // Replacing one is still fine.
         assert_eq!(memory.run(Remember("box 7 is in the cellar".into()), Lang::English), "Okay, I've updated that.");
         assert!(memory.run(List, Lang::English).ends_with(&format!("And {} more.", MAX_NOTES - READ_OUT)));
+    }
+
+    /// A file kept by the build before the shared store still reads, and is written back the same.
+    #[test]
+    fn a_file_from_the_previous_build_reads_and_writes_the_same() {
+        let kept = include_str!("../testdata/memory.json");
+        let dir = std::env::temp_dir().join(format!("innestemme-memory-previous-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("memory.json");
+        std::fs::write(&path, kept).unwrap();
+        let memory = Memory::kept_in(path.clone());
+        assert_eq!(memory.len(), 3);
+        assert_eq!(memory.where_is("where is the spare key").as_deref(), Some("The spare key is in the drawer."));
+        memory.save();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), kept);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

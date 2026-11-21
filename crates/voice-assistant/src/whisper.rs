@@ -11,6 +11,8 @@ use candle_transformers::models::whisper::{self as w, audio, model::AudioEncoder
 use tracing::debug;
 
 use crate::lang::Lang;
+use crate::models::HubRepo;
+use crate::resample::resample_24k_to_16k;
 use crate::whisper_decoder::Decoder;
 
 /// English only: OpenAI's multilingual checkpoints, forced to English. With Norwegian: the
@@ -81,9 +83,8 @@ pub struct WhisperFiles {
 
 impl WhisperFiles {
     pub fn fetch(repo: &str) -> Result<Self> {
-        let api = hf_hub::api::sync::ApiBuilder::from_env().build()?;
-        let repo_api = api.model(repo.to_owned());
-        let get = |file: &str| repo_api.get(file).with_context(|| format!("fetching {repo}/{file}"));
+        let repo = HubRepo::model(repo)?;
+        let get = |file: &str| repo.get(file);
         Ok(Self { config: get("config.json")?, model: get("model.safetensors")?, tokenizer: get("tokenizer.json")? })
     }
 }
@@ -479,41 +480,6 @@ fn mel_filters(n_mels: usize) -> Vec<f32> {
     out
 }
 
-/// 24 kHz -> 16 kHz (up 2, low-pass at 8 kHz, down 3), output scaled to [-1, 1].
-pub fn resample_24k_to_16k(pcm: &[i16]) -> Vec<f32> {
-    const TAPS: usize = 96;
-    // Cutoff 7.2 kHz at the 48 kHz intermediate rate, Hann window, gain 2 for the zero stuffing.
-    let h: Vec<f64> = (0..TAPS)
-        .map(|i| {
-            let x = i as f64 - (TAPS - 1) as f64 / 2.0;
-            let fc = 7200.0 / 48000.0;
-            let sinc =
-                if x == 0.0 { 2.0 * fc } else { (std::f64::consts::TAU * fc * x).sin() / (std::f64::consts::PI * x) };
-            let hann = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / (TAPS - 1) as f64).cos();
-            2.0 * sinc * hann
-        })
-        .collect();
-    let out_len = pcm.len() * 2 / 3;
-    (0..out_len)
-        .map(|n| {
-            // Upsampled index 3n + delay; only even upsampled indices carry input samples.
-            let center = 3 * n + TAPS / 2;
-            let mut acc = 0.0;
-            for (k, tap) in h.iter().enumerate() {
-                let Some(up) = center.checked_sub(k) else {
-                    break;
-                };
-                if up % 2 == 0 {
-                    if let Some(&s) = pcm.get(up / 2) {
-                        acc += tap * f64::from(s);
-                    }
-                }
-            }
-            (acc / 32768.0) as f32
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,19 +491,5 @@ mod tests {
         assert_eq!(unique.len(), 256);
         assert_eq!(table[b'A' as usize], 'A');
         assert_eq!(table[b' ' as usize], '\u{120}');
-    }
-
-    #[test]
-    fn resampler_keeps_a_1khz_tone() {
-        let pcm: Vec<i16> = (0..24_000)
-            .map(|i| ((i as f64 / 24_000.0 * 1000.0 * std::f64::consts::TAU).sin() * 10_000.0) as i16)
-            .collect();
-        let out = resample_24k_to_16k(&pcm);
-        assert_eq!(out.len(), 16_000);
-        let rms = (out[1000..15_000].iter().map(|s| f64::from(*s).powi(2)).sum::<f64>() / 14_000.0).sqrt();
-        assert!((rms - 10_000.0 / 32768.0 / 2f64.sqrt()).abs() < 0.01, "rms {rms}");
-        // Phase: 16 kHz sample n should match the 1 kHz sine at t = n / 16000.
-        let expected = (1000.0 / 16_000.0 * 1000.0 * std::f64::consts::TAU).sin() * 10_000.0 / 32768.0;
-        assert!((f64::from(out[1000]) - expected).abs() < 0.02, "{} vs {expected}", out[1000]);
     }
 }

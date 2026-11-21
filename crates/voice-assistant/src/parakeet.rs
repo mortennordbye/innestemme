@@ -9,7 +9,9 @@ use anyhow::{Context, Result};
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
 
 use crate::lang::Lang;
-use crate::whisper::{resample_24k_to_16k, Transcribe, Transcript};
+use crate::models::{self, HubRepo};
+use crate::resample::resample_24k_to_16k;
+use crate::whisper::{Transcribe, Transcript};
 
 /// The 110M transducer: 18 ms per second of audio on an M4 Pro against 66 ms for the 0.6B v2,
 /// for 70 of 93 requests understood against 73. Its Hugging Face copy is empty, so it comes from
@@ -39,19 +41,17 @@ impl ParakeetFiles {
     /// a Hugging Face repo with the sherpa-onnx export.
     pub fn fetch(model: &str) -> Result<Self> {
         if let Some(&(_, stem, sha256)) = ARCHIVES.iter().find(|(name, ..)| *name == model) {
-            return Ok(Self::in_dir(&unpacked(stem, sha256)?));
+            return Ok(Self::in_dir(&models::unpacked(RELEASE, stem, sha256)?));
         }
         if Path::new(model).is_dir() {
             return Ok(Self::in_dir(Path::new(model)));
         }
-        let api = hf_hub::api::sync::ApiBuilder::from_env().build()?;
-        let repo_api = api.model(model.to_owned());
-        let get = |file: &str| repo_api.get(file).with_context(|| format!("fetching {model}/{file}"));
+        let repo = HubRepo::model(model)?;
         Ok(Self {
-            encoder: get("encoder.int8.onnx")?,
-            decoder: get("decoder.int8.onnx")?,
-            joiner: get("joiner.int8.onnx")?,
-            tokens: get("tokens.txt")?,
+            encoder: repo.get("encoder.int8.onnx")?,
+            decoder: repo.get("decoder.int8.onnx")?,
+            joiner: repo.get("joiner.int8.onnx")?,
+            tokens: repo.get("tokens.txt")?,
         })
     }
 
@@ -63,28 +63,6 @@ impl ParakeetFiles {
             tokens: dir.join("tokens.txt"),
         }
     }
-}
-
-/// The release archive `stem`, downloaded, checked and unpacked once into the model cache.
-fn unpacked(stem: &str, sha256: &str) -> Result<PathBuf> {
-    let root = crate::wakeword::cache_dir().join("sherpa-onnx");
-    let dir = root.join(stem);
-    // Written last, so a half-unpacked directory is not taken for the model.
-    let done = dir.join(".unpacked");
-    if done.exists() {
-        return Ok(dir);
-    }
-    let file = format!("{stem}.tar.bz2");
-    let archive = crate::wakeword::fetch_from(&root, RELEASE, (&file, sha256))?;
-    let reader = std::fs::File::open(&archive).with_context(|| format!("opening {}", archive.display()))?;
-    tar::Archive::new(bzip2::read::BzDecoder::new(reader))
-        .unpack(&root)
-        .with_context(|| format!("unpacking {}", archive.display()))?;
-    std::fs::write(&done, b"")?;
-    // The archive is only needed until it is unpacked; the models volume is small.
-    let _ = std::fs::remove_file(&archive);
-    let _ = std::fs::remove_dir_all(dir.join("test_wavs"));
-    Ok(dir)
 }
 
 pub struct Parakeet {
