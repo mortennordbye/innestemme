@@ -37,3 +37,5 @@ metal = ["voice-assistant/metal"]
 
 [dev-dependencies]
 cpal = "0.18"
+# Paused time for the satellite bridge's tests.
+tokio = { workspace = true, features = ["test-util"] }

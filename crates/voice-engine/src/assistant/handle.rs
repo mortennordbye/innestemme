@@ -211,4 +211,60 @@ impl AssistantHandle {
         });
         (handle, move || asked.lock().unwrap().clone())
     }
+
+    /// A handle with no assistant behind it, and a record of what was asked of it: the satellite
+    /// bridge's tests.
+    #[cfg(test)]
+    pub(crate) fn recorded_for_tests() -> (Self, Calls) {
+        let (mut handle, _) = Self::for_tests();
+        let (jobs, received) = mpsc::channel();
+        handle.jobs = jobs;
+        let calls = Calls {
+            jobs: received,
+            hear_now: handle.hear_now.clone(),
+            interrupted: handle.interrupted.clone(),
+            name_checks: Default::default(),
+        };
+        (handle, calls)
+    }
+}
+
+/// What a satellite bridge asked of an [`AssistantHandle::recorded_for_tests`] handle.
+#[cfg(test)]
+pub(crate) struct Calls {
+    jobs: mpsc::Receiver<Job>,
+    hear_now: Arc<AtomicBool>,
+    interrupted: Arc<AtomicBool>,
+    /// Name checks not answered yet, oldest first.
+    pub(crate) name_checks: std::collections::VecDeque<tokio::sync::oneshot::Sender<Option<bool>>>,
+}
+
+#[cfg(test)]
+impl Calls {
+    /// The calls since the last take, by the handle's method, in order; then the flags set since,
+    /// which carry no order of their own.
+    pub(crate) fn take(&mut self) -> Vec<String> {
+        let mut calls: Vec<String> = Vec::new();
+        for job in self.jobs.try_iter() {
+            calls.push(match job {
+                Job::Woken(_, WakeName::Unknown) => "woke".into(),
+                Job::Woken(_, WakeName::Check(audio)) => format!("woke_on {} samples", audio.len()),
+                Job::Woken(_, WakeName::Heard) => "woke_named".into(),
+                Job::CheckName(audio, reply) => {
+                    self.name_checks.push_back(reply);
+                    format!("check_name {} samples", audio.len())
+                }
+                Job::NothingAsked => "gave_up".into(),
+                Job::Satellite(names) => format!("satellite {names:?}"),
+                _ => "another job".into(),
+            });
+        }
+        if self.interrupted.swap(false, Relaxed) {
+            calls.push("interrupt".into());
+        }
+        if self.hear_now.swap(false, Relaxed) {
+            calls.push("hear_now".into());
+        }
+        calls
+    }
 }
