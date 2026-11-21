@@ -845,6 +845,25 @@ async fn lost_spoken_event_ends_the_run_after_a_minute_of_quiet() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_request_long_after_the_last_answer_is_answered() {
+    for mode in ALL {
+        let mut h = Harness::new(mode);
+        h.start().await;
+        h.heard("what time is it").await;
+        h.answer("It's ten past three.").await;
+        h.speech(0.5).await;
+        h.spoken().await;
+        h.after(Duration::from_secs(300)).await;
+        h.start().await;
+        h.heard("what time is it").await;
+        // The minute of quiet counts from this request, not from the last answer's speech.
+        assert!(!h.after(TICK).await.iter().any(|e| e == "RunEnd"), "{mode:?}");
+        assert!(h.bridge.run == Run::Answering, "{mode:?}");
+        assert!(!h.answer("It's twenty past three.").await.is_empty(), "{mode:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn speaker_answer_still_playing_is_not_quiet() {
     let mut h = Harness::new(Mode::Speaker);
     h.start().await;
