@@ -23,8 +23,8 @@ const PARTY_WORDS: &[&str] = &["party", "party's", "partymode", "festmodus", "fe
 const FAST_WORDS: &[&str] = &["fast", "faster", "strobe", "rave", "rask", "raskt", "raskere"];
 // "Slope the party" (16 Nov) was "stop the party": a sound-alike of stop is never a start.
 const OFF_WORDS: &[&str] = &[
-    "stop", "stops", "stopped", "slope", "stomp", "end", "off", "over", "cancel", "enough", "stopp", "slutt", "av",
-    "ferdig",
+    "stop", "stops", "stopped", "slope", "stomp", "pause", "kill", "disable", "end", "off", "over", "cancel", "enough",
+    "stopp", "slutt", "av", "ferdig",
 ];
 /// Words that ask for the party to start. Without one, "<verb> the party" is not a start: an
 /// unknown verb may be a misheard "stop".
@@ -32,9 +32,6 @@ const START_WORDS: &[&str] = &[
     "started",
     "activate",
     "enable",
-    "please",
-    "lights",
-    "get",
     "start",
     "begin",
     "let's",
@@ -89,7 +86,10 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
         return Some(PartyCommand::Off);
     }
     let paced = has(NORMAL_WORDS) || has(FAST_WORDS) || has(RELAXED_WORDS);
-    if !has(START_WORDS) && !paced && words.len() > 1 {
+    // "Party please", "party lights": short asks; in a longer sentence those words start nothing.
+    let short =
+        matches!(words, [a, b] if PARTY_WORDS.contains(&a.as_str()) && ["please", "lights"].contains(&b.as_str()));
+    if !has(START_WORDS) && !paced && !short && words.len() > 1 {
         return None;
     }
     let pace = if has(NORMAL_WORDS) {
@@ -146,6 +146,12 @@ mod tests {
         assert_eq!(party("Have a party"), Some(PartyCommand::On(Pace::Normal)));
         for start in ["Get the party started", "Party please", "Party lights", "Enable party", "Activate the party"] {
             assert_eq!(party(start), Some(PartyCommand::On(Pace::Normal)), "{start}");
+        }
+        for stop in ["Pause the party please", "Kill the party lights", "Disable party mode"] {
+            assert_eq!(party(stop), Some(PartyCommand::Off), "{stop}");
+        }
+        for talk in ["Shop the party please", "Get rid of the party", "I didn't get invited to the party"] {
+            assert_eq!(party(talk), None, "{talk}");
         }
     }
 }

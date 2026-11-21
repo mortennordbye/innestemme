@@ -89,8 +89,6 @@ const HISTORY_TURNS: usize = 4;
 const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// After a bare name or an answer, speech within this time needs no name.
 const FOLLOW_UP: Duration = Duration::from_secs(8);
-/// A draft this soon after one that was answered belongs to the same utterance.
-const SAME_UTTERANCE: Duration = Duration::from_secs(2);
 /// How long "Turn on privacy mode?" waits for its "yes".
 const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 /// How often the home's forecast and electricity prices are fetched while idle, so asking for them
@@ -311,11 +309,9 @@ struct Worker {
     wake_named: Option<bool>,
     /// Sentences spoken lately, to tell the answer coming back through the microphone from a request.
     said: VecDeque<(Instant, String)>,
-    /// A command was acted on from its draft, of this many samples: the utterance it ends in is
-    /// not answered again.
-    answered_draft: Option<usize>,
-    /// When a draft was last answered: a later draft soon after is the same utterance going on.
-    draft_answered_at: Option<Instant>,
+    /// A command was acted on from this draft: a later draft or the utterance that starts with
+    /// the same audio is that speech going on, and is not answered again.
+    answered_draft: Option<Vec<i16>>,
     /// What undoes the music command answered from the draft, for a request that goes on to name
     /// another room.
     draft_undo: Option<MusicCommand>,
@@ -575,8 +571,10 @@ impl Worker {
         let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
         // Kept only for the rest of a request answered from its draft.
         let undo = self.draft_undo.take();
-        if let Some(len) = self.answered_draft.take() {
-            if audio.len() <= len + closing {
+        // Audio that does not start with the answered draft is a new utterance: the draft's own
+        // end was lost while the engine was deaf to its answer.
+        if let Some(draft) = self.answered_draft.take().filter(|draft| audio.starts_with(draft)) {
+            if audio.len() <= draft.len() + closing {
                 info!("answered from the draft");
                 return;
             }
@@ -620,12 +618,11 @@ impl Worker {
     fn act_on_draft(&mut self) {
         // A later draft of an utterance already answered from a draft is the same request again:
         // "Hey Jarvis stop the party" was answered twice, 0.6 s apart (16 Nov). The utterance's end
-        // still takes the rest of it. Only soon after: while the answer plays the engine is deaf,
-        // and the utterance's end, which clears `answered_draft`, can be lost.
-        if self.answered_draft.is_some() && self.draft_answered_at.is_some_and(|at| at.elapsed() < SAME_UTTERANCE) {
+        // still takes the rest of it.
+        let Some((audio, candidates)) = &self.draft else { return };
+        if self.answered_draft.as_ref().is_some_and(|answered| audio.starts_with(answered)) {
             return;
         }
-        let Some((_, candidates)) = &self.draft else { return };
         let Some(first) = candidates.first() else { return };
         let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);
         let request = match self.config.wake.strip(&first.text) {
@@ -650,8 +647,7 @@ impl Worker {
         let pause = Duration::from_secs_f32((vad::DRAFT_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
         let now = Instant::now();
         self.speech_ended = now.checked_sub(pause);
-        self.answered_draft = Some(audio.len());
-        self.draft_answered_at = Some(now);
+        self.answered_draft = Some(audio.clone());
         self.heard(&candidates, &audio, now, now, true);
         self.draft_undo = undo;
     }
