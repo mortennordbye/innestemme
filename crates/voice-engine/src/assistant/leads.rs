@@ -20,14 +20,9 @@ pub(super) fn lead_sentence(lead: &str, honorific: Option<&str>) -> String {
 
 impl Worker {
     /// The lead-in for a request whose answer is slow to get or to say, when speech is rendered
-    /// ahead of time. Not when a pending question takes the words ("Which room?" "The kitchen.").
+    /// ahead of time. Not when a question asked back takes the words ("Which room?" "The kitchen.").
     pub(super) fn lead_in(&mut self, text: &str, lang: Lang) -> Option<String> {
-        let pending = self.pending_lights.is_some()
-            || self.list_is_open()
-            || self.pending_scene.is_some()
-            || self.pending_confirm.is_some()
-            || self.timers.awaiting_duration();
-        if lang != Lang::English || self.render.is_none() || pending {
+        if lang != Lang::English || self.render.is_none() || self.awaiting().is_some() {
             return None;
         }
         // Several requests: the first one's lead-in.

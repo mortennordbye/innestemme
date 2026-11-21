@@ -40,7 +40,7 @@ impl Worker {
         let Some(ha) = &self.home_assistant else { return false };
         let Some(player) = self.player.room_player(ha, room) else { return false };
         let speaker = self.player.check(ha).ok();
-        is_here(self.hushed.as_ref(), speaker.as_deref(), &player)
+        is_here(self.conversation.hushed.as_ref(), speaker.as_deref(), &player)
     }
 
     /// What undoes a music command a draft did here at once, should the request go on to name
@@ -52,7 +52,7 @@ impl Worker {
         use voice_assistant::intent::MusicCommand::*;
         match command {
             // Only music that played: resuming would otherwise start music nobody asked for.
-            Pause | Stop if self.hushed.is_some() || self.music_playing() => Some(Resume),
+            Pause | Stop if self.conversation.hushed.is_some() || self.music_playing() => Some(Resume),
             Mute(true) => Some(Mute(false)),
             Louder | Quieter | VolumeBy(_) | VolumeTo(_) => {
                 let ha = self.home_assistant.as_ref()?;
@@ -71,7 +71,7 @@ impl Worker {
 
     /// Pauses the music for the request that follows a wake word.
     pub(super) fn hush(&mut self) {
-        if let Some(hushed) = &mut self.hushed {
+        if let Some(hushed) = &mut self.conversation.hushed {
             hushed.last_heard = Instant::now();
             return;
         }
@@ -92,11 +92,11 @@ impl Worker {
         }
         info!(players = ?ids, "music paused for a request");
         let now = Instant::now();
-        self.hushed = Some(Hushed { players, at: now, last_heard: now });
+        self.conversation.hushed = Some(Hushed { players, at: now, last_heard: now });
     }
 
     pub(super) fn unhush(&mut self) {
-        let Some(hushed) = self.hushed.take() else { return };
+        let Some(hushed) = self.conversation.hushed.take() else { return };
         let Some(ha) = &self.home_assistant else { return };
         // A speaker's own player resumes whatever its transport holds by then (a radio station, a
         // stale stream), so only one still holding what was paused plays on.

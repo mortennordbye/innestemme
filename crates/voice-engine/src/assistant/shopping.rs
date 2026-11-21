@@ -21,7 +21,7 @@ impl Worker {
             return not_connected(no);
         };
         let adding = matches!(command, ListCommand::Add(_));
-        self.list_open = adding.then(Instant::now);
+        self.conversation.list_open = adding.then(Instant::now);
         self.shopping.brief = brief;
         match self.shopping.run(ha, &command, lang) {
             Ok((answer, change)) => {
@@ -68,7 +68,7 @@ impl Worker {
         if !changes.is_empty() {
             self.last_list = Some((changes, Instant::now()));
         }
-        self.list_open = Some(Instant::now());
+        self.conversation.list_open = Some(Instant::now());
         answers.extend(failed);
         answers.join(" ")
     }
@@ -87,10 +87,6 @@ impl Worker {
             }
         }
         voice_assistant::shopping::items_of(text)
-    }
-
-    pub(super) fn list_is_open(&self) -> bool {
-        self.list_open.is_some_and(|at| at.elapsed() < LIST_OPEN)
     }
 }
 

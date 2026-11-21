@@ -40,7 +40,7 @@ use super::handle::AssistantHandle;
 use super::home::watch_alerts;
 use super::pause::Pause;
 use super::wake::NameChecker;
-use super::{unreachable_text, AssistantConfig, AssistantEvent, Job, Worker};
+use super::{unreachable_text, AssistantConfig, AssistantEvent, Conversation, Job, Worker};
 
 /// Covers the STT's 0.5 s delay plus the room's echo tail.
 const DEAF_AFTER_REPLY_FRAMES: u64 = 13;
@@ -154,25 +154,14 @@ impl AssistantProcessor {
             transcriber,
             name_checker: None,
             wake_check: None,
-            draft: None,
-            follow_up_until: None,
-            woken_at: None,
-            wake_named: None,
+            conversation: Conversation::default(),
             said: VecDeque::new(),
-            answered_draft: None,
-            draft_undo: None,
-            hushed: None,
             speech_ended: None,
-            history: VecDeque::new(),
             last_lights: None,
-            pending_lights: None,
             shopping,
             last_list: None,
-            list_open: None,
             request_audio: Vec::new(),
             turn: None,
-            pending_scene: None,
-            pending_confirm: None,
             timers,
             memory,
             notes_said: Vec::new(),
@@ -192,11 +181,7 @@ impl AssistantProcessor {
             light_undo_gone: None,
             lockdown_tv: None,
             open_source_party: false,
-            follow_up_closed: false,
             threat_turn: 0,
-            music_under_answer: false,
-            after_answer: None,
-            after_answer_at: None,
             alarm: None,
             refreshed: None,
         };

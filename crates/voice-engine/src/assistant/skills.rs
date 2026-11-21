@@ -15,7 +15,7 @@ use voice_assistant::shopping::ListCommand;
 use crate::party;
 
 use super::screen::SCREEN_MOMENT;
-use super::{not_connected, time_of_day, unreachable, Worker};
+use super::{not_connected, time_of_day, unreachable, AfterAnswer, Worker};
 
 /// How long the Hue bridge takes to let go of the lights once party mode's stream stops; calls
 /// to them before then are lost.
@@ -170,7 +170,7 @@ impl Worker {
         // The stream changes the lights: undo has no look from before it to go back to.
         self.forget_light_undo();
         // Room talk over the music in a follow-up window would be taken as a request ("play").
-        self.follow_up_closed = true;
+        self.conversation.follow_up_closed = true;
         match (pace, no) {
             (Pace::Relaxed, false) => "Okay, relaxed party mode is on.",
             (Pace::Normal, false) => "Okay, party mode is on.",
@@ -190,11 +190,11 @@ impl Worker {
         self.config.party.stop();
         self.forget_light_undo();
         self.spawn_party_restore(PARTY_RELEASE);
-        self.follow_up_closed = true;
+        self.conversation.follow_up_closed = true;
         if std::mem::take(&mut self.open_source_party) {
             // The music was paused for the request: it stays paused under the answer, then stops.
-            self.hushed = None;
-            self.after_answer = Some((MusicCommand::Stop, None));
+            self.conversation.hushed = None;
+            self.conversation.after_answer = Some(AfterAnswer::new(MusicCommand::Stop, None, false));
             // The lockdown's TV stays with it until standing down.
             if !self.locked_down {
                 self.tv_back();
@@ -211,10 +211,10 @@ impl Worker {
         if self.config.party.mode().is_none() {
             return started;
         }
-        self.after_answer = Some((MusicCommand::Song(self.config.open_source_music.clone()), None));
         // Under the answer, like the lockdown's music: a start just as the answer's announcement ends
         // on the same speaker can hang in Music Assistant.
-        self.music_under_answer = true;
+        let song = MusicCommand::Song(self.config.open_source_music.clone());
+        self.conversation.after_answer = Some(AfterAnswer::new(song, None, true));
         self.open_source_party = true;
         self.screen_on_tv();
         self.show("open_source", serde_json::json!({}), None);
@@ -473,7 +473,7 @@ impl Worker {
         let scene = match ha::resolve_scene(&scenes, request, here.as_deref()) {
             ha::SceneMatch::Found(scene) => scene.clone(),
             ha::SceneMatch::WhichRoom => {
-                self.pending_scene = Some(request.to_owned());
+                self.conversation.pending_scene = Some((request.to_owned(), Instant::now()));
                 return if no { "Hvilket rom?" } else { "Which room?" }.into();
             }
             ha::SceneMatch::NotFound if no => return "Jeg fant ikke den scenen.".into(),

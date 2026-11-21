@@ -61,7 +61,7 @@ impl Worker {
         match self.light_target(request, lang) {
             Ok(Some(target)) => self.switch(&target, on, lang, false),
             Ok(None) => {
-                self.pending_lights = Some(on);
+                self.conversation.pending_lights = Some((on, Instant::now()));
                 if lang == Lang::Norwegian { "Hvilket rom?" } else { "Which room?" }.into()
             }
             Err(answer) => answer,

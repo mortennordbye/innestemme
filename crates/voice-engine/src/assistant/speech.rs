@@ -11,11 +11,11 @@ use voice_proto::SAMPLE_RATE;
 use crate::activity;
 
 use super::follow_up::ECHO_WINDOW;
-use super::{AnnounceOn, Announcement, AssistantEvent, Worker, FOLLOW_UP};
+use super::{AnnounceOn, Announcement, AssistantEvent, TurnEnd, Worker};
 
 /// From queuing an answer to the speaker having played it: its length and this for the player to
 /// start. Music started or stopped sooner cuts the announcement off.
-const ANSWER_START: Duration = Duration::from_millis(1500);
+pub(super) const ANSWER_START: Duration = Duration::from_millis(1500);
 
 /// Where a sentence's speech starts (about -38 dBFS, above Kokoro's noise floor), and how much before
 /// that is kept (10 ms).
@@ -120,7 +120,6 @@ impl Worker {
     }
 
     pub(super) fn finish(&mut self, spoken: Spoken, start: Instant) {
-        self.woken_at = None;
         self.live.clear();
         let seconds = spoken.samples as f32 / SAMPLE_RATE as f32;
         // `after_speech`: from the end of the speaker's words to the first audio of the answer.
@@ -132,18 +131,7 @@ impl Worker {
                 .activity
                 .record(activity::Turn { after_ms: after_speech.map(|d| d.as_millis() as u64), ..turn });
         }
-        self.emit(AssistantEvent::Spoken);
-        // After the answer is queued: the speaker's announcement ducks the music under it.
-        self.unhush();
-        // The reply is queued faster than it plays; the window opens when it has been heard.
-        self.follow_up_until = (!std::mem::take(&mut self.follow_up_closed))
-            .then(|| Instant::now() + Duration::from_secs_f32(seconds) + FOLLOW_UP);
-        if self.after_answer.is_some() {
-            // The lockdown's and the open source party's music start under the answer; other music waits for it.
-            let wait = if self.music_under_answer { Duration::ZERO } else { Duration::from_secs_f32(seconds) };
-            self.after_answer_at = Some(Instant::now() + wait + ANSWER_START);
-        }
-        self.busy.store(false, Relaxed);
+        self.end_turn(TurnEnd::Spoken { seconds });
     }
 
     /// Speaks outside a conversation, after a chime. The audio also goes to satellites as an

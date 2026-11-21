@@ -14,6 +14,7 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
+use super::conversation::{CONFIRM_WINDOW, ROOM_WINDOW};
 use super::*;
 
 /// Speech output that says nothing: the dialog is read from the answer events.
@@ -223,25 +224,14 @@ impl Worker {
             transcriber: Box::new(Deaf),
             name_checker: None,
             wake_check: None,
-            draft: None,
-            follow_up_until: None,
-            woken_at: None,
-            wake_named: None,
+            conversation: Conversation::default(),
             said: VecDeque::new(),
-            answered_draft: None,
-            draft_undo: None,
-            hushed: None,
             speech_ended: None,
-            history: VecDeque::new(),
             last_lights: None,
-            pending_lights: None,
             shopping: ShoppingList::default(),
             last_list: None,
-            list_open: None,
             request_audio: Vec::new(),
             turn: None,
-            pending_scene: None,
-            pending_confirm: None,
             timers: Timers::default(),
             memory: Memory::default(),
             notes_said: Vec::new(),
@@ -261,11 +251,7 @@ impl Worker {
             light_undo_gone: None,
             lockdown_tv: None,
             open_source_party: false,
-            follow_up_closed: false,
             threat_turn: 0,
-            music_under_answer: false,
-            after_answer: None,
-            after_answer_at: None,
             alarm: None,
             refreshed: None,
         };
@@ -367,10 +353,10 @@ fn a_scene_room_said_without_the_name_answers_which_room() {
 fn arming_the_alarm_waits_for_yes() {
     let mut dialog = Dialog::new(None);
     assert_eq!(said(dialog.say("Jarvis, arm the alarm")), "Arm the alarm?");
-    assert!(dialog.worker.pending_confirm.is_some());
+    assert!(dialog.worker.conversation.pending_confirm.is_some());
     // "Yes" without the name reaches the alarm, here a missing Home Assistant.
     assert_eq!(said(dialog.say("yes")), "Home Assistant isn't connected yet.");
-    assert!(dialog.worker.pending_confirm.is_none());
+    assert!(dialog.worker.conversation.pending_confirm.is_none());
 }
 
 #[test]
@@ -379,9 +365,9 @@ fn no_leaves_the_alarm_and_other_words_are_the_room() {
     assert_eq!(said(dialog.say("Jarvis, turn on privacy mode")), "Turn on privacy mode?");
     // Not a yes or a no, without the name: the room talking, and the question still waits.
     assert_eq!(dialog.say("we should get going"), None);
-    assert!(dialog.worker.pending_confirm.is_some());
+    assert!(dialog.worker.conversation.pending_confirm.is_some());
     assert_eq!(said(dialog.say("no")), "Okay, I'll leave it.");
-    assert!(dialog.worker.pending_confirm.is_none());
+    assert!(dialog.worker.conversation.pending_confirm.is_none());
 }
 
 #[test]
@@ -389,14 +375,14 @@ fn the_shopping_list_takes_items_while_open() {
     let ha = FakeHa::new();
     let mut dialog = Dialog::new(Some(&ha));
     assert_eq!(said(dialog.say("Jarvis, add to the shopping list")), "What should I add?");
-    assert!(dialog.worker.list_is_open());
+    assert!(dialog.worker.conversation.list_is_open());
     let answer = said(dialog.say("milk"));
     assert!(answer.starts_with("Added milk."), "{answer}");
     // More items, without "add" or the name, while the list is open.
     let answer = said(dialog.say("eggs and butter"));
     assert!(answer.starts_with("Added eggs and butter."), "{answer}");
     assert_eq!(said(dialog.say("no, that's it")), "Okay, that's everything.");
-    assert!(!dialog.worker.list_is_open());
+    assert!(!dialog.worker.conversation.list_is_open());
     let added: Vec<String> = ha.take_calls().into_iter().filter(|c| c.starts_with("todo.add_item")).collect();
     assert_eq!(added.len(), 3, "{added:?}");
 }
@@ -489,7 +475,7 @@ fn a_refresh_keeps_a_question_waiting_for_yes() {
     let mut dialog = Dialog::new(None);
     assert_eq!(said(dialog.say("Jarvis, arm the alarm")), "Arm the alarm?");
     said(dialog.compose_aside("what time is it"));
-    assert!(dialog.worker.pending_confirm.is_some());
+    assert!(dialog.worker.conversation.pending_confirm.is_some());
 }
 
 #[test]
@@ -498,7 +484,7 @@ fn a_refresh_keeps_the_shopping_list_open() {
     let mut dialog = Dialog::new(Some(&ha));
     assert_eq!(said(dialog.say("Jarvis, add to the shopping list")), "What should I add?");
     said(dialog.compose_aside("what time is it"));
-    assert!(dialog.worker.list_is_open());
+    assert!(dialog.worker.conversation.list_is_open());
 }
 
 #[test]
@@ -515,7 +501,7 @@ fn a_web_button_keeps_which_room() {
     let mut dialog = Dialog::new(Some(&ha));
     assert_eq!(said(dialog.say("Jarvis, turn on the lights")), "Which room?");
     assert_eq!(dialog.worker.typed("what time is it"), time_of_day(Lang::English));
-    assert!(dialog.worker.pending_lights.is_some());
+    assert!(dialog.worker.conversation.pending_lights.is_some());
 }
 
 #[test]
@@ -536,4 +522,131 @@ fn norwegian_lights_ask_which_room_in_norwegian() {
     let answer = said(dialog.say_in(Lang::Norwegian, "kjøkkenet"));
     assert!(answer.starts_with("Ok"), "{answer}");
     assert_eq!(ha.take_calls(), [r#"light.turn_on {"entity_id":["light.kitchen"]}"#]);
+}
+
+/// A question asked `by` earlier than it was.
+fn asked_earlier(at: &mut Instant, by: Duration) {
+    *at -= by;
+}
+
+#[test]
+fn which_room_for_the_lights_goes_after_its_window() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, turn on the lights")), "Which room?");
+    let (_, at) = dialog.worker.conversation.pending_lights.as_mut().unwrap();
+    asked_earlier(at, ROOM_WINDOW + Duration::from_secs(1));
+    assert_eq!(dialog.worker.awaiting(), None);
+    // Even with the name, a room said long after is not the answer.
+    assert_eq!(said(dialog.say("Jarvis, the kitchen")), "Sorry, I can't help with that yet.");
+    assert!(ha.take_calls().is_empty());
+    assert!(dialog.worker.conversation.pending_lights.is_none());
+}
+
+#[test]
+fn which_room_for_a_scene_goes_after_its_window() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, activate the relax scene")), "Which room?");
+    let (_, at) = dialog.worker.conversation.pending_scene.as_mut().unwrap();
+    asked_earlier(at, ROOM_WINDOW + Duration::from_secs(1));
+    assert_eq!(dialog.worker.awaiting(), None);
+    assert_eq!(said(dialog.say("Jarvis, the kitchen")), "Sorry, I can't help with that yet.");
+    assert!(ha.take_calls().iter().all(|call| !call.starts_with("scene.")));
+}
+
+#[test]
+fn a_yes_after_the_confirm_window_is_the_room() {
+    let mut dialog = Dialog::new(None);
+    assert_eq!(said(dialog.say("Jarvis, arm the alarm")), "Arm the alarm?");
+    let (_, at) = dialog.worker.conversation.pending_confirm.as_mut().unwrap();
+    asked_earlier(at, CONFIRM_WINDOW + Duration::from_secs(1));
+    assert_eq!(dialog.worker.awaiting(), None);
+    // In the follow-up window, without the name: no longer taken as the reply.
+    assert_eq!(dialog.say("yes"), None);
+}
+
+#[test]
+fn never_mind_drops_every_question() {
+    let ha = FakeHa::new();
+    for asks in [
+        "Jarvis, turn on the lights",
+        "Jarvis, activate the relax scene",
+        "Jarvis, arm the alarm",
+        "Jarvis, add to the shopping list",
+        "Jarvis, set a timer",
+        "Jarvis, remember something",
+    ] {
+        let mut dialog = Dialog::new(Some(&ha));
+        said(dialog.say(asks));
+        assert!(dialog.worker.awaiting().is_some(), "{asks}");
+        // Ends quietly, or is the reply ("Okay, I'll leave it."): either way nothing waits on.
+        dialog.say("Jarvis, never mind");
+        assert_eq!(dialog.worker.awaiting(), None, "{asks}");
+        let conversation = &dialog.worker.conversation;
+        assert!(conversation.pending_lights.is_none() && conversation.pending_scene.is_none(), "{asks}");
+        assert!(conversation.pending_confirm.is_none() && conversation.list_open.is_none(), "{asks}");
+    }
+}
+
+#[test]
+fn an_answer_that_ends_the_conversation_takes_the_closed_follow_up_with_it() {
+    let mut dialog = Dialog::new(None);
+    // As a skill that closes the window (party mode) and then ends without an answer.
+    dialog.worker.conversation.follow_up_closed = true;
+    assert_eq!(dialog.say("Jarvis, never mind"), None);
+    assert!(!dialog.worker.conversation.follow_up());
+    assert!(!dialog.worker.conversation.follow_up_closed);
+    // The next answer opens its window as usual.
+    assert_eq!(said(dialog.say("Jarvis, what time is it")), time_of_day(Lang::English));
+    assert!(dialog.worker.conversation.follow_up());
+}
+
+#[test]
+fn an_interrupt_with_nothing_asked_after_it_is_cleared() {
+    let mut dialog = Dialog::new(None);
+    // The wake word said over an answer, and then nothing.
+    dialog.worker.interrupted.store(true, Relaxed);
+    dialog.worker.woken(Instant::now(), WakeName::Heard);
+    dialog.worker.end_turn(TurnEnd::Silent);
+    assert!(!dialog.worker.interrupted.load(Relaxed));
+    assert!(dialog.worker.conversation.wake.is_none());
+}
+
+#[test]
+fn every_question_asked_back_holds_the_lead_in_and_goes_with_a_new_request() {
+    let ha = FakeHa::new();
+    let weather = "what's the weather";
+    let setups: [(&[&str], Awaiting); 8] = [
+        (&["Jarvis, turn on the lights"], Awaiting::LightsRoom),
+        (&["Jarvis, activate the relax scene"], Awaiting::SceneRoom),
+        (&["Jarvis, arm the alarm"], Awaiting::Confirm),
+        (&["Jarvis, add to the shopping list"], Awaiting::ListItems),
+        (&["Jarvis, set a timer"], Awaiting::TimerDuration),
+        (
+            &[
+                "Jarvis, set a pasta timer for 10 minutes",
+                "Jarvis, set an egg timer for 5 minutes",
+                "Jarvis, cancel the timer",
+            ],
+            Awaiting::WhichTimer,
+        ),
+        (&["Jarvis, remember something"], Awaiting::RememberWhat),
+        (&["Jarvis, remember that the bins go out on Tuesday", "Jarvis, forget everything"], Awaiting::Forget),
+    ];
+    for (asks, awaiting) in setups {
+        let mut dialog = Dialog::new(Some(&ha));
+        dialog.worker.render = Some(RenderAhead::spawn(Box::new(Silent)).unwrap());
+        assert!(dialog.worker.lead_in(weather, Lang::English).is_some(), "a lead-in when nothing is asked");
+        for ask in asks {
+            said(dialog.say(ask));
+        }
+        assert_eq!(dialog.worker.awaiting(), Some(awaiting), "{asks:?}");
+        assert_eq!(dialog.worker.lead_in(weather, Lang::English), None, "{asks:?}");
+        // A preview leaves it; a new request said to the assistant drops it.
+        said(dialog.compose_aside("what time is it"));
+        assert_eq!(dialog.worker.awaiting(), Some(awaiting), "{asks:?}");
+        assert_eq!(said(dialog.say("Jarvis, what time is it")), time_of_day(Lang::English), "{asks:?}");
+        assert_eq!(dialog.worker.awaiting(), None, "{asks:?}");
+    }
 }

@@ -11,7 +11,7 @@ use voice_assistant::lang::Lang;
 use voice_assistant::music::Player;
 use voice_assistant::{house, tv};
 
-use super::{not_connected, unreachable, Worker};
+use super::{not_connected, unreachable, AfterAnswer, Worker};
 
 /// The Hue alert the lockdown's lights pulse with lasts about 15 seconds: started again before it ends.
 const ALARM_REPEAT: Duration = Duration::from_secs(14);
@@ -107,10 +107,9 @@ impl Worker {
         }
         self.screen_on_tv();
         // The lockdown's music replaces what was paused for the request.
-        self.hushed = None;
+        self.conversation.hushed = None;
         let music = MusicCommand::Song(self.config.lockdown_music.clone());
-        self.after_answer = Some((music, Some(level)));
-        self.music_under_answer = true;
+        self.conversation.after_answer = Some(AfterAnswer::new(music, Some(level), true));
         // When it began, so a TV that opens the screen later still counts from the start.
         let since = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         if !self.screen.showing("lockdown") {
@@ -160,9 +159,7 @@ impl Worker {
     /// answer has played. Volume first for new music, last when stopping, so neither is heard at
     /// the wrong level.
     pub(super) fn run_after_answer(&mut self) {
-        self.after_answer_at = None;
-        self.music_under_answer = false;
-        let Some((music, volume)) = self.after_answer.take() else { return };
+        let Some(AfterAnswer { music, volume, .. }) = self.conversation.after_answer.take() else { return };
         let Some(ha) = &self.home_assistant else { return };
         let set_volume = |player: &mut Player| {
             let Some(level) = volume else { return };
@@ -251,9 +248,8 @@ impl Worker {
             return if no { "Det er ingen nedstengning å avslutte." } else { "There is no lockdown to end." }.into();
         }
         // The music was paused for the request: it stays paused under the answer, then stops.
-        self.hushed = None;
-        self.after_answer = Some((MusicCommand::Stop, volume));
-        self.music_under_answer = false;
+        self.conversation.hushed = None;
+        self.conversation.after_answer = Some(AfterAnswer::new(MusicCommand::Stop, volume, false));
         info!(restored, ?volume, "lockdown over");
         self.tv_back();
         if self.screen.showing("lockdown") {
