@@ -148,8 +148,8 @@ struct Args {
     /// Write every detected utterance here as a wav, for tuning recognition on real voices.
     #[arg(long, env = "VOICE_DUMP_UTTERANCES")]
     dump_utterances: Option<PathBuf>,
-    /// Delete recordings in `dump-utterances` older than this many days (checked every hour).
-    /// Default: keep them all.
+    /// Delete recordings in `dump-utterances` made more than this many days before the newest one
+    /// (checked every hour), so a quiet week keeps the last days of use. Default: keep them all.
     #[arg(long, env = "VOICE_DUMP_KEEP_DAYS", value_parser = clap::value_parser!(u32).range(1..))]
     dump_keep_days: Option<u32>,
     /// Log requests no skill handled here, one JSON object per line, to see what to build next.
