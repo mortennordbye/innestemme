@@ -433,6 +433,192 @@ async fn done_without_words_ends_the_run() {
     assert_eq!(h.announced(0), NOTHING);
 }
 
+// --- The player's answer announced when its request is heard ---------------------------------
+
+/// The player's answer stream, while it is open.
+fn player_stream(h: &Harness) -> Option<Arc<Clip>> {
+    match &h.bridge.delivery {
+        Delivery::Player { answer: Some(answer), .. } => answer.clip.clone(),
+        _ => None,
+    }
+}
+
+/// A clip's audio, 24 kHz samples, and whether it is complete.
+fn clip_audio(clip: &Clip) -> (usize, bool) {
+    let (wav, done) = clip.read(0);
+    ((wav.len() - 44) / 2, done)
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_answer_is_announced_when_the_request_is_heard() {
+    let mut h = Harness::new(Mode::Player);
+    h.start().await;
+    // The device's events are as before; the player gets the answer's URL already.
+    assert_eq!(h.heard("what time is it").await, ["SttVadEnd", "SttEnd text=what time is it", "IntentStart"]);
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+    let clip = player_stream(&h).unwrap();
+    assert!(!h.bridge.player_answer());
+    // The words and their audio go into the stream already announced: no second call.
+    assert_eq!(h.answer("It's ten past three.").await, ["IntentEnd continue_conversation=0"]);
+    assert_eq!(h.speech(1.0).await, NOTHING);
+    assert!(Arc::ptr_eq(&clip, &player_stream(&h).unwrap()));
+    assert_eq!(clip_audio(&clip), (SAMPLE_RATE as usize, false));
+    assert_eq!(h.spoken().await, ["RunEnd"]);
+    assert_eq!(clip_audio(&clip), (SAMPLE_RATE as usize, true));
+    assert_eq!(h.announced(0), NOTHING);
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_with_server_wake_ends_the_device_run_when_the_answer_is_worded() {
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.audio(0.9).await;
+    h.heard("what time is it").await;
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+    // Not at the announce: the device's run, and the gates on the answer, wait for its words.
+    assert_eq!(h.after(Duration::from_secs(2)).await, NOTHING);
+    assert!(!h.bridge.player_answer());
+    assert_eq!(h.answer("It's ten past three.").await, ["IntentEnd continue_conversation=0"]);
+    assert!(h.bridge.player_answer());
+    assert_eq!(h.after(RUN_END_DELAY).await, ["RunEnd"]);
+    assert_eq!(h.announced(0), NOTHING);
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_answer_announced_early_that_ends_silent_plays_a_moment_of_silence() {
+    // Without the stream scored here: the run ends at once.
+    let mut h = Harness::new(Mode::Player);
+    h.start().await;
+    h.heard("what is twelve divided by").await;
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+    let clip = player_stream(&h).unwrap();
+    assert_eq!(h.event(AssistantEvent::Done).await, ["RunEnd"]);
+    assert_eq!(clip_audio(&clip), (SILENCE, true));
+    assert!(player_stream(&h).is_none());
+    assert_eq!(h.start().await[0], "accept");
+
+    // With it: a moment later, as after a spoken answer.
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.audio(0.9).await;
+    h.heard("what is twelve divided by").await;
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+    let clip = player_stream(&h).unwrap();
+    assert_eq!(h.event(AssistantEvent::Done).await, ["IntentEnd continue_conversation=0"]);
+    assert_eq!(clip_audio(&clip), (SILENCE, true));
+    assert!(!h.bridge.player_answer());
+    assert_eq!(h.after(RUN_END_DELAY).await, ["RunEnd"]);
+    // Nothing plays, so the next wake word is no interrupt.
+    assert_eq!(h.stream().await, ["accept", "RunStart", "WakeWordStart"]);
+    assert_eq!(
+        h.audio(0.9).await,
+        ["WakeWordEnd", "SttStart", "assistant: woke_on 1536 samples", "assistant: hear_now"]
+    );
+    assert_eq!(h.announced(0), NOTHING);
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_answer_with_no_words_within_three_seconds_ends_as_silence() {
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.audio(0.9).await;
+    h.heard("what time is it").await;
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+    let clip = player_stream(&h).unwrap();
+    assert_eq!(h.after(WORDING_WAIT - TICK).await, NOTHING);
+    assert_eq!(clip_audio(&clip), (0, false));
+    assert_eq!(h.after(TICK).await, NOTHING);
+    assert_eq!(clip_audio(&clip), (SILENCE, true));
+    // Words that still come are announced on their own, as before.
+    assert_eq!(h.answer("It's ten past three.").await, ["IntentEnd continue_conversation=0"]);
+    assert_eq!(h.announced(1), [answer_on_player(1)]);
+    assert_eq!(h.speech(1.0).await, NOTHING);
+    assert_eq!(clip_audio(&player_stream(&h).unwrap()), (SAMPLE_RATE as usize, false));
+    assert_eq!(h.after(RUN_END_DELAY).await, ["RunEnd"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_stop_and_wake_word_before_the_answer_is_worded_change_nothing() {
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.audio(0.9).await;
+    h.heard("tell me a story").await;
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+    // The device's run goes on until the words come, so it does not stream for the wake word.
+    assert_eq!(h.stop().await, NOTHING);
+    assert_eq!(h.audio(0.9).await, NOTHING);
+    assert_eq!(h.stream().await, ["refuse"]);
+    assert!(player_stream(&h).is_some());
+    h.answer("Once upon a time.").await;
+    h.after(RUN_END_DELAY).await;
+    h.stream().await;
+    h.speech(1.0).await;
+    // Once it is worded, the wake word over it interrupts it, as before.
+    assert_eq!(
+        h.audio(0.9).await,
+        ["WakeWordEnd", "SttStart", "assistant: woke_on 1536 samples", "assistant: interrupt", "assistant: hear_now"]
+    );
+    assert_eq!(h.announced(1), [format!("{ENTITY} {BASE}/speech/1.wav 40")]);
+    assert!(!h.player_clip());
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_stop_while_listening_announces_when_the_request_is_heard() {
+    let mut h = Harness::new(Mode::Player);
+    h.start().await;
+    h.stop().await;
+    assert_eq!(h.heard("what time is it").await, NOTHING);
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+    assert_eq!(h.answer("It's ten past three.").await, ["IntentEnd continue_conversation=0"]);
+    h.speech(1.0).await;
+    assert_eq!(h.spoken().await, ["RunEnd"]);
+    assert_eq!(h.announced(0), NOTHING);
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_request_likely_done_without_words_is_announced_only_with_words() {
+    for text in ["pause the music", "next song", "never mind"] {
+        let mut h = Harness::new(Mode::Player);
+        h.start().await;
+        h.heard(text).await;
+        assert!(player_stream(&h).is_none(), "{text}");
+        // Words after all ("Nothing is playing."): announced with them, as before.
+        assert_eq!(h.answer("Nothing is playing.").await, ["IntentEnd continue_conversation=0"], "{text}");
+        assert_eq!(h.announced(1), [answer_on_player(0)], "{text}");
+    }
+    // Two commands always end in words.
+    let mut h = Harness::new(Mode::Player);
+    h.start().await;
+    h.heard("pause the music and turn on the lights").await;
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_follow_up_counts_from_the_answer_s_first_audio_when_it_comes_late() {
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.audio(0.9).await;
+    h.heard("turn on the lights").await;
+    let announced = Instant::now();
+    h.after(Duration::from_secs(2)).await;
+    h.answer("Which room?").await;
+    h.speech(1.0).await;
+    h.spoken().await;
+    let played = announced + Duration::from_secs(2) + FIRST_AUDIO_LAG + Duration::from_secs(1);
+    assert_eq!(h.bridge.follow_up_at, Some(played));
+
+    // Audio that comes soon after the announce plays from the player's start.
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.audio(0.9).await;
+    h.heard("turn on the lights").await;
+    let announced = Instant::now();
+    h.answer("Which room?").await;
+    h.speech(1.0).await;
+    h.spoken().await;
+    assert_eq!(h.bridge.follow_up_at, Some(announced + PLAYER_START + Duration::from_secs(1)));
+}
+
 // --- A wake word over a playing answer --------------------------------------------------------
 
 #[tokio::test(start_paused = true)]

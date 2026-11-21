@@ -92,20 +92,34 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(20);
 pub struct Clip {
     state: Mutex<ClipState>,
     grew: Notify,
-    /// When the answer was ready to be fetched, to log how long a player took to ask for it.
+    /// When the answer was ready to be fetched, to log how long a player took to ask for it. An
+    /// answer player's clip opens as it is announced, so its times count from the announce.
     opened: std::time::Instant,
 }
 
 struct ClipState {
     wav: Vec<u8>,
     done: bool,
+    /// When its first audio came, and when Home Assistant's call to announce it returned.
+    first_audio: Option<std::time::Instant>,
+    announced: Option<std::time::Instant>,
 }
 
 impl Clip {
     /// Appends mono 16-bit samples.
     pub fn push(&self, pcm: &[i16]) {
-        self.state.lock().unwrap().wav.extend(pcm.iter().flat_map(|s| s.to_le_bytes()));
+        let mut state = self.state.lock().unwrap();
+        if !pcm.is_empty() {
+            state.first_audio.get_or_insert_with(std::time::Instant::now);
+        }
+        state.wav.extend(pcm.iter().flat_map(|s| s.to_le_bytes()));
+        drop(state);
         self.grew.notify_waiters();
+    }
+
+    /// Home Assistant's call to announce it has returned.
+    pub fn announced(&self) {
+        self.state.lock().unwrap().announced.get_or_insert_with(std::time::Instant::now);
     }
 
     /// No more audio: streaming responses end, and the header gets the real length.
@@ -122,7 +136,7 @@ impl Clip {
     }
 
     /// Bytes from `from` on, and whether the clip is complete.
-    fn read(&self, from: usize) -> (Vec<u8>, bool) {
+    pub(crate) fn read(&self, from: usize) -> (Vec<u8>, bool) {
         let state = self.state.lock().unwrap();
         (state.wav.get(from..).unwrap_or_default().to_vec(), state.done)
     }
@@ -162,7 +176,7 @@ impl SpeechClips {
         let n = self.next.fetch_add(1, Relaxed);
         let id = format!("{n:x}-{}", std::process::id());
         let clip = Arc::new(Clip {
-            state: Mutex::new(ClipState { wav: wav_header(rate), done: false }),
+            state: Mutex::new(ClipState { wav: wav_header(rate), done: false, first_audio: None, announced: None }),
             grew: Notify::new(),
             opened: std::time::Instant::now(),
         });
@@ -181,8 +195,49 @@ impl SpeechClips {
     }
 }
 
-/// Writes a clip: whole with a length when it is complete, else chunked as it grows.
+/// What one response sent of a clip: its bytes, and when the first audio went out.
+#[derive(Default)]
+struct Sent {
+    bytes: usize,
+    audio_at: Option<std::time::Instant>,
+}
+
+impl Sent {
+    fn add(&mut self, n: usize) {
+        self.bytes += n;
+        if self.bytes > WAV_HEADER {
+            self.audio_at.get_or_insert_with(std::time::Instant::now);
+        }
+    }
+}
+
+/// Writes a clip and logs one `answer stream` line for the request, in milliseconds from the clip's
+/// opening (an answer player's announce): when Home Assistant's call returned, the request came,
+/// the first audio existed, it went out, and the response ended. -1: it did not happen.
 async fn send_clip(stream: &mut TcpStream, clip: &Clip) -> std::io::Result<()> {
+    let fetched = std::time::Instant::now();
+    let mut sent = Sent::default();
+    let result = write_clip(stream, clip, &mut sent).await;
+    let ms = |at: Option<std::time::Instant>| at.map_or(-1, |at| at.duration_since(clip.opened).as_millis() as i64);
+    let (announced, audio) = {
+        let state = clip.state.lock().unwrap();
+        (state.announced, state.first_audio)
+    };
+    tracing::info!(
+        announce_ms = ms(announced),
+        fetch_ms = ms(Some(fetched)),
+        audio_ms = ms(audio),
+        sent_ms = ms(sent.audio_at),
+        bytes = sent.bytes,
+        ended_ms = ms(Some(std::time::Instant::now())),
+        complete = result.is_ok(),
+        "answer stream"
+    );
+    result
+}
+
+/// Writes a clip: whole with a length when it is complete, else chunked as it grows.
+async fn write_clip(stream: &mut TcpStream, clip: &Clip, sent: &mut Sent) -> std::io::Result<()> {
     let (bytes, done) = clip.read(0);
     if done {
         let head = format!(
@@ -190,7 +245,9 @@ async fn send_clip(stream: &mut TcpStream, clip: &Clip) -> std::io::Result<()> {
             bytes.len()
         );
         stream.write_all(head.as_bytes()).await?;
-        return stream.write_all(&bytes).await;
+        stream.write_all(&bytes).await?;
+        sent.add(bytes.len());
+        return Ok(());
     }
     stream
         .write_all(
@@ -199,13 +256,12 @@ async fn send_clip(stream: &mut TcpStream, clip: &Clip) -> std::io::Result<()> {
         .await?;
     // The header as it was when streaming began: a finished clip's header is rewritten with the
     // real length, which this response can no longer change.
-    let mut sent = 0;
     loop {
         let grew = clip.grew.notified();
         tokio::pin!(grew);
         grew.as_mut().enable();
-        let (bytes, done) = clip.read(sent);
-        let bytes = if sent == 0 && bytes.len() >= WAV_HEADER {
+        let (bytes, done) = clip.read(sent.bytes);
+        let bytes = if sent.bytes == 0 && bytes.len() >= WAV_HEADER {
             let mut head = wav_header(u32::from_le_bytes(bytes[24..28].try_into().unwrap()));
             head.extend_from_slice(&bytes[WAV_HEADER..]);
             head
@@ -216,7 +272,7 @@ async fn send_clip(stream: &mut TcpStream, clip: &Clip) -> std::io::Result<()> {
             stream.write_all(format!("{:x}\r\n", bytes.len()).as_bytes()).await?;
             stream.write_all(&bytes).await?;
             stream.write_all(b"\r\n").await?;
-            sent += bytes.len();
+            sent.add(bytes.len());
         }
         if done {
             return stream.write_all(b"0\r\n\r\n").await;

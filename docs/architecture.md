@@ -19,10 +19,15 @@ As deployed: a Home Assistant Voice PE in the living room, answers on a Sonos.
 | 7. The skill runs and words the answer; Home Assistant writes go to a queue | `assistant/`, `ha.rs`, skill modules | 0-50 ms for most |
 | 8. The persona styles it ("Very good, sir.", or "ma'am" for a female voice with `honorific-female`) | `persona.rs`, `voice_gender.rs` | |
 | 9. Each sentence comes from the speech cache, or from Kokoro | `speech_cache.rs`, `kokoro.rs` | 0 ms cached, 1-3 s on the cluster otherwise |
-| 10. Home Assistant announces the answer's URL on the Sonos, which streams it as it grows | `satellite.rs` | about 0.4 s until it sounds |
+| 10. Home Assistant announces the answer's URL on the Sonos, which streams it as it grows. The announce goes out when the request is heard (step 6), so the call and the Sonos fetch run while steps 7-9 word and speak the answer | `satellite.rs` | 0.46 s median (0.68 s p90) from the announce until it sounds, now mostly hidden behind steps 7-9 |
+
+The announce waits for the words only for a request that will likely end without them (the music stops, the next
+song starts, "never mind"): an announce ducks the music on the Sonos. A request announced early that still ends
+without words, or gets none within 3 s, plays 0.3 s of silence instead; words after that are announced on their own.
 
 So a cached answer is heard about 0.65 s after the end of a command that acts on its draft, and about 1.05 s
-after one that waits out the full pause. `docs/benchmarks.md` has the measurements.
+after one that waits out the full pause; the early announce takes up to the time steps 7-9 need off that.
+`docs/benchmarks.md` has the measurements.
 
 ## The parts
 
@@ -249,5 +254,5 @@ satellite is attached. A client that disappears without `Bye` holds the session 
 `voice_frame_process_seconds`, `voice_frame_total_seconds`; the gauge `voice_realtime_factor` must stay above 1.
 Counters worth alerting on: `voice_ring_overruns_total`, `voice_process_errors_total`, `voice_packets_lost_total`.
 The assistant's own timings are log lines: `heard` (transcription), `answering ... after` (deciding),
-`spoken ... after_speech` (end of speech to the first answer audio) and `answer heard on the device` (the Sonos
-starting).
+`spoken ... after_speech` (end of speech to the first answer audio), `answer heard on the device` (the Sonos
+starting, from the announce) and `answer stream` (each fetch of an answer, see `docs/voice-pe.md`).

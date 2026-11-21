@@ -31,6 +31,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant; // The system's monotonic clock, which tests can pause and advance.
 use tracing::{info, warn};
+use voice_assistant::intent::{self, Intent};
 use voice_assistant::resample;
 use voice_assistant::timer::NoticeKind;
 use voice_assistant::wakeword::{WakeDetector, WakeModels};
@@ -67,9 +68,17 @@ const WAKE_PREROLL: usize = 2 * DEVICE_RATE as usize;
 /// what the Sonos takes (0.41 s, "answer heard on the device"), so the follow-up does not hear the
 /// end of the answer; an echo that still gets through is dropped by the assistant.
 const PLAYER_START: Duration = Duration::from_millis(800);
+/// From an answer's first audio to its sound in the room, when the player fetched the answer before
+/// that audio existed: it buffers a little before it plays.
+const FIRST_AUDIO_LAG: Duration = Duration::from_millis(400);
+/// An answer announced when its request was heard waits this long for its words. Then it ends as a
+/// moment of silence, and words that still come are announced on their own: the player holds the
+/// fetch open meanwhile, and a slow answer opens with a lead-in, which comes at once.
+const WORDING_WAIT: Duration = Duration::from_secs(3);
 /// The device takes a few tens of milliseconds from the end of speech to waiting for the answer.
 const RUN_END_DELAY: Duration = Duration::from_millis(250);
-/// Announced over an answer to stop it: 0.3 s at 24 kHz.
+/// Announced over an answer to stop it, and what an answer announced early plays when no words come:
+/// 0.3 s at 24 kHz. An empty wav was never tried on the Sonos.
 const SILENCE: usize = 7200;
 /// How long after announcing an answer to watch for it in the microphone, how much of that sets the
 /// room's level (no player starts this fast), and how far above that level the answer is.
@@ -129,6 +138,16 @@ pub struct AnswerPlayer {
 impl AnswerPlayer {
     fn announce(&self, url: &str) -> Result<()> {
         self.announce_on(&self.entity, url)
+    }
+
+    /// Announces a clip on a blocking thread, since the call waits on Home Assistant. The clip notes
+    /// when the call returned, for its `answer stream` log line.
+    fn announce_clip(self: &Arc<Self>, url: String, clip: Arc<Clip>, failed: &'static str) {
+        let player = self.clone();
+        tokio::task::spawn_blocking(move || match player.announce(&url) {
+            Ok(()) => clip.announced(),
+            Err(error) => warn!(error = format!("{error:#}"), "{failed}"),
+        });
     }
 
     /// On another player through the same Home Assistant, at the answers' volume.
@@ -404,6 +423,39 @@ struct PlayerAnswer {
     announced_at: Instant,
     /// Its length so far, 24 kHz samples.
     samples: usize,
+    /// Its text has come (`Answer`). Until then it was only announced, when the request was heard.
+    worded: bool,
+    /// When its first audio came.
+    first_audio: Option<Instant>,
+}
+
+impl PlayerAnswer {
+    /// Ends its stream. One with no audio gets a moment of silence, since the player has fetched
+    /// it, or is about to.
+    fn finish(&mut self) {
+        if let Some(clip) = self.clip.take() {
+            if self.samples == 0 {
+                clip.push(&[0; SILENCE]);
+            }
+            clip.finish();
+        }
+    }
+
+    /// When it will have played in the room: from the player's start, or from its first audio
+    /// when that came later.
+    fn played_at(&self) -> Instant {
+        let started = self.announced_at + PLAYER_START;
+        let started = self.first_audio.map_or(started, |at| started.max(at + FIRST_AUDIO_LAG));
+        started + Duration::from_secs_f64(self.samples as f64 / SAMPLE_RATE as f64)
+    }
+}
+
+/// The request will likely be done without words, by the worker's own test on the same text: its
+/// result is heard (the music stops, the next song starts), or "never mind" ends it. An announce
+/// ducks the music on the Sonos, so these are announced only when words do come.
+fn likely_silent(text: &str) -> bool {
+    let parsed = intent::parse(text);
+    matches!(parsed, Intent::Cancel) || intent::split_commands(text).is_none() && parsed.meta().heard_by_itself
 }
 
 /// A speaker device's answer: 16 kHz audio not yet sent, and pacing.
@@ -431,9 +483,8 @@ enum AfterSpoken {
     Streaming,
     /// The device's run ends now.
     EndRun,
-    /// The answer on the player, when there was one: when it was announced, and its length (24 kHz
-    /// samples).
-    Player(Option<(Instant, usize)>),
+    /// The answer on the player, when there was one: when it will have played.
+    Player(Option<Instant>),
 }
 
 impl SpeakerStream {
@@ -504,6 +555,31 @@ impl Delivery {
         }
     }
 
+    /// The request was heard. On the player its answer is announced now, before it is worded, so that
+    /// Home Assistant's call and the player's fetch overlap the wording; the stream waits for the
+    /// audio. Not for a request that will likely end without words.
+    fn on_heard(&mut self, text: &str, speech: &SpeechClips, base_url: &str) {
+        if matches!(self, Delivery::Player { .. }) && !likely_silent(text) {
+            self.announce_answer(false, speech, base_url);
+        }
+    }
+
+    /// Opens the player's answer stream and announces it, before the first audio exists: the call
+    /// and the player's fetch take longer than synthesizing the first words.
+    fn announce_answer(&mut self, worded: bool, speech: &SpeechClips, base_url: &str) {
+        let Delivery::Player { player, answer, onset } = self else { return };
+        if let Some(mut old) = answer.take() {
+            old.finish();
+        }
+        let (path, clip) = speech.open(SAMPLE_RATE);
+        let url = format!("{base_url}{path}");
+        info!(url, player = player.entity, worded, "answer for the player");
+        player.announce_clip(url, clip.clone(), "answer player failed");
+        let now = Instant::now();
+        *answer = Some(PlayerAnswer { clip: Some(clip), announced_at: now, samples: 0, worded, first_audio: None });
+        *onset = Some((now, 0.0));
+    }
+
     /// The answer's text, before its audio.
     async fn on_answer(
         &mut self,
@@ -512,23 +588,14 @@ impl Delivery {
         speech: &SpeechClips,
         base_url: &str,
     ) -> Result<()> {
-        if let Delivery::Player { player, answer, onset } = self {
-            // Announced before the first audio exists: the call and the player's fetch take longer
-            // than synthesizing the first words.
-            if let Some(clip) = answer.take().and_then(|old| old.clip) {
-                clip.finish();
+        if let Delivery::Player { answer, .. } = self {
+            // Announced when the request was heard: its words go into the same stream.
+            if let Some(early) = answer.as_mut().filter(|answer| !answer.worded && answer.clip.is_some()) {
+                early.worded = true;
+                info!(after = ?early.announced_at.elapsed(), "answer worded for the player");
+                return Ok(());
             }
-            let (path, clip) = speech.open(SAMPLE_RATE);
-            let url = format!("{base_url}{path}");
-            info!(url, player = player.entity, "answer for the player");
-            let player = player.clone();
-            tokio::task::spawn_blocking(move || {
-                if let Err(error) = player.announce(&url) {
-                    warn!(error = format!("{error:#}"), "answer player failed");
-                }
-            });
-            *answer = Some(PlayerAnswer { clip: Some(clip), announced_at: Instant::now(), samples: 0 });
-            *onset = Some((Instant::now(), 0.0));
+            self.announce_answer(true, speech, base_url);
             return Ok(());
         }
         device.event(Event::TtsStart, &[("text", text)]).await?;
@@ -553,6 +620,7 @@ impl Delivery {
                         clip.push(pcm);
                     }
                     answer.samples += pcm.len();
+                    answer.first_audio.get_or_insert_with(Instant::now);
                 }
             }
             Delivery::Speaker(stream) => {
@@ -586,11 +654,11 @@ impl Delivery {
     ) -> Result<AfterSpoken> {
         let (url, streamed) = match self {
             Delivery::Player { answer, .. } => {
-                let answer = answer.take();
-                if let Some(clip) = answer.as_ref().and_then(|answer| answer.clip.as_ref()) {
-                    clip.finish();
-                }
-                return Ok(AfterSpoken::Player(answer.map(|answer| (answer.announced_at, answer.samples))));
+                let played = answer.take().map(|mut answer| {
+                    answer.finish();
+                    answer.played_at()
+                });
+                return Ok(AfterSpoken::Player(played));
             }
             Delivery::Speaker(stream) => {
                 stream.spoken = true;
@@ -617,15 +685,34 @@ impl Delivery {
         Ok(AfterSpoken::EndRun)
     }
 
-    /// Ends a streamed answer, or drops a run's URL nobody will play.
+    /// Ends a streamed answer, or drops a run's URL nobody will play. A worded answer on the player
+    /// still plays what it has; one announced early that got no words is over.
     fn finish_clip(&mut self) {
-        let clip = match self {
-            Delivery::Player { answer: Some(answer), .. } => answer.clip.take(),
-            Delivery::UrlStreamed(run) => run.take().map(|run| run.clip),
-            _ => None,
-        };
-        if let Some(clip) = clip {
-            clip.finish();
+        match self {
+            Delivery::Player { answer, .. } => {
+                if let Some(current) = answer.as_mut() {
+                    current.finish();
+                }
+                if answer.as_ref().is_some_and(|answer| !answer.worded) {
+                    *answer = None;
+                }
+            }
+            Delivery::UrlStreamed(run) => {
+                if let Some(run) = run.take() {
+                    run.clip.finish();
+                }
+            }
+            Delivery::Speaker(_) | Delivery::UrlWhole(_) => {}
+        }
+    }
+
+    /// An answer announced early whose words have not come within `WORDING_WAIT` ends as silence.
+    fn wording_timeout(&mut self) {
+        let Delivery::Player { answer, .. } = self else { return };
+        let late = |a: &PlayerAnswer| !a.worded && a.clip.is_some() && a.announced_at.elapsed() >= WORDING_WAIT;
+        if let Some(mut early) = answer.take_if(|a| late(a)) {
+            info!("no words for the answer announced early: ending it");
+            early.finish();
         }
     }
 
@@ -633,16 +720,13 @@ impl Delivery {
     /// silence announced over it stops it (stopping the player does not stop an announcement).
     fn interrupt(&mut self, speech: &SpeechClips, base_url: &str) {
         let Delivery::Player { player, answer, .. } = self else { return };
-        if let Some(clip) = answer.take().and_then(|answer| answer.clip) {
-            clip.finish();
+        if let Some(mut answer) = answer.take() {
+            answer.finish();
         }
-        let url = format!("{base_url}{}", speech.put(&[0; SILENCE], SAMPLE_RATE));
-        let player = player.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Err(error) = player.announce(&url) {
-                warn!(error = format!("{error:#}"), "could not silence the answer player");
-            }
-        });
+        let (path, clip) = speech.open(SAMPLE_RATE);
+        clip.push(&[0; SILENCE]);
+        clip.finish();
+        player.announce_clip(format!("{base_url}{path}"), clip, "could not silence the answer player");
     }
 
     /// When the audio sent to a speaker device will have played: until then, a quiet assistant is
@@ -658,8 +742,8 @@ impl Delivery {
     fn watchdog(&mut self) {
         match self {
             Delivery::Player { answer, .. } => {
-                if let Some(clip) = answer.take().and_then(|answer| answer.clip) {
-                    clip.finish();
+                if let Some(mut answer) = answer.take() {
+                    answer.finish();
                 }
             }
             Delivery::Speaker(stream) => (stream.spoken, stream.start) = (false, None),
@@ -877,6 +961,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 if let Run::Stopped(_) = self.run {
                     self.run = Run::Answering;
                     self.answer_event_at = Some(Instant::now());
+                    self.delivery.on_heard(&text, self.speech, &self.base_url);
                     return Ok(());
                 }
                 if !matches!(self.run, Run::WakeWord | Run::Listening(_) | Run::FollowUp(_)) {
@@ -894,6 +979,8 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 // The quiet the watchdog counts starts with this answer, not with the last one's
                 // speech: kept from then, a request more than a minute later lost its answer.
                 self.answer_event_at = Some(Instant::now());
+                // The device's run is left as it is: it ends at `Answer`, as before.
+                self.delivery.on_heard(&text, self.speech, &self.base_url);
             }
             AssistantEvent::Answer { text } => {
                 if self.run != Run::Answering {
@@ -936,9 +1023,8 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                     AfterSpoken::Player(answer) => {
                         // With the stream scored here, the device can listen for a follow-up once the
                         // player has finished; the stream is not heard before then, so not the answer.
-                        if let (Some((at, samples)), Some(_)) = (answer, &self.server_wake) {
-                            let length = Duration::from_secs_f64(samples as f64 / SAMPLE_RATE as f64);
-                            self.follow_up_at = Some(at + PLAYER_START + length);
+                        if let (Some(played), Some(_)) = (answer, &self.server_wake) {
+                            self.follow_up_at = Some(played);
                         }
                         // Else the device's run already ended when the answer started.
                         if !player_answer {
@@ -1020,9 +1106,11 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
     }
 
     /// An answer is going to the player while the device already listens for the wake word again,
-    /// so it can be interrupted.
+    /// so it can be interrupted. One announced early counts once it is worded, when the device's run
+    /// ends, so the gates on it keep their meaning.
     fn player_answer(&self) -> bool {
-        self.server_wake.is_some() && matches!(self.delivery, Delivery::Player { answer: Some(_), .. })
+        self.server_wake.is_some()
+            && matches!(self.delivery, Delivery::Player { answer: Some(PlayerAnswer { worded: true, .. }), .. })
     }
 
     /// Scores the continuous stream; only audio after the wake word goes on to the engine.
@@ -1131,6 +1219,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 self.end_run().await?;
             }
         }
+        self.delivery.wording_timeout();
         self.watch_answer().await
     }
 
