@@ -21,7 +21,31 @@ pub enum PartyCommand {
 
 const PARTY_WORDS: &[&str] = &["party", "party's", "partymode", "festmodus", "fest", "disco"];
 const FAST_WORDS: &[&str] = &["fast", "faster", "strobe", "rave", "rask", "raskt", "raskere"];
-const OFF_WORDS: &[&str] = &["stop", "end", "off", "over", "cancel", "enough", "stopp", "slutt", "av", "ferdig"];
+// "Slope the party" (16 Nov) was "stop the party": a sound-alike of stop is never a start.
+const OFF_WORDS: &[&str] = &[
+    "stop", "stops", "stopped", "slope", "stomp", "end", "off", "over", "cancel", "enough", "stopp", "slutt", "av",
+    "ferdig",
+];
+/// Words that ask for the party to start. Without one, "<verb> the party" is not a start: an
+/// unknown verb may be a misheard "stop".
+const START_WORDS: &[&str] = &[
+    "start",
+    "begin",
+    "let's",
+    "lets",
+    "on",
+    "mode",
+    "partymode",
+    "festmodus",
+    "disco",
+    "have",
+    "throw",
+    "kick",
+    "time",
+    "på",
+    "starte",
+    "begynn",
+];
 const RELAXED_WORDS: &[&str] = &[
     "relaxed",
     "relax",
@@ -57,6 +81,10 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
     // "Turn on party mode" holds "on", not "off"; "the party is over" holds "over".
     if has(OFF_WORDS) {
         return Some(PartyCommand::Off);
+    }
+    let paced = has(NORMAL_WORDS) || has(FAST_WORDS) || has(RELAXED_WORDS);
+    if !has(START_WORDS) && !paced && words.len() > 1 {
+        return None;
     }
     let pace = if has(NORMAL_WORDS) {
         Pace::Normal
@@ -99,5 +127,16 @@ mod tests {
         assert_eq!(party("Slå av festmodus"), Some(PartyCommand::Off));
         assert_eq!(party("Play party music by the Black Eyed Peas from their best album ever"), None);
         assert_eq!(party("Turn off the lights"), None);
+    }
+
+    /// Heard in the living room, 16 November 2026.
+    #[test]
+    fn a_misheard_stop_never_starts_the_party() {
+        assert_eq!(party("Slope the party."), Some(PartyCommand::Off));
+        assert_eq!(party("Who will stop the party?"), Some(PartyCommand::Off));
+        assert_eq!(party("Shop the party."), None);
+        assert_eq!(party("Party!"), Some(PartyCommand::On(Pace::Normal)));
+        assert_eq!(party("Party time"), Some(PartyCommand::On(Pace::Normal)));
+        assert_eq!(party("Have a party"), Some(PartyCommand::On(Pace::Normal)));
     }
 }

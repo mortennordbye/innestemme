@@ -612,6 +612,12 @@ impl Worker {
     /// A draft that is a whole command with nothing that could follow ("pause the music", "what
     /// time is it") is acted on at once, without waiting out the rest of the closing silence.
     fn act_on_draft(&mut self) {
+        // A later draft of an utterance already answered from a draft is the same request again:
+        // "Hey Jarvis stop the party" was answered twice, 0.6 s apart (16 Nov). The utterance's end
+        // still takes the rest of it.
+        if self.answered_draft.is_some() {
+            return;
+        }
         let Some((_, candidates)) = &self.draft else { return };
         let Some(first) = candidates.first() else { return };
         let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);

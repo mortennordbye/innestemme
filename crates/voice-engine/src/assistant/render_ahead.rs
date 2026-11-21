@@ -60,7 +60,13 @@ impl Worker {
         let answers = voice_assistant::music::ENGLISH_ANSWERS
             .iter()
             .chain(&questions)
-            .chain(&["Okay, I'll leave it.", "Anything else?", "Okay, that's everything."])
+            .chain(&[
+                "Okay, I'll leave it.",
+                "Anything else?",
+                "Okay, that's everything.",
+                "It's on the shopping list.",
+                "They're on the shopping list.",
+            ])
             .chain(voice_assistant::tv::ENGLISH_ANSWERS)
             .chain(timer::ENGLISH_ANSWERS)
             .chain(voice_assistant::memory::ENGLISH_ANSWERS)
@@ -71,6 +77,7 @@ impl Worker {
                 "Okay, fast party mode is on.",
                 "Okay, relaxed party mode is on.",
                 "Okay, the party's over.",
+                "There's no party on.",
             ])
             .chain(house::LOCKDOWN_ANSWERS)
             .chain(&[house::OPEN_SOURCE_ANSWER])

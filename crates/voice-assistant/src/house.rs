@@ -603,6 +603,13 @@ pub fn routine(words: &[String]) -> Option<Routine> {
     if lockdown && words.len() <= 6 && !asks {
         return Some(Routine::Lockdown);
     }
+    // Said alone, the listener's "look down" (16 Nov) and "leaving" (19 Nov) are the routines; in a
+    // sentence they are ordinary words.
+    match text.as_str() {
+        "look down" => return Some(Routine::Lockdown),
+        "leaving" | "leaving now" => return Some(Routine::Leaving),
+        _ => {}
+    }
     // Before leaving: "I'm off to bed" is bedtime.
     if starts(BEDTIME) {
         return Some(Routine::Bedtime);
@@ -1749,6 +1756,10 @@ mod tests {
     fn routines() {
         let routine = |t: &str| routine(&words(t));
         assert_eq!(routine("I'm leaving"), Some(Routine::Leaving));
+        assert_eq!(routine("Leaving."), Some(Routine::Leaving));
+        assert_eq!(routine("Look down."), Some(Routine::Lockdown));
+        assert_eq!(routine("look down at the floor"), None);
+        assert_eq!(routine("the leaving party"), None);
         assert_eq!(routine("okay, I'm heading out now"), Some(Routine::Leaving));
         assert_eq!(routine("I'm home"), Some(Routine::Home));
         assert_eq!(routine("honey, I'm home!"), Some(Routine::Home));
