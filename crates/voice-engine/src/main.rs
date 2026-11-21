@@ -189,10 +189,10 @@ struct Args {
     /// check runs while the request is still being spoken, so the slower model costs nothing there.
     #[arg(long, env = "VOICE_PARAKEET_WAKE_REPO", default_value = voice_assistant::parakeet::LARGE_REPO)]
     parakeet_wake_repo: String,
-    /// Compute threads for that name check's model, out of `threads`. The check runs on a thread of
-    /// its own while the request is transcribed and the answer is spoken, so with every thread it
-    /// would compete with them for the same cores.
-    #[arg(long, env = "VOICE_WAKE_CHECK_THREADS", default_value_t = 2)]
+    /// Compute threads for that name check's model, at most `threads`. The music waits for the check
+    /// after a wake, so 4 keeps it near its time at 6 threads (2 would take about 0.6 s on the
+    /// cluster), and on 6 cores 2 stay free for the request's draft, transcribed meanwhile.
+    #[arg(long, env = "VOICE_WAKE_CHECK_THREADS", default_value_t = 4)]
     wake_check_threads: usize,
     /// Run Whisper on the Apple GPU. Needs a build with `--features metal`.
     #[arg(long, env = "VOICE_STT_GPU")]

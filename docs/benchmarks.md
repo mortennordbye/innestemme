@@ -264,8 +264,9 @@ per second of audio matches the wake word check's timings, so the older figure i
 - That check by thread count (2026-11-21, M4 Pro, the 12 recordings in `target/testset/runs`, the second pass
   of `THREADS=<n> PARAKEET=<0.6B v2> examples/wake_text.rs`, median per wake word): 403 ms at 1 thread, 214 ms
   at 2, 121 ms at 4, 91 ms at 6. In the cluster at 6 threads it took 248 ms (p50, 546 checks in 3 days). It
-  runs on a thread of its own with `wake-check-threads` (2), so it no longer holds up the request's draft, and
-  the listener and the speech keep the other cores.
+  runs on a thread of its own with `wake-check-threads` (4), so it no longer holds up the request's draft. The
+  music pauses only once the check is done, so 4 keeps it near its time at 6 threads (2 would take about 0.6 s
+  on the cluster), and on 6 cores 2 stay free for the draft.
 
 ## End to end in the cluster with Parakeet, 2026-10-17
 

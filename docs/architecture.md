@@ -12,7 +12,7 @@ As deployed: a Home Assistant Voice PE in the living room, answers on a Sonos.
 |---|---|---|
 | 1. The Voice PE streams its microphone all the time (16 kHz) | `firmware/`, `voice-esphome` | |
 | 2. openWakeWord scores the stream; "Hey Jarvis" above `wake-threshold` starts a request, a lower score from `wake-check-from` only when Parakeet hears the name | `voice-assistant/src/wakeword.rs` | about 1 ms per 80 ms of audio |
-| 3. Parakeet TDT 0.6B checks the wake word's audio for the name, on a thread of its own, while the request is said and transcribed; music in the room is paused once it finds the name (queued, see below) | `assistant/wake.rs` `NameChecker`, `assistant/hush.rs` `hush` | about 0.2 s at 2 threads on an M4 Pro |
+| 3. Parakeet TDT 0.6B checks the wake word's audio for the name, on a thread of its own, while the request is said and transcribed; music in the room is paused once it finds the name (queued, see below) | `assistant/wake.rs` `NameChecker`, `assistant/hush.rs` `hush` | about 0.12 s at 4 threads on an M4 Pro |
 | 4. An energy detector cuts the request: a draft after 0.24 s of quiet, the end after 0.64 s | `voice-assistant/src/vad.rs` | 0.24 or 0.64 s |
 | 5. Parakeet TDT 110M (int8, sherpa-onnx) transcribes the draft while the pause goes on | `parakeet.rs` | about 18 ms per second of audio on an M4 Pro |
 | 6. The rules parse it into an intent; a complete command acts on the draft at once | `intent.rs`, `assistant/quick.rs` `complete_at_once` | under 1 ms |
@@ -30,8 +30,9 @@ after one that waits out the full pause. `docs/benchmarks.md` has the measuremen
 understands Norwegian: `openai/whisper-tiny` picks the language, `NbAiLab/nb-whisper-base` transcribes. Both are
 called once per utterance the energy detector cuts. Parakeet's model is the 110M (`parakeet-repo: parakeet-110m`,
 fetched from the sherpa-onnx release); the name check on a wake word uses the slower 0.6B v2
-(`parakeet-wake-repo`), which hears the name more often. It runs on a thread of its own with `wake-check-threads` (2)
-of the compute threads, so the listener does not wait for it. The wake word is either openWakeWord in the engine
+(`parakeet-wake-repo`), which hears the name more often. It runs on a thread of its own with `wake-check-threads` (4)
+of the compute threads, so the listener does not wait for it. The music pauses only once the check is done, so it
+keeps most of the cores; on the cluster's 6, 2 stay free for the request's draft. The wake word is either openWakeWord in the engine
 (`wake-model`, on a satellite's continuous stream) or the name at the start of the transcript ("Homie, what's the
 weather?"), with known misspellings (`dialog.rs`).
 

@@ -27,7 +27,7 @@ const WAKE_TAIL_LONGEST: Duration = Duration::from_millis(1600);
 const LONGEST_REQUEST_WORDS: usize = 12;
 
 /// The longest the worker waits for a name check it needs: a check that hangs must not hold up the
-/// conversation. One takes about 0.6 s at two threads on the cluster.
+/// conversation. One takes about 0.25 s at six threads on the cluster.
 const NAME_WAIT: Duration = Duration::from_secs(3);
 
 /// What a wake word tells of the assistant's name being said.
