@@ -154,6 +154,10 @@ pub fn closes_list(text: &str) -> bool {
                 said = rest.to_owned();
             }
         }
+        // "No, no more": "no more" closes it before its own "no" goes as a lead.
+        if DONE.contains(&said.as_str()) {
+            return true;
+        }
         if let Some((first, rest)) = said.split_once(' ') {
             if DONE_LEAD.contains(&first) || REPLY_LEAD.contains(&first) {
                 said = rest.to_owned();
@@ -517,7 +521,8 @@ fn added_answer(added: &[String], already: &[String], brief: bool, lang: Lang) -
         parts.push(match (no, brief) {
             (false, true) => format!("Added {list}."),
             (true, true) => format!("La til {list}."),
-            (false, false) => format!("Added {list} to the shopping list."),
+            // The fixed part in a sentence of its own, rendered ahead: only "Added egg." is synthesized.
+            (false, false) => format!("Added {list}. The shopping list is updated."),
             (true, false) => format!("La til {list} på handlelista."),
         });
     }
@@ -648,6 +653,9 @@ mod tests {
             "Okay, I think that's everything.",
             "Nei takk.",
             "Det var alt for nå.",
+            // 15 November 2026: answered "Sorry, I can't help with that yet."
+            "No, no more.",
+            "No, nothing else.",
         ] {
             assert!(closes_list(done), "{done}");
         }
@@ -709,7 +717,7 @@ mod tests {
         assert_eq!(added_answer(&items(&["Bread"]), &[], true, en), "Added bread.");
         assert_eq!(
             added_answer(&items(&["Bread"]), &items(&["Milk"]), false, en),
-            "Added bread to the shopping list. Milk is already on the list."
+            "Added bread. The shopping list is updated. Milk is already on the list."
         );
         assert_eq!(added_answer(&[], &items(&["Milk", "Eggs"]), true, en), "Milk and eggs are already on the list.");
         assert_eq!(removed_answer(&items(&["Milk"]), &[], en), "Okay, milk is off the list.");

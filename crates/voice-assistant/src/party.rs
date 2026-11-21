@@ -21,7 +21,35 @@ pub enum PartyCommand {
 
 const PARTY_WORDS: &[&str] = &["party", "party's", "partymode", "festmodus", "fest", "disco"];
 const FAST_WORDS: &[&str] = &["fast", "faster", "strobe", "rave", "rask", "raskt", "raskere"];
-const OFF_WORDS: &[&str] = &["stop", "end", "off", "over", "cancel", "enough", "stopp", "slutt", "av", "ferdig"];
+// "Slope the party" (16 Nov) was "stop the party": a sound-alike of stop is never a start.
+const OFF_WORDS: &[&str] = &[
+    "stop", "stops", "stopped", "slope", "stomp", "pause", "kill", "disable", "end", "off", "over", "cancel", "enough",
+    "stopp", "slutt", "av", "ferdig",
+];
+/// Words that ask for the party to start. Without one, "<verb> the party" is not a start: an
+/// unknown verb may be a misheard "stop".
+const START_WORDS: &[&str] = &[
+    "started",
+    "going",
+    "activate",
+    "enable",
+    "start",
+    "begin",
+    "let's",
+    "lets",
+    "on",
+    "mode",
+    "partymode",
+    "festmodus",
+    "disco",
+    "have",
+    "throw",
+    "kick",
+    "time",
+    "på",
+    "starte",
+    "begynn",
+];
 const RELAXED_WORDS: &[&str] = &[
     "relaxed",
     "relax",
@@ -54,9 +82,21 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
     {
         return Some(PartyCommand::Status);
     }
+    // "Pause the party music" is the music's; only "pause the party" is the party's.
+    if has(&["pause", "kill", "disable"]) && has(&["music", "playlist", "song", "songs", "track", "musikk"]) {
+        return None;
+    }
     // "Turn on party mode" holds "on", not "off"; "the party is over" holds "over".
     if has(OFF_WORDS) {
         return Some(PartyCommand::Off);
+    }
+    let paced = has(NORMAL_WORDS) || has(FAST_WORDS) || has(RELAXED_WORDS);
+    // "Party please", "okay, party lights": short asks; in a longer sentence those words start nothing.
+    let core: Vec<&str> =
+        words.iter().map(String::as_str).filter(|w| !["please", "okay", "ok", "lights"].contains(w)).collect();
+    let short = matches!(core.as_slice(), [w] if PARTY_WORDS.contains(w));
+    if !has(START_WORDS) && !paced && !short && words.len() > 1 {
+        return None;
     }
     let pace = if has(NORMAL_WORDS) {
         Pace::Normal
@@ -99,5 +139,30 @@ mod tests {
         assert_eq!(party("Slå av festmodus"), Some(PartyCommand::Off));
         assert_eq!(party("Play party music by the Black Eyed Peas from their best album ever"), None);
         assert_eq!(party("Turn off the lights"), None);
+    }
+
+    /// Heard in the living room, 16 November 2026.
+    #[test]
+    fn a_misheard_stop_never_starts_the_party() {
+        assert_eq!(party("Slope the party."), Some(PartyCommand::Off));
+        assert_eq!(party("Who will stop the party?"), Some(PartyCommand::Off));
+        assert_eq!(party("Shop the party."), None);
+        assert_eq!(party("Party!"), Some(PartyCommand::On(Pace::Normal)));
+        assert_eq!(party("Party time"), Some(PartyCommand::On(Pace::Normal)));
+        assert_eq!(party("Have a party"), Some(PartyCommand::On(Pace::Normal)));
+        for start in ["Get the party started", "Party please", "Party lights", "Enable party", "Activate the party"] {
+            assert_eq!(party(start), Some(PartyCommand::On(Pace::Normal)), "{start}");
+        }
+        for stop in ["Pause the party please", "Kill the party lights", "Disable party mode"] {
+            assert_eq!(party(stop), Some(PartyCommand::Off), "{stop}");
+        }
+        for start in ["Party lights please", "Okay party please", "Please party", "Get the party going"] {
+            assert_eq!(party(start), Some(PartyCommand::On(Pace::Normal)), "{start}");
+        }
+        assert_eq!(party("Pause the party music"), None);
+        assert_eq!(party("Kill the party playlist"), None);
+        for talk in ["Shop the party please", "Get rid of the party", "I didn't get invited to the party"] {
+            assert_eq!(party(talk), None, "{talk}");
+        }
     }
 }

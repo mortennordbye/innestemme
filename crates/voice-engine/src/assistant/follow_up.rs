@@ -133,8 +133,12 @@ pub(super) fn sounds_like_a_request(text: &str) -> bool {
 /// words of its own ("stop the timer"). After a question the answer may well repeat its words
 /// ("Which one?" "The 1 minute timer."), so nothing is an echo then.
 fn is_echo(said: &[&str], heard: &str) -> bool {
-    if said.last().is_none_or(|last| last.trim_end().ends_with('?')) {
-        return false;
+    let Some(last) = said.last() else { return false };
+    // A reply to a question may use its words ("You have 2 timers. Which one?" "The 1 minute
+    // timer."); only the question itself, with a word misheard at most, is its echo: "Anything else,
+    // sir?" came back as "Than anything else." and went on the shopping list (15 Nov).
+    if last.trim_end().ends_with('?') {
+        return echoes_question(last, heard);
     }
     let said: HashSet<String> = said.iter().flat_map(|text| echo_words(text)).collect();
     let heard = echo_words(heard);
@@ -143,6 +147,22 @@ fn is_echo(said: &[&str], heard: &str) -> bool {
     // words; nobody asks a follow-up of that many words made of the answer's.
     let garbled = heard.len() >= ECHO_LONG && new * 4 <= heard.len();
     heard.len() >= 2 && (new <= 1 && new * 5 <= heard.len() || garbled)
+}
+
+/// Whether `heard` is the closing question of `said`, with one word more or misheard at most.
+fn echoes_question(said: &str, heard: &str) -> bool {
+    const HONORIFICS: &[&str] = &["sir", "ma'am", "madam"];
+    let question = said.trim_end().rsplit_terminator(['.', '!']).next().unwrap_or(said);
+    let question: Vec<String> =
+        echo_words(question).into_iter().filter(|w| !HONORIFICS.contains(&w.as_str())).collect();
+    let heard: Vec<String> = echo_words(heard).into_iter().filter(|w| !HONORIFICS.contains(&w.as_str())).collect();
+    // "Ikke noe mer." and "Not anything else." answer "Noe mer?" and "Anything else?".
+    const NEGATIONS: &[&str] = &["not", "no", "nope", "nothing", "ikke", "nei", "ingenting"];
+    let extra = &heard[..heard.len().saturating_sub(question.len())];
+    question.len() >= 2
+        && heard.len() <= question.len() + 1
+        && heard.ends_with(&question)
+        && !extra.iter().any(|w| NEGATIONS.contains(&w.as_str()))
 }
 
 /// Words from which a heard stretch may be a garbled echo.
@@ -214,6 +234,15 @@ mod tests {
         assert!(!is_echo(&["It's 20 degrees in the bedroom."], "What about the living room?"));
         assert!(!is_echo(&said, "Timer"));
         assert!(!is_echo(&["You have 2 timers. Which one?"], "The 1 minute timer."));
+        let added = ["Added egg. It's on the shopping list, sir. Anything else, sir?"];
+        assert!(is_echo(&added, "Than anything else."));
+        assert!(is_echo(&added, "Anything else?"));
+        assert!(!is_echo(&added, "Milk."));
+        assert!(!is_echo(&added, "Milk and anything else."));
+        assert!(!is_echo(&added, "Not anything else."));
+        assert!(!is_echo(&["La til egg på handlelista. Noe mer?"], "Ikke noe mer."));
+        assert!(is_echo(&["La til egg på handlelista. Noe mer?"], "Noe mer?"));
+        assert!(!is_echo(&["You have 2 timers. Which one?"], "The first one."));
         assert!(!is_echo(&[], "Turn on the kitchen."));
         let wiki = "According to Wikipedia, Danilo Restivo is an Italian convicted murderer and suspected serial \
                     killer. Restivo is serving a life sentence with a 40-year tariff for murdering his neighbour \

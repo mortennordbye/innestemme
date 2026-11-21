@@ -309,9 +309,9 @@ struct Worker {
     wake_named: Option<bool>,
     /// Sentences spoken lately, to tell the answer coming back through the microphone from a request.
     said: VecDeque<(Instant, String)>,
-    /// A command was acted on from its draft, of this many samples: the utterance it ends in is
-    /// not answered again.
-    answered_draft: Option<usize>,
+    /// A command was acted on from this draft: a later draft or the utterance that starts with
+    /// the same audio is that speech going on, and is not answered again.
+    answered_draft: Option<Vec<i16>>,
     /// What undoes the music command answered from the draft, for a request that goes on to name
     /// another room.
     draft_undo: Option<MusicCommand>,
@@ -471,6 +471,8 @@ impl Worker {
                 Job::Woken(at, wake) => {
                     info!("device wake word");
                     self.woken_at = Some(at);
+                    // A new request: an earlier draft's utterance, if its end was lost, is over.
+                    self.answered_draft = None;
                     // Until the wake word's voice is told (`Job::Voice`), which follows at once.
                     self.address(None);
                     self.follow_up_until = Some(Instant::now() + FOLLOW_UP);
@@ -569,8 +571,10 @@ impl Worker {
         let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
         // Kept only for the rest of a request answered from its draft.
         let undo = self.draft_undo.take();
-        if let Some(len) = self.answered_draft.take() {
-            if audio.len() <= len + closing {
+        // Audio that does not start with the answered draft is a new utterance: the draft's own
+        // end was lost while the engine was deaf to its answer.
+        if let Some(draft) = self.answered_draft.take().filter(|draft| audio.starts_with(draft)) {
+            if audio.len() <= draft.len() + closing {
                 info!("answered from the draft");
                 return;
             }
@@ -612,7 +616,13 @@ impl Worker {
     /// A draft that is a whole command with nothing that could follow ("pause the music", "what
     /// time is it") is acted on at once, without waiting out the rest of the closing silence.
     fn act_on_draft(&mut self) {
-        let Some((_, candidates)) = &self.draft else { return };
+        // A later draft of an utterance already answered from a draft is the same request again:
+        // "Hey Jarvis stop the party" was answered twice, 0.6 s apart (16 Nov). The utterance's end
+        // still takes the rest of it.
+        let Some((audio, candidates)) = &self.draft else { return };
+        if self.answered_draft.as_ref().is_some_and(|answered| audio.starts_with(answered)) {
+            return;
+        }
         let Some(first) = candidates.first() else { return };
         let follow_up = self.follow_up_until.is_some_and(|until| Instant::now() < until);
         let request = match self.config.wake.strip(&first.text) {
@@ -637,7 +647,7 @@ impl Worker {
         let pause = Duration::from_secs_f32((vad::DRAFT_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
         let now = Instant::now();
         self.speech_ended = now.checked_sub(pause);
-        self.answered_draft = Some(audio.len());
+        self.answered_draft = Some(audio.clone());
         self.heard(&candidates, &audio, now, now, true);
         self.draft_undo = undo;
     }

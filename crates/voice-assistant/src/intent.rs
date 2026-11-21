@@ -1088,6 +1088,10 @@ fn is_time_question(words: &[String]) -> bool {
         ["what", "time", "is", "it" | "this"]
             | ["what's" | "whats", "the", "time"]
             | ["what", "is", "the", "time"]
+            // "What's the clock?" (21 Nov) went to Wikipedia.
+            | ["what's" | "whats", "the", "clock"]
+            | ["what", "is", "the", "clock"]
+            | ["what", "does", "the", "clock", "say"]
             | ["tell", "me", "the", "time"]
             | ["do", "you", "know", "what", "time", "it", "is"]
             | ["the", "time"]
@@ -1806,6 +1810,8 @@ mod tests {
         );
         assert_eq!(parse("If the TV is on, turn it off"), Intent::Tv(TvCommand::Power(false)));
         assert_eq!(parse("If party mode is on turn it off"), Intent::Party(crate::party::PartyCommand::Off));
+        // The music's, not the party's: "pause" and "kill" stop the party only without a music word.
+        assert!(matches!(parse("Pause the party music"), Intent::Music(_)));
     }
 
     #[test]
@@ -2256,6 +2262,9 @@ mod tests {
     fn time_questions() {
         assert_eq!(parse("What time is it?"), Intent::Time);
         assert_eq!(parse("Hey, what time is it?"), Intent::Time);
+        assert_eq!(parse("What's the clock?"), Intent::Time);
+        assert_eq!(parse("What does the clock say?"), Intent::Time);
+        assert_ne!(parse("What is the clock made of?"), Intent::Time);
         assert_eq!(parse("What's the temperaturing size?"), parse("What's the temperature inside?"));
         assert_eq!(parse("What time is this?"), Intent::Time);
         assert_eq!(parse("Oh, I'm home."), Intent::Routine(house::Routine::Home));
