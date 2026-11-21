@@ -8,7 +8,7 @@
 //! shades and swell gently on the stronger beats; normal moves a new colour round the room on each
 //! beat and fades between them; fast flashes on every hit, as fast as the lights follow.
 
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -74,14 +74,23 @@ pub struct Party {
 
 struct Inner {
     hue: Option<HueConfig>,
-    /// 0 off, else the mode the stream runs in.
-    mode: AtomicU8,
+    /// The run in the bits above the lowest 8, and in those the mode it streams in, 0 when off.
+    /// Each start from off is a new run: a stream thread still tearing down an older run, after a
+    /// stop and a start, must not switch the new one off.
+    state: AtomicU64,
+    /// Held by the stream thread from the area's start to its stop, so a new run starts the area
+    /// on the bridge only after the old run has stopped it.
+    session: Mutex<()>,
     beats: Mutex<Beats>,
 }
 
+const MODE_BITS: u64 = 0xff;
+
 impl Party {
     pub fn new(hue: Option<HueConfig>) -> Self {
-        Self { inner: Arc::new(Inner { hue, mode: AtomicU8::new(0), beats: Mutex::new(Beats::default()) }) }
+        let inner =
+            Inner { hue, state: AtomicU64::new(0), session: Mutex::new(()), beats: Mutex::new(Beats::default()) };
+        Self { inner: Arc::new(inner) }
     }
 
     pub fn configured(&self) -> bool {
@@ -89,12 +98,40 @@ impl Party {
     }
 
     pub fn mode(&self) -> Option<Mode> {
-        match self.inner.mode.load(Relaxed) {
-            1 => Some(Mode::Normal),
-            2 => Some(Mode::Fast),
-            3 => Some(Mode::Relaxed),
-            _ => None,
+        mode_of(self.inner.state.load(Relaxed))
+    }
+
+    /// The mode run `run` streams in, `None` once it is stopped or a newer run has started.
+    fn mode_in(&self, run: u64) -> Option<Mode> {
+        let state = self.inner.state.load(Relaxed);
+        if state >> 8 == run {
+            mode_of(state)
+        } else {
+            None
         }
+    }
+
+    /// Sets the mode: the new run that must start its stream when party mode was off, `None` when
+    /// a running stream only changes mode.
+    fn begin(&self, code: u64) -> Option<u64> {
+        let mut state = self.inner.state.load(Relaxed);
+        loop {
+            let (run, next) = if state & MODE_BITS != 0 {
+                (None, state & !MODE_BITS | code)
+            } else {
+                let run = (state >> 8) + 1;
+                (Some(run), run << 8 | code)
+            };
+            match self.inner.state.compare_exchange(state, next, Relaxed, Relaxed) {
+                Ok(_) => return run,
+                Err(now) => state = now,
+            }
+        }
+    }
+
+    /// Run `run`'s stream has ended: party mode is off, unless a newer run has started.
+    fn end(&self, run: u64) {
+        let _ = self.inner.state.try_update(Relaxed, Relaxed, |state| (state >> 8 == run).then_some(run << 8));
     }
 
     /// Starts the stream, or changes the mode of the one running.
@@ -105,28 +142,38 @@ impl Party {
             Mode::Fast => 2,
             Mode::Relaxed => 3,
         };
-        let was = self.inner.mode.swap(code, Relaxed);
-        if was != 0 {
+        let Some(run) = self.begin(code) else {
             info!(?mode, "party mode changed");
             return Ok(());
-        }
+        };
         info!(?mode, "party mode on");
         let party = self.clone();
-        std::thread::Builder::new().name("party".into()).spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                Ok(runtime) => runtime,
-                Err(error) => return warn!(%error, "party mode: no runtime"),
-            };
-            if let Err(error) = runtime.block_on(party.stream(&hue)) {
-                warn!(error = format!("{error:#}"), "party mode stopped");
+        let spawned = std::thread::Builder::new().name("party".into()).spawn(move || {
+            let session = party.inner.session.lock().unwrap_or_else(|e| e.into_inner());
+            // Stopped while the run before was still tearing down.
+            if party.mode_in(run).is_some() {
+                match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                    Ok(runtime) => {
+                        if let Err(error) = runtime.block_on(party.stream(&hue, run)) {
+                            warn!(error = format!("{error:#}"), "party mode stopped");
+                        }
+                    }
+                    Err(error) => warn!(%error, "party mode: no runtime"),
+                }
             }
-            party.inner.mode.store(0, Relaxed);
-        })?;
+            drop(session);
+            party.end(run);
+        });
+        if let Err(error) = spawned {
+            self.end(run);
+            return Err(error.into());
+        }
         Ok(())
     }
 
     pub fn stop(&self) {
-        if self.inner.mode.swap(0, Relaxed) != 0 {
+        let was = self.inner.state.fetch_and(!MODE_BITS, Relaxed);
+        if was & MODE_BITS != 0 {
             info!("party mode off");
         }
     }
@@ -139,7 +186,7 @@ impl Party {
         }
     }
 
-    async fn stream(&self, hue: &HueConfig) -> Result<()> {
+    async fn stream(&self, hue: &HueConfig, run: u64) -> Result<()> {
         let bridge = Bridge::new(hue)?;
         let (area, channels) = {
             let bridge = bridge.clone();
@@ -150,7 +197,7 @@ impl Party {
             let (bridge, area) = (bridge.clone(), area.clone());
             tokio::task::spawn_blocking(move || bridge.action(&area, "start")).await??;
         }
-        let result = self.send_frames(hue, &area, &channels).await;
+        let result = self.send_frames(hue, &area, &channels, run).await;
         let stopped = tokio::task::spawn_blocking(move || bridge.action(&area, "stop")).await;
         if let Ok(Err(error)) | Err(error) = stopped.map_err(anyhow::Error::from) {
             warn!(error = format!("{error:#}"), "party mode: could not stop the entertainment area");
@@ -158,14 +205,14 @@ impl Party {
         result
     }
 
-    async fn send_frames(&self, hue: &HueConfig, area: &str, channels: &[u8]) -> Result<()> {
+    async fn send_frames(&self, hue: &HueConfig, area: &str, channels: &[u8], run: u64) -> Result<()> {
         let dtls = connect(hue).await?;
         let mut show = Show::new(channels.len());
         let mut sequence = 0u8;
         let mut tick = tokio::time::interval(FRAME);
         let start = Instant::now();
         let (mut counted, mut since) = (0u32, Instant::now());
-        while let Some(mode) = self.mode() {
+        while let Some(mode) = self.mode_in(run) {
             tick.tick().await;
             let (beats, level) = match self.inner.beats.lock() {
                 Ok(mut b) => (std::mem::take(&mut b.new_beats), b.level),
@@ -184,6 +231,16 @@ impl Party {
         }
         let _ = dtls.close().await;
         Ok(())
+    }
+}
+
+/// The mode in a [`Inner::state`], `None` when off.
+fn mode_of(state: u64) -> Option<Mode> {
+    match state & MODE_BITS {
+        1 => Some(Mode::Normal),
+        2 => Some(Mode::Fast),
+        3 => Some(Mode::Relaxed),
+        _ => None,
     }
 }
 
@@ -490,6 +547,26 @@ mod tests {
                 ((0.6 * kick + 0.01 * noise) * 32767.0) as i16
             })
             .collect()
+    }
+
+    #[test]
+    fn an_old_run_ending_leaves_a_new_one_on() {
+        let party = Party::new(None);
+        let first = party.begin(1).unwrap();
+        // A mode change is the same run.
+        assert_eq!(party.begin(2), None);
+        assert_eq!(party.mode_in(first), Some(Mode::Fast));
+        party.stop();
+        let second = party.begin(3).unwrap();
+        assert_ne!(first, second);
+        // The first run's thread sees it is over, and its end leaves the second run streaming.
+        assert_eq!(party.mode_in(first), None);
+        party.end(first);
+        assert_eq!(party.mode(), Some(Mode::Relaxed));
+        assert_eq!(party.mode_in(second), Some(Mode::Relaxed));
+        party.end(second);
+        assert_eq!(party.mode(), None);
+        assert!(party.begin(1).is_some());
     }
 
     #[test]
