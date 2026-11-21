@@ -20,7 +20,7 @@ fn main() -> Result<()> {
     let before = std::env::var("BEFORE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1500usize) * 16;
     let after = std::env::var("AFTER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(200usize) * 16;
     for path in args {
-        let pcm = voice_codec::wav::read_mono(&path, 16_000)?;
+        let pcm = voice_rt::wav::read_mono(&path, 16_000)?;
         let (best, at) = common::wake_peak(&models, &pcm)?;
         let wake = &pcm[at.saturating_sub(before)..(at + after).min(pcm.len())];
         let audio = to_24k(wake, 16_000);

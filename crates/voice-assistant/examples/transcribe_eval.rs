@@ -28,7 +28,7 @@ fn main() -> Result<()> {
     let known = |name: &str| vocab.iter().any(|v| v.to_lowercase().contains(&name.to_lowercase()));
     let files = common::whisper_from_env()?;
     let audio: Vec<Vec<i16>> =
-        cases.iter().map(|(path, _)| voice_codec::wav::read_mono(path, 24_000)).collect::<Result<_>>()?;
+        cases.iter().map(|(path, _)| voice_rt::wav::read_mono(path, 24_000)).collect::<Result<_>>()?;
     for budget in budgets.split(',').map(|b| b.parse::<usize>()) {
         let budget = budget?;
         let mut t = Transcriber::load(&files, None, voice_assistant::stt::device(false)?)?

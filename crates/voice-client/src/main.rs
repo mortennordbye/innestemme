@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     hello(&socket, session)?;
 
     let (source, onsets) = match (&args.wav_in, args.tone, args.marker) {
-        (Some(path), ..) => (Some(voice_codec::wav::read_mono(path, SAMPLE_RATE)?), Vec::new()),
+        (Some(path), ..) => (Some(voice_rt::wav::read_mono(path, SAMPLE_RATE)?), Vec::new()),
         (None, Some(seconds), _) => (Some(tone(seconds)), Vec::new()),
         (None, None, Some(bursts)) => {
             let (pcm, onsets) = marker(bursts);
@@ -213,7 +213,7 @@ fn run_file(
 
     if let Some(path) = wav_out {
         let pcm: Vec<i16> = received.iter().flat_map(|(_, pcm, _)| pcm.iter().copied()).collect();
-        voice_codec::wav::write_mono(path, SAMPLE_RATE, &pcm)?;
+        voice_rt::wav::write_mono(path, SAMPLE_RATE, &pcm)?;
         println!("wrote {}", path.display());
     }
     Ok(())

@@ -9,6 +9,5 @@ anyhow.workspace = true
 clap.workspace = true
 cpal = "0.18"
 rtrb.workspace = true
-voice-codec.workspace = true
 voice-proto.workspace = true
 voice-rt.workspace = true

@@ -23,7 +23,7 @@ fn main() -> Result<()> {
     // The first call sets up buffers; it is not what a request costs.
     t.transcribe(&[0i16; 24_000])?;
     for path in &paths {
-        let pcm = voice_codec::wav::read_mono(path, 24_000)?;
+        let pcm = voice_rt::wav::read_mono(path, 24_000)?;
         let start = Instant::now();
         let text = t.transcribe(&pcm)?.first().map(|c| c.text.clone()).unwrap_or_default();
         let name = path.rsplit('/').next().unwrap_or(path);

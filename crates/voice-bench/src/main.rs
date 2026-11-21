@@ -127,7 +127,7 @@ fn synthetic(frames: usize) -> Vec<i16> {
 }
 
 fn read_wav(path: &Path) -> Result<Vec<i16>> {
-    let pcm = voice_codec::wav::read_mono(path, SAMPLE_RATE)?;
+    let pcm = voice_rt::wav::read_mono(path, SAMPLE_RATE)?;
     if pcm.len() < FRAME_SAMPLES {
         bail!("{} is shorter than one 80 ms frame", path.display());
     }

@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     let models = Arc::new(WakeModels::load(&model)?);
     let (mut chunks, mut took) = (0, std::time::Duration::ZERO);
     for path in args {
-        let pcm = voice_codec::wav::read_mono(&path, 16_000)?;
+        let pcm = voice_rt::wav::read_mono(&path, 16_000)?;
         // A second of silence on both sides, as a stream would have around it.
         let second = vec![0i16; 16_000];
         let padded = [&second[..], &pcm, &second].concat();

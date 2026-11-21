@@ -20,7 +20,7 @@ fn main() -> Result<()> {
     };
     let files = common::whisper_from_env()?;
     let audio: Vec<Vec<i16>> =
-        wavs.iter().map(|path| voice_codec::wav::read_mono(path, 24_000)).collect::<Result<_>>()?;
+        wavs.iter().map(|path| voice_rt::wav::read_mono(path, 24_000)).collect::<Result<_>>()?;
     // Transcript and the intent it parses to, per file, from the first setting.
     let mut reference: Vec<(String, String)> = Vec::new();
     for setting in settings.split(',') {

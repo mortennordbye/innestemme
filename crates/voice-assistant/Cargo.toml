@@ -25,7 +25,7 @@ tar = "0.4"
 tracing.workspace = true
 tract-onnx = "0.23.8"
 ureq = { version = "3", features = ["json"] }
-voice-codec.workspace = true
+voice-rt.workspace = true
 voice-proto.workspace = true
 
 [dev-dependencies]

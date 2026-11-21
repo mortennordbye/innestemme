@@ -20,7 +20,7 @@ fn main() -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     let mut pcm = Vec::new();
     tts.speak(&text.join(" "), lang, &mut |chunk| pcm.extend_from_slice(chunk))?;
-    voice_codec::wav::write_mono(out, voice_proto::SAMPLE_RATE, &pcm)?;
+    voice_rt::wav::write_mono(out, voice_proto::SAMPLE_RATE, &pcm)?;
     let peak = pcm.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
     println!("{out}: {:.2} s of audio in {:?}, peak {peak}", pcm.len() as f32 / 24_000.0, start.elapsed());
     Ok(())

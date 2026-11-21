@@ -74,7 +74,7 @@ impl Tts for Say {
         if !status.success() {
             bail!("`say` exited with {status}");
         }
-        let pcm = voice_codec::wav::read_mono(&path, SAMPLE_RATE).context("reading the output of `say`")?;
+        let pcm = voice_rt::wav::read_mono(&path, SAMPLE_RATE).context("reading the output of `say`")?;
         let _ = std::fs::remove_file(&path);
         sink(&pcm);
         Ok(())

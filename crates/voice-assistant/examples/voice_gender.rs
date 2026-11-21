@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     let model = VoiceGender::load(1)?;
     let (mut took, mut runs) = (Duration::ZERO, 0);
     for path in paths {
-        let pcm = voice_codec::wav::read_mono(&path, SAMPLE_RATE)?;
+        let pcm = voice_rt::wav::read_mono(&path, SAMPLE_RATE)?;
         let pcm = match wake {
             true => &pcm[PREROLL.min(pcm.len()).saturating_sub(WAKE)..PREROLL.min(pcm.len())],
             false => &pcm[..],

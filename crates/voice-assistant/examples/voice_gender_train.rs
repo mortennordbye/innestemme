@@ -159,7 +159,7 @@ fn predict(w: &[f32], b: f32, x: &[f32]) -> f32 {
 
 /// One embedding per crop length, from the start of the speech.
 fn embeddings(model: &VoiceGender, path: &Path, female: bool) -> Result<Vec<Sample>> {
-    let pcm = voice_codec::wav::read_mono(path, SAMPLE_RATE)?;
+    let pcm = voice_rt::wav::read_mono(path, SAMPLE_RATE)?;
     let mut samples = Vec::new();
     for &crop in CROPS {
         // Past the leading silence.

@@ -86,5 +86,5 @@ fn say(dir: &std::path::Path, voice: &str, text: &str) -> Result<Vec<i16>> {
             .status()?
             .success();
     anyhow::ensure!(ok, "say or afconvert failed for {text:?}");
-    voice_codec::wav::read_mono(&wav, 24_000)
+    voice_rt::wav::read_mono(&wav, 24_000)
 }

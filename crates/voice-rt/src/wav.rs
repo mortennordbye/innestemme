@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn reads_back_what_it_wrote_and_checks_the_rate() {
-        let path = std::env::temp_dir().join(format!("voice-codec-wav-{}.wav", std::process::id()));
+        let path = std::env::temp_dir().join(format!("voice-rt-wav-{}.wav", std::process::id()));
         let pcm = [0i16, 1, -1, i16::MAX, i16::MIN];
         write_mono(&path, 16_000, &pcm).unwrap();
         assert_eq!(read_mono(&path, 16_000).unwrap(), pcm);

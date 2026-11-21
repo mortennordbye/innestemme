@@ -5041,8 +5041,8 @@ dependencies = [
  "tracing-subscriber",
  "tract-onnx",
  "ureq 3.5.2",
- "voice-codec",
  "voice-proto",
+ "voice-rt",
  "xn",
 ]
 
@@ -5070,7 +5070,6 @@ dependencies = [
  "clap",
  "cpal",
  "rtrb",
- "voice-codec",
  "voice-proto",
  "voice-rt",
 ]
@@ -5082,7 +5081,6 @@ dependencies = [
  "anyhow",
  "candle-core",
  "hf-hub",
- "hound",
  "moshi",
  "voice-proto",
  "voice-rt",
@@ -5138,8 +5136,10 @@ version = "0.1.0"
 name = "voice-rt"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "assert_no_alloc",
  "core_affinity",
+ "hound",
  "rayon",
  "voice-proto",
 ]
