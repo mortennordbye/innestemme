@@ -21,8 +21,9 @@ As deployed: a Home Assistant Voice PE in the living room, answers on a Sonos.
 | 9. Each sentence comes from the speech cache, or from Kokoro | `speech_cache.rs`, `kokoro.rs` | 0 ms cached, 1-3 s on the cluster otherwise |
 | 10. Home Assistant announces the answer's URL on the Sonos, which streams it as it grows. The announce goes out when the request is heard (step 6), so the call and the Sonos fetch run while steps 7-9 word and speak the answer | `satellite.rs` | 0.46 s median (0.68 s p90) from the announce until it sounds, now mostly hidden behind steps 7-9 |
 
-The announce waits for the words only for a request that will likely end without them (the music stops, the next
-song starts, "never mind"): an announce ducks the music on the Sonos. A request announced early that still ends
+The announce waits for the words when the worker says (`Heard` `words: false`) that the request may end without
+them: the music stops, the next song starts, "never mind", a sum that does not add up, or a request no rule takes
+and no lead-in opens (a language model may ignore it). An announce ducks the music on the Sonos. A request announced early that still ends
 without words, or gets none within 3 s, plays 0.3 s of silence instead; words after that are announced on their own.
 
 So a cached answer is heard about 0.65 s after the end of a command that acts on its draft, and about 1.05 s

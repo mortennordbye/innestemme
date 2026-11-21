@@ -31,7 +31,6 @@ use tokio::net::UdpSocket;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant; // The system's monotonic clock, which tests can pause and advance.
 use tracing::{info, warn};
-use voice_assistant::intent::{self, Intent};
 use voice_assistant::resample;
 use voice_assistant::timer::NoticeKind;
 use voice_assistant::wakeword::{WakeDetector, WakeModels};
@@ -450,14 +449,6 @@ impl PlayerAnswer {
     }
 }
 
-/// The request will likely be done without words, by the worker's own test on the same text: its
-/// result is heard (the music stops, the next song starts), or "never mind" ends it. An announce
-/// ducks the music on the Sonos, so these are announced only when words do come.
-fn likely_silent(text: &str) -> bool {
-    let parsed = intent::parse(text);
-    matches!(parsed, Intent::Cancel) || intent::split_commands(text).is_none() && parsed.meta().heard_by_itself
-}
-
 /// A speaker device's answer: 16 kHz audio not yet sent, and pacing.
 struct SpeakerStream {
     down: resample::Stream,
@@ -557,9 +548,10 @@ impl Delivery {
 
     /// The request was heard. On the player its answer is announced now, before it is worded, so that
     /// Home Assistant's call and the player's fetch overlap the wording; the stream waits for the
-    /// audio. Not for a request that will likely end without words.
-    fn on_heard(&mut self, text: &str, speech: &SpeechClips, base_url: &str) {
-        if matches!(self, Delivery::Player { .. }) && !likely_silent(text) {
+    /// audio. Only when the worker expects `words`: an announce ducks the music on the Sonos, so a
+    /// request that may end quietly ("pause the music") is announced when its words come.
+    fn on_heard(&mut self, words: bool, speech: &SpeechClips, base_url: &str) {
+        if matches!(self, Delivery::Player { .. }) && words {
             self.announce_answer(false, speech, base_url);
         }
     }
@@ -956,12 +948,12 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                     self.listening();
                 }
             }
-            AssistantEvent::Heard { text } => {
+            AssistantEvent::Heard { text, words } => {
                 self.unheard_since = None;
                 if let Run::Stopped(_) = self.run {
                     self.run = Run::Answering;
                     self.answer_event_at = Some(Instant::now());
-                    self.delivery.on_heard(&text, self.speech, &self.base_url);
+                    self.delivery.on_heard(words, self.speech, &self.base_url);
                     return Ok(());
                 }
                 if !matches!(self.run, Run::WakeWord | Run::Listening(_) | Run::FollowUp(_)) {
@@ -980,7 +972,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 // speech: kept from then, a request more than a minute later lost its answer.
                 self.answer_event_at = Some(Instant::now());
                 // The device's run is left as it is: it ends at `Answer`, as before.
-                self.delivery.on_heard(&text, self.speech, &self.base_url);
+                self.delivery.on_heard(words, self.speech, &self.base_url);
             }
             AssistantEvent::Answer { text } => {
                 if self.run != Run::Answering {

@@ -238,8 +238,14 @@ impl Harness {
         self.take()
     }
 
+    /// A request whose answer the worker expects to speak.
     async fn heard(&mut self, text: &str) -> Vec<String> {
-        self.event(AssistantEvent::Heard { text: text.into() }).await
+        self.event(AssistantEvent::Heard { text: text.into(), words: true }).await
+    }
+
+    /// A request that may end without words ("pause the music").
+    async fn heard_quiet(&mut self, text: &str) -> Vec<String> {
+        self.event(AssistantEvent::Heard { text: text.into(), words: false }).await
     }
 
     async fn answer(&mut self, text: &str) -> Vec<String> {
@@ -419,7 +425,7 @@ async fn done_without_words_ends_the_run() {
     for mode in ALL {
         let mut h = Harness::new(mode);
         h.start().await;
-        h.heard("pause the music").await;
+        h.heard_quiet("pause the music").await;
         assert_eq!(h.event(AssistantEvent::Done).await, ["RunEnd"], "{mode:?}");
         assert_eq!(h.start().await[0], "accept", "{mode:?}");
     }
@@ -427,7 +433,7 @@ async fn done_without_words_ends_the_run() {
     let mut h = Harness::server_wake(Mode::Player);
     h.stream().await;
     h.audio(0.9).await;
-    h.heard("pause the music").await;
+    h.heard_quiet("pause the music").await;
     assert_eq!(h.event(AssistantEvent::Done).await, ["IntentEnd continue_conversation=0"]);
     assert_eq!(h.after(RUN_END_DELAY).await, ["RunEnd"]);
     assert_eq!(h.announced(0), NOTHING);
@@ -576,21 +582,25 @@ async fn player_stop_while_listening_announces_when_the_request_is_heard() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn player_request_likely_done_without_words_is_announced_only_with_words() {
-    for text in ["pause the music", "next song", "never mind"] {
-        let mut h = Harness::new(Mode::Player);
-        h.start().await;
-        h.heard(text).await;
-        assert!(player_stream(&h).is_none(), "{text}");
-        // Words after all ("Nothing is playing."): announced with them, as before.
-        assert_eq!(h.answer("Nothing is playing.").await, ["IntentEnd continue_conversation=0"], "{text}");
-        assert_eq!(h.announced(1), [answer_on_player(0)], "{text}");
-    }
-    // Two commands always end in words.
+async fn player_request_that_may_end_without_words_is_announced_only_with_words() {
     let mut h = Harness::new(Mode::Player);
     h.start().await;
-    h.heard("pause the music and turn on the lights").await;
+    // The device's events are as for any request.
+    assert_eq!(h.heard_quiet("pause the music").await, ["SttVadEnd", "SttEnd text=pause the music", "IntentStart"]);
+    assert!(player_stream(&h).is_none());
+    assert_eq!(h.announced(0), NOTHING);
+    // Words after all ("Nothing is playing."): announced with them, as before.
+    assert_eq!(h.answer("Nothing is playing.").await, ["IntentEnd continue_conversation=0"]);
     assert_eq!(h.announced(1), [answer_on_player(0)]);
+
+    // Done without words: nothing is announced.
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.audio(0.9).await;
+    h.heard_quiet("pause the music").await;
+    assert_eq!(h.event(AssistantEvent::Done).await, ["IntentEnd continue_conversation=0"]);
+    assert_eq!(h.after(WORDING_WAIT).await, ["RunEnd"]);
+    assert_eq!(h.announced(0), NOTHING);
 }
 
 #[tokio::test(start_paused = true)]

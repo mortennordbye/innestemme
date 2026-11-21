@@ -45,8 +45,8 @@ can hold a device: stop a laptop instance before the cluster's starts, or the tw
   ("And turn off the kitchen."), recognised requests only.
 - **The answer on the player is announced when the request is heard**, before it is worded, so Home
   Assistant's call and the Sonos fetch overlap the wording; the stream sends the audio once it exists. The
-  device's run still ends when the answer is worded. A request that will likely end without words ("pause the
-  music", "next song", "never mind") is announced only when words come, since an announce ducks the music.
+  device's run still ends when the answer is worded. A request the worker says may end without words ("pause the
+  music", "never mind", one no rule takes) is announced only when words come, since an announce ducks the music.
   One announced early that ends without words, or gets none within 3 s, plays 0.3 s of silence
   (`no words for the answer announced early: ending it`). The follow-up window counts from the later of the
   announce plus 0.8 s and the first audio plus 0.4 s.
