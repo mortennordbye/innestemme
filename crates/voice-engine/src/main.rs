@@ -11,10 +11,12 @@ use voice_assistant::dialog::WakeWord;
 use voice_assistant::ha::HomeAssistant;
 use voice_assistant::lang::Lang;
 use voice_assistant::parakeet::{Parakeet, ParakeetFiles};
+use voice_assistant::speech_cache::CachedTts;
+use voice_assistant::tts::Tts;
 use voice_assistant::whisper::{Transcribe, Transcriber, WakePrompt, WhisperFiles, Window};
 use voice_assistant::wyoming::WyomingTts;
 use voice_codec::MimiCodec;
-use voice_engine::assistant::{AssistantConfig, AssistantProcessor};
+use voice_engine::assistant::{AssistantConfig, AssistantHandle, AssistantProcessor};
 use voice_engine::settings;
 use voice_engine::{
     metrics::{serve_http, SpeechClips},
@@ -230,9 +232,6 @@ struct Args {
     /// lets the sensor switch them on next time.
     #[arg(long, env = "VOICE_POWER_CYCLE", value_delimiter = ',')]
     power_cycle: Vec<String>,
-    /// The old name of `power-cycle`, from when only bedtime did it.
-    #[arg(long, env = "VOICE_BEDTIME_POWER_CYCLE", value_delimiter = ',', hide = true)]
-    bedtime_power_cycle: Vec<String>,
     /// The room whose lights come on when you come home ("I'm home"), whatever the time. Unset:
     /// the microphone's room, after dark only.
     #[arg(long, env = "VOICE_HOME_ROOM")]
@@ -423,19 +422,121 @@ struct Args {
     busy_poll_us: Option<u32>,
 }
 
+impl Args {
+    /// Home Assistant's URL and token, when both are set.
+    fn home_assistant(&self) -> Option<(String, String)> {
+        self.ha_url.clone().zip(self.ha_token.clone())
+    }
+
+    fn wake_word(&self) -> WakeWord {
+        WakeWord::new(&self.wake_name).with_spellings(&self.wake_spellings)
+    }
+
+    fn timers_file(&self) -> Option<PathBuf> {
+        self.timers_file.clone().or_else(|| self.unhandled_log.as_ref().map(|path| path.with_file_name("timers.json")))
+    }
+
+    fn memory_file(&self) -> Option<PathBuf> {
+        self.memory_file.clone().or_else(|| self.unhandled_log.as_ref().map(|path| path.with_file_name("memory.json")))
+    }
+}
+
+impl ListenerKind {
+    /// The name the web page and the Wyoming server show.
+    fn name(self) -> &'static str {
+        match self {
+            ListenerKind::Whisper => "whisper",
+            ListenerKind::Parakeet => "parakeet",
+        }
+    }
+}
+
+impl EnglishTts {
+    /// The English voice as people read it, and its speech cache folder: one folder per voice that
+    /// sounds different.
+    fn voice(self, args: &Args) -> (String, String) {
+        let or_default = |voice: &Option<String>| voice.as_deref().unwrap_or("default").to_owned();
+        let named = |voice: &Option<String>| voice.as_deref().map(|v| format!(", {v}")).unwrap_or_default();
+        match self {
+            EnglishTts::Say => {
+                (format!("macOS say{}", named(&args.say_voice)), format!("say-{}", or_default(&args.say_voice)))
+            }
+            EnglishTts::Piper => {
+                (format!("Piper{}", named(&args.piper_voice_en)), format!("piper-{}", or_default(&args.piper_voice_en)))
+            }
+            EnglishTts::Kokoro => (format!("Kokoro, {}", args.kokoro_voice), format!("kokoro-{}", args.kokoro_voice)),
+            // Its own pronunciation (espeak-ng, not Kokoro-FastAPI's): not the same audio.
+            EnglishTts::KokoroOnnx => {
+                (format!("Kokoro, {}", args.kokoro_voice), format!("kokoro-onnx-{}", args.kokoro_voice))
+            }
+            // Weights and temperature change the audio, so each gets its own folder.
+            EnglishTts::Phonon => (
+                format!("Phonon, {}", args.phonon_voice),
+                format!(
+                    "phonon-{}-t{}{}",
+                    args.phonon_voice.to_lowercase(),
+                    args.phonon_temperature,
+                    if args.phonon_f32 { "" } else { "-int8" }
+                ),
+            ),
+        }
+    }
+}
+
+/// What the assistant, the web page and the satellite share.
+struct Shared {
+    activity: Arc<voice_engine::activity::Activity>,
+    unhandled: Option<Arc<voice_engine::unhandled::UnhandledLog>>,
+    learned: Arc<voice_engine::learned::Learned>,
+}
+
+/// The assistant's speech: both languages, and a second English voice that renders fixed sentences
+/// ahead of time when there is a speech cache.
+struct Voices {
+    tts: Box<dyn Tts>,
+    renderer: Option<Box<dyn Tts>>,
+    often_spoken: Vec<String>,
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with_ansi(std::io::stdout().is_terminal())
         .init();
+    let args = args()?;
+    voice_assistant::ha::set_power_cycle(args.power_cycle.clone());
+    let threads = compute_threads(&args);
+    let shared = Shared {
+        activity: Arc::new(voice_engine::activity::Activity::default()),
+        unhandled: args.unhandled_log.clone().map(|path| Arc::new(voice_engine::unhandled::UnhandledLog::new(path))),
+        learned: Arc::new(voice_engine::learned::Learned::new(
+            args.unhandled_log.as_ref().map(|path| path.with_file_name("learned.json")),
+        )),
+    };
+    let (processor, handle) = processor(&args, threads, &shared)?;
+    let server_wake = server_wake(&args)?;
+    if args.download_only {
+        info!("models downloaded and loaded");
+        return Ok(());
+    }
+    // The network side is one task; a single-threaded runtime keeps it off the compute cores.
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    runtime.block_on(network(args, threads, processor, handle, server_wake, shared))
+}
+
+/// The settings in layers (file, environment, command line), each logged with where it came from.
+fn args() -> Result<Args> {
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let layered = settings::layered(&Args::command(), &raw, &|var| std::env::var(var).ok())?;
     let args = Args::from_arg_matches(&layered.apply(Args::command()).get_matches_from(raw))?;
     for (name, source) in layered.sources() {
         info!(name, source, "setting");
     }
-    voice_assistant::ha::set_power_cycle(args.power_cycle.iter().chain(&args.bedtime_power_cycle).cloned().collect());
+    Ok(args)
+}
 
+/// Sets the compute thread count. Runs before anything starts a compute pool.
+fn compute_threads(args: &Args) -> usize {
     let threads = args.threads.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
     // Sets an environment variable: before the compute pool's threads exist.
     if matches!(args.english_tts, EnglishTts::Phonon) {
@@ -449,405 +550,401 @@ fn main() -> Result<()> {
         f16c = candle::utils::with_f16c(),
         "compute configured"
     );
+    threads
+}
 
-    let mimi_path = || match args.mimi_model.clone() {
-        Some(path) => Ok(path),
-        None => MimiCodec::fetch_weights(),
-    };
-    let mut handle = None;
-    let activity = Arc::new(voice_engine::activity::Activity::default());
-    let unhandled = args.unhandled_log.clone().map(|path| Arc::new(voice_engine::unhandled::UnhandledLog::new(path)));
-    let learned = Arc::new(voice_engine::learned::Learned::new(
-        args.unhandled_log.as_ref().map(|path| path.with_file_name("learned.json")),
-    ));
-    let processor: Box<dyn FrameProcessor> = match args.processor {
-        Processor::Passthrough => Box::new(Passthrough),
+/// What handles the audio, and the assistant's handle when it is the assistant.
+fn processor(
+    args: &Args,
+    threads: usize,
+    shared: &Shared,
+) -> Result<(Box<dyn FrameProcessor>, Option<AssistantHandle>)> {
+    Ok(match args.processor {
+        Processor::Passthrough => (Box::new(Passthrough), None),
         Processor::Mimi => {
-            let path = mimi_path()?;
+            let path = match args.mimi_model.clone() {
+                Some(path) => path,
+                None => MimiCodec::fetch_weights()?,
+            };
             info!(path = %path.display(), "loading mimi");
-            Box::new(MimiProcessor::new(MimiCodec::load(&path)?, LoopbackEngine))
+            (Box::new(MimiProcessor::new(MimiCodec::load(&path)?, LoopbackEngine)), None)
         }
         Processor::Assistant => {
             let device = voice_assistant::stt::device(args.stt_gpu)?;
-            let listener = match args.listener {
-                ListenerKind::Whisper => {
-                    let repo = args
-                        .whisper_repo
-                        .clone()
-                        .unwrap_or_else(|| voice_assistant::whisper::default_repo(args.norwegian, &args.whisper_size));
-                    let files = WhisperFiles::fetch(&repo)?;
-                    info!(model = %files.model.display(), ?device, "loading whisper");
-                    let language_id = match args.norwegian {
-                        true => Some(WhisperFiles::fetch(voice_assistant::whisper::LANGUAGE_ID_REPO)?),
-                        false => None,
-                    };
-                    let transcriber = Transcriber::load(&files, language_id.as_ref(), device)?;
-                    let prompt = match args.wake_prompt {
-                        Some(WakePromptArg::None) => WakePrompt::None,
-                        Some(WakePromptArg::Name) => WakePrompt::Name,
-                        Some(WakePromptArg::Context) => WakePrompt::Context,
-                        None if repo.starts_with("openai/") => WakePrompt::Context,
-                        None => WakePrompt::Name,
-                    };
-                    info!(?prompt, "wake word prompt");
-                    let window = (!args.whisper_full_window).then_some(Window::DEFAULT);
-                    let mut transcriber = transcriber.with_wake_prompt(prompt, &args.wake_name).with_window(window);
-                    info!(prompt = transcriber.prompt_text(), "whisper prompt");
-                    if !args.norwegian {
-                        transcriber.restrict(Lang::English);
-                    }
-                    Box::new(transcriber) as Box<dyn Transcribe>
-                }
-                ListenerKind::Parakeet => {
-                    if args.norwegian {
-                        warn!("Parakeet understands English only; Norwegian requests will not be understood");
-                    }
-                    let files = ParakeetFiles::fetch(&args.parakeet_repo)?;
-                    info!(model = %files.encoder.display(), threads, "loading parakeet");
-                    Box::new(Parakeet::load(&files, threads)?)
-                }
-            };
-            let wake_listener = match args.listener {
-                ListenerKind::Parakeet
-                    if !args.parakeet_wake_repo.is_empty() && args.parakeet_wake_repo != args.parakeet_repo =>
-                {
-                    let files = ParakeetFiles::fetch(&args.parakeet_wake_repo)?;
-                    let threads = args.wake_check_threads.clamp(1, threads);
-                    info!(model = %files.encoder.display(), threads, "loading parakeet for the wake word check");
-                    Some(Box::new(Parakeet::load(&files, threads)?) as Box<dyn Transcribe>)
-                }
-                _ => None,
-            };
-            let say =
-                || voice_assistant::tts::Say { english: args.say_voice.clone(), norwegian: args.say_voice_no.clone() };
-            let piper = || -> Result<WyomingTts> {
-                let address = args.piper.clone().context("Piper speech needs `--piper host:port`")?;
-                let piper = WyomingTts {
-                    address,
-                    english_voice: args.piper_voice_en.clone(),
-                    norwegian_voice: Some(args.piper_voice_no.clone()),
-                };
-                let voices = piper.voices().context("asking the Piper server for its voices")?;
-                for wanted in [piper.english_voice.as_ref(), piper.norwegian_voice.as_ref()].into_iter().flatten() {
-                    match voices.iter().find(|(name, _)| name == wanted) {
-                        Some((_, true)) => {}
-                        // wyoming-piper downloads a known voice on first use.
-                        Some((_, false)) => {
-                            info!(voice = wanted, "piper voice downloads on first use")
-                        }
-                        None => anyhow::bail!("Piper at {} has no voice {wanted}", piper.address),
-                    }
-                }
-                info!(address = piper.address, voices = voices.len(), "piper connected");
-                Ok(piper)
-            };
-            let english_voice = || -> Result<Box<dyn voice_assistant::tts::Tts>> {
-                Ok(match args.english_tts {
-                    EnglishTts::Say => Box::new(say()),
-                    EnglishTts::Piper => Box::new(piper()?),
-                    EnglishTts::Kokoro => {
-                        let kokoro = voice_assistant::kokoro::KokoroTts::new(&args.kokoro_url, &args.kokoro_voice);
-                        let voices = kokoro.voices().context("asking the Kokoro server for its voices")?;
-                        if !voices.iter().any(|v| v == kokoro.voice()) {
-                            anyhow::bail!("Kokoro at {} has no voice {}", args.kokoro_url, kokoro.voice());
-                        }
-                        info!(url = args.kokoro_url, voice = kokoro.voice(), "kokoro connected");
-                        Box::new(kokoro)
-                    }
-                    EnglishTts::KokoroOnnx => {
-                        let files = voice_assistant::kokoro::KokoroFiles::fetch(voice_assistant::kokoro::ONNX_REPO)?;
-                        info!(model = %files.model().display(), voice = args.kokoro_voice, threads, "loading kokoro");
-                        Box::new(voice_assistant::kokoro::KokoroOnnx::load(&files, &args.kokoro_voice, threads)?)
-                    }
-                    EnglishTts::Phonon => {
-                        let int8 = !args.phonon_f32;
-                        let files = voice_assistant::phonon::PhononFiles::fetch(&args.phonon_voice, int8)?;
-                        info!(model = %files.model().display(), voice = args.phonon_voice, int8, threads, "loading phonon");
-                        Box::new(voice_assistant::phonon::Phonon::load(
-                            &files,
-                            &args.phonon_voice,
-                            args.phonon_temperature,
-                            int8,
-                        )?)
-                    }
-                })
-            };
-            let english = english_voice()?;
-            let norwegian: Box<dyn voice_assistant::tts::Tts> = match args.norwegian_tts {
-                Some(NorwegianTts::Piper) => Box::new(piper()?),
-                None if args.piper.is_some() && args.norwegian => Box::new(piper()?),
-                _ => Box::new(say()),
-            };
-            let (mut renderer, mut often_spoken) = (None, Vec::new());
-            let english: Box<dyn voice_assistant::tts::Tts> = match &args.speech_cache {
-                Some(dir) => {
-                    let voice = match args.english_tts {
-                        EnglishTts::Say => format!("say-{}", args.say_voice.as_deref().unwrap_or("default")),
-                        EnglishTts::Piper => format!("piper-{}", args.piper_voice_en.as_deref().unwrap_or("default")),
-                        EnglishTts::Kokoro => format!("kokoro-{}", args.kokoro_voice),
-                        // Its own pronunciation (espeak-ng, not Kokoro-FastAPI's): not the same audio.
-                        EnglishTts::KokoroOnnx => format!("kokoro-onnx-{}", args.kokoro_voice),
-                        // Weights and temperature change the audio, so each gets its own folder.
-                        EnglishTts::Phonon => format!(
-                            "phonon-{}-t{}{}",
-                            args.phonon_voice.to_lowercase(),
-                            args.phonon_temperature,
-                            if args.phonon_f32 { "" } else { "-int8" }
-                        ),
-                    };
-                    let dir = dir.join(voice);
-                    info!(dir = %dir.display(), "speech cache");
-                    // A voice of its own, so rendering ahead never holds up an answer.
-                    let ahead = voice_assistant::speech_cache::CachedTts::new(english_voice()?, Some(dir.clone()));
-                    often_spoken = ahead.most_spoken(OFTEN_SPOKEN);
-                    renderer = Some(Box::new(ahead) as Box<dyn voice_assistant::tts::Tts>);
-                    Box::new(voice_assistant::speech_cache::CachedTts::new(english, Some(dir)))
-                }
-                None => english,
-            };
-            let tts = Box::new(voice_assistant::tts::ByLanguage { english, norwegian });
-            let assistant = AssistantProcessor::new(
-                listener,
-                tts,
-                AssistantConfig {
-                    wake_listener,
-                    home: args.home.clone(),
-                    address: args.address.clone(),
-                    transit_stops: args.transit_stops.clone(),
-                    contact: args.contact.clone(),
-                    news_feeds: (args.news_feeds.clone(), args.news_feeds_no.clone()),
-                    price_area: args.price_area.clone(),
-                    home_assistant: args.ha_url.clone().zip(args.ha_token.clone()),
-                    dump_utterances: args.dump_utterances.clone(),
-                    unhandled: unhandled.clone(),
-                    learned: Some(learned.clone()),
-                    timers_file: args
-                        .timers_file
-                        .clone()
-                        .or_else(|| args.unhandled_log.as_ref().map(|path| path.with_file_name("timers.json"))),
-                    memory_file: args
-                        .memory_file
-                        .clone()
-                        .or_else(|| args.unhandled_log.as_ref().map(|path| path.with_file_name("memory.json"))),
-                    speaker: args.speaker.clone(),
-                    room: args.room.clone(),
-                    honorific: args.honorific.clone(),
-                    honorific_female: args.honorific_female.clone(),
-                    voice_gender: match (&args.honorific, &args.honorific_female) {
-                        // Without the model everyone is addressed by `honorific`, as before.
-                        (Some(_), Some(_)) => match voice_assistant::voice_gender::VoiceGender::load(1) {
-                            Ok(model) => {
-                                info!("telling male and female voices apart");
-                                Some(Arc::new(model))
-                            }
-                            Err(error) => {
-                                warn!(error = format!("{error:#}"), "no voice gender model; one honorific for all");
-                                None
-                            }
-                        },
-                        (None, Some(_)) => anyhow::bail!("`--honorific-female` needs `--honorific`"),
-                        _ => None,
-                    },
-                    tv: args.tv.clone(),
-                    plex: args
-                        .plex_url
-                        .clone()
-                        .zip(args.plex_token.clone())
-                        .map(|(url, token)| voice_assistant::tv::Plex { url, token }),
-                    screen_url: args.screen_url.clone(),
-                    alerts: args.alerts,
-                    bedtime_light: args.bedtime_light,
-                    home_room: args.home_room.clone(),
-                    home_music: args.home_music.clone(),
-                    lockdown_music: args.lockdown_music.clone(),
-                    lockdown_volume: args.lockdown_volume,
-                    open_source_music: args.open_source_music.clone(),
-                    party: voice_engine::party::Party::new(
-                        match (&args.hue_bridge, &args.hue_app_key, &args.hue_client_key) {
-                            (Some(bridge), Some(app_key), Some(client_key)) => Some(voice_engine::party::HueConfig {
-                                bridge: bridge.clone(),
-                                app_key: app_key.clone(),
-                                client_key: client_key.clone(),
-                            }),
-                            _ => None,
-                        },
-                    ),
-                    norwegian_groceries: match args.norwegian_groceries {
-                        true => {
-                            let files =
-                                voice_assistant::norwegian::NorwegianFiles::fetch(&args.norwegian_groceries_model)?;
-                            info!(model = %files.encoder().display(), "loading whisper for norwegian groceries");
-                            Some(voice_assistant::norwegian::Norwegian::load(&files, threads)?)
-                        }
-                        false => None,
-                    },
-                    activity: activity.clone(),
-                    renderer,
-                    often_spoken,
-                    llm: args.llm_url.as_deref().map(|url| {
-                        info!(url, model = args.llm_model, "language model");
-                        voice_assistant::llm::Llm::new(
-                            url,
-                            &args.llm_model,
-                            args.llm_key.clone(),
-                            Duration::from_secs(args.llm_timeout_secs),
-                        )
-                    }),
-                    wake: WakeWord::new(&args.wake_name).with_spellings(&args.wake_spellings),
-                },
-            )?;
-            handle = Some(assistant.handle());
-            Box::new(assistant)
+            let listener = listener(args, threads, device)?;
+            let wake_listener = wake_listener(args, threads)?;
+            let voices = voices(args, threads)?;
+            let config = assistant_config(args, threads, wake_listener, voices.renderer, voices.often_spoken, shared)?;
+            let assistant = AssistantProcessor::new(listener, voices.tts, config)?;
+            let handle = assistant.handle();
+            (Box::new(assistant), Some(handle))
         }
-    };
+    })
+}
 
-    let server_wake = match &args.wake_model {
-        Some(model) => {
-            if !(0.0..1.0).contains(&args.wake_threshold) {
-                anyhow::bail!("`--wake-threshold` is 0 to 1");
+/// The model that transcribes requests.
+fn listener(args: &Args, threads: usize, device: candle::Device) -> Result<Box<dyn Transcribe>> {
+    Ok(match args.listener {
+        ListenerKind::Whisper => {
+            let repo = args
+                .whisper_repo
+                .clone()
+                .unwrap_or_else(|| voice_assistant::whisper::default_repo(args.norwegian, &args.whisper_size));
+            let files = WhisperFiles::fetch(&repo)?;
+            info!(model = %files.model.display(), ?device, "loading whisper");
+            let language_id = match args.norwegian {
+                true => Some(WhisperFiles::fetch(voice_assistant::whisper::LANGUAGE_ID_REPO)?),
+                false => None,
+            };
+            let transcriber = Transcriber::load(&files, language_id.as_ref(), device)?;
+            let prompt = match args.wake_prompt {
+                Some(WakePromptArg::None) => WakePrompt::None,
+                Some(WakePromptArg::Name) => WakePrompt::Name,
+                Some(WakePromptArg::Context) => WakePrompt::Context,
+                None if repo.starts_with("openai/") => WakePrompt::Context,
+                None => WakePrompt::Name,
+            };
+            info!(?prompt, "wake word prompt");
+            let window = (!args.whisper_full_window).then_some(Window::DEFAULT);
+            let mut transcriber = transcriber.with_wake_prompt(prompt, &args.wake_name).with_window(window);
+            info!(prompt = transcriber.prompt_text(), "whisper prompt");
+            if !args.norwegian {
+                transcriber.restrict(Lang::English);
             }
-            let models = voice_assistant::wakeword::WakeModels::load(model)?;
-            info!(
-                model = models.name,
-                threshold = args.wake_threshold,
-                check_from = args.wake_check_from,
-                "wake word model"
-            );
-            if args.wake_check_from.is_some_and(|from| !(0.0..args.wake_threshold).contains(&from)) {
-                anyhow::bail!("`--wake-check-from` is from 0 up to `--wake-threshold`");
-            }
-            Some(ServerWake {
-                models: Arc::new(models),
-                threshold: args.wake_threshold,
-                check_from: args.wake_check_from,
-            })
+            Box::new(transcriber)
         }
-        None => None,
-    };
+        ListenerKind::Parakeet => {
+            if args.norwegian {
+                warn!("Parakeet understands English only; Norwegian requests will not be understood");
+            }
+            let files = ParakeetFiles::fetch(&args.parakeet_repo)?;
+            info!(model = %files.encoder.display(), threads, "loading parakeet");
+            Box::new(Parakeet::load(&files, threads)?)
+        }
+    })
+}
 
-    if args.download_only {
-        info!("models downloaded and loaded");
-        return Ok(());
+/// A second Parakeet model for the name check on a wake word, when it is not the listener's.
+fn wake_listener(args: &Args, threads: usize) -> Result<Option<Box<dyn Transcribe>>> {
+    match args.listener {
+        ListenerKind::Parakeet
+            if !args.parakeet_wake_repo.is_empty() && args.parakeet_wake_repo != args.parakeet_repo =>
+        {
+            let files = ParakeetFiles::fetch(&args.parakeet_wake_repo)?;
+            let threads = args.wake_check_threads.clamp(1, threads);
+            info!(model = %files.encoder.display(), threads, "loading parakeet for the wake word check");
+            Ok(Some(Box::new(Parakeet::load(&files, threads)?)))
+        }
+        _ => Ok(None),
     }
+}
 
+fn say(args: &Args) -> voice_assistant::tts::Say {
+    voice_assistant::tts::Say { english: args.say_voice.clone(), norwegian: args.say_voice_no.clone() }
+}
+
+/// The Piper server, checked for the voices it is asked for.
+fn piper(args: &Args) -> Result<WyomingTts> {
+    let address = args.piper.clone().context("Piper speech needs `--piper host:port`")?;
+    let piper = WyomingTts {
+        address,
+        english_voice: args.piper_voice_en.clone(),
+        norwegian_voice: Some(args.piper_voice_no.clone()),
+    };
+    let voices = piper.voices().context("asking the Piper server for its voices")?;
+    for wanted in [piper.english_voice.as_ref(), piper.norwegian_voice.as_ref()].into_iter().flatten() {
+        match voices.iter().find(|(name, _)| name == wanted) {
+            Some((_, true)) => {}
+            // wyoming-piper downloads a known voice on first use.
+            Some((_, false)) => {
+                info!(voice = wanted, "piper voice downloads on first use")
+            }
+            None => anyhow::bail!("Piper at {} has no voice {wanted}", piper.address),
+        }
+    }
+    info!(address = piper.address, voices = voices.len(), "piper connected");
+    Ok(piper)
+}
+
+/// One English voice: called again for the voice that renders ahead.
+fn english_voice(args: &Args, threads: usize) -> Result<Box<dyn Tts>> {
+    Ok(match args.english_tts {
+        EnglishTts::Say => Box::new(say(args)),
+        EnglishTts::Piper => Box::new(piper(args)?),
+        EnglishTts::Kokoro => {
+            let kokoro = voice_assistant::kokoro::KokoroTts::new(&args.kokoro_url, &args.kokoro_voice);
+            let voices = kokoro.voices().context("asking the Kokoro server for its voices")?;
+            if !voices.iter().any(|v| v == kokoro.voice()) {
+                anyhow::bail!("Kokoro at {} has no voice {}", args.kokoro_url, kokoro.voice());
+            }
+            info!(url = args.kokoro_url, voice = kokoro.voice(), "kokoro connected");
+            Box::new(kokoro)
+        }
+        EnglishTts::KokoroOnnx => {
+            let files = voice_assistant::kokoro::KokoroFiles::fetch(voice_assistant::kokoro::ONNX_REPO)?;
+            info!(model = %files.model().display(), voice = args.kokoro_voice, threads, "loading kokoro");
+            Box::new(voice_assistant::kokoro::KokoroOnnx::load(&files, &args.kokoro_voice, threads)?)
+        }
+        EnglishTts::Phonon => {
+            let int8 = !args.phonon_f32;
+            let files = voice_assistant::phonon::PhononFiles::fetch(&args.phonon_voice, int8)?;
+            info!(model = %files.model().display(), voice = args.phonon_voice, int8, threads, "loading phonon");
+            Box::new(voice_assistant::phonon::Phonon::load(&files, &args.phonon_voice, args.phonon_temperature, int8)?)
+        }
+    })
+}
+
+fn voices(args: &Args, threads: usize) -> Result<Voices> {
+    let english = english_voice(args, threads)?;
+    let norwegian: Box<dyn Tts> = match args.norwegian_tts {
+        Some(NorwegianTts::Piper) => Box::new(piper(args)?),
+        None if args.piper.is_some() && args.norwegian => Box::new(piper(args)?),
+        _ => Box::new(say(args)),
+    };
+    let (mut renderer, mut often_spoken) = (None, Vec::new());
+    let english: Box<dyn Tts> = match &args.speech_cache {
+        Some(dir) => {
+            let dir = dir.join(args.english_tts.voice(args).1);
+            info!(dir = %dir.display(), "speech cache");
+            // A voice of its own, so rendering ahead never holds up an answer.
+            let ahead = CachedTts::new(english_voice(args, threads)?, Some(dir.clone()));
+            often_spoken = ahead.most_spoken(OFTEN_SPOKEN);
+            renderer = Some(Box::new(ahead) as Box<dyn Tts>);
+            Box::new(CachedTts::new(english, Some(dir)))
+        }
+        None => english,
+    };
+    Ok(Voices { tts: Box::new(voice_assistant::tts::ByLanguage { english, norwegian }), renderer, often_spoken })
+}
+
+/// The assistant's settings. Loads the voice gender and Norwegian groceries models, in that order.
+fn assistant_config(
+    args: &Args,
+    threads: usize,
+    wake_listener: Option<Box<dyn Transcribe>>,
+    renderer: Option<Box<dyn Tts>>,
+    often_spoken: Vec<String>,
+    shared: &Shared,
+) -> Result<AssistantConfig> {
+    Ok(AssistantConfig {
+        wake_listener,
+        home: args.home.clone(),
+        address: args.address.clone(),
+        transit_stops: args.transit_stops.clone(),
+        contact: args.contact.clone(),
+        news_feeds: (args.news_feeds.clone(), args.news_feeds_no.clone()),
+        price_area: args.price_area.clone(),
+        home_assistant: args.home_assistant(),
+        dump_utterances: args.dump_utterances.clone(),
+        unhandled: shared.unhandled.clone(),
+        learned: Some(shared.learned.clone()),
+        timers_file: args.timers_file(),
+        memory_file: args.memory_file(),
+        speaker: args.speaker.clone(),
+        room: args.room.clone(),
+        honorific: args.honorific.clone(),
+        honorific_female: args.honorific_female.clone(),
+        voice_gender: match (&args.honorific, &args.honorific_female) {
+            // Without the model everyone is addressed by `honorific`, as before.
+            (Some(_), Some(_)) => match voice_assistant::voice_gender::VoiceGender::load(1) {
+                Ok(model) => {
+                    info!("telling male and female voices apart");
+                    Some(Arc::new(model))
+                }
+                Err(error) => {
+                    warn!(error = format!("{error:#}"), "no voice gender model; one honorific for all");
+                    None
+                }
+            },
+            (None, Some(_)) => anyhow::bail!("`--honorific-female` needs `--honorific`"),
+            _ => None,
+        },
+        tv: args.tv.clone(),
+        plex: args
+            .plex_url
+            .clone()
+            .zip(args.plex_token.clone())
+            .map(|(url, token)| voice_assistant::tv::Plex { url, token }),
+        screen_url: args.screen_url.clone(),
+        alerts: args.alerts,
+        bedtime_light: args.bedtime_light,
+        home_room: args.home_room.clone(),
+        home_music: args.home_music.clone(),
+        lockdown_music: args.lockdown_music.clone(),
+        lockdown_volume: args.lockdown_volume,
+        open_source_music: args.open_source_music.clone(),
+        party: voice_engine::party::Party::new(match (&args.hue_bridge, &args.hue_app_key, &args.hue_client_key) {
+            (Some(bridge), Some(app_key), Some(client_key)) => Some(voice_engine::party::HueConfig {
+                bridge: bridge.clone(),
+                app_key: app_key.clone(),
+                client_key: client_key.clone(),
+            }),
+            _ => None,
+        }),
+        norwegian_groceries: match args.norwegian_groceries {
+            true => {
+                let files = voice_assistant::norwegian::NorwegianFiles::fetch(&args.norwegian_groceries_model)?;
+                info!(model = %files.encoder().display(), "loading whisper for norwegian groceries");
+                Some(voice_assistant::norwegian::Norwegian::load(&files, threads)?)
+            }
+            false => None,
+        },
+        activity: shared.activity.clone(),
+        renderer,
+        often_spoken,
+        llm: args.llm_url.as_deref().map(|url| {
+            info!(url, model = args.llm_model, "language model");
+            voice_assistant::llm::Llm::new(
+                url,
+                &args.llm_model,
+                args.llm_key.clone(),
+                Duration::from_secs(args.llm_timeout_secs),
+            )
+        }),
+        wake: args.wake_word(),
+    })
+}
+
+/// The engine's own wake word model, for a satellite that streams all the time.
+fn server_wake(args: &Args) -> Result<Option<ServerWake>> {
+    let Some(model) = &args.wake_model else {
+        return Ok(None);
+    };
+    if !(0.0..1.0).contains(&args.wake_threshold) {
+        anyhow::bail!("`--wake-threshold` is 0 to 1");
+    }
+    let models = voice_assistant::wakeword::WakeModels::load(model)?;
+    info!(model = models.name, threshold = args.wake_threshold, check_from = args.wake_check_from, "wake word model");
+    if args.wake_check_from.is_some_and(|from| !(0.0..args.wake_threshold).contains(&from)) {
+        anyhow::bail!("`--wake-check-from` is from 0 up to `--wake-threshold`");
+    }
+    Ok(Some(ServerWake { models: Arc::new(models), threshold: args.wake_threshold, check_from: args.wake_check_from }))
+}
+
+/// The web page, the Wyoming server and the satellite, then the UDP audio until Ctrl-C.
+async fn network(
+    args: Args,
+    threads: usize,
+    processor: Box<dyn FrameProcessor>,
+    handle: Option<AssistantHandle>,
+    server_wake: Option<ServerWake>,
+    shared: Shared,
+) -> Result<()> {
     let cfg = Config {
         jitter_depth: args.jitter_depth,
         model_core: args.model_core,
         session_timeout: Duration::from_secs(args.session_timeout_secs),
     };
-
-    // The network side is one task; a single-threaded runtime keeps it off the compute cores.
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    runtime.block_on(async move {
-        let metrics = Arc::new(Metrics::default());
-        let http = tokio::net::TcpListener::bind(args.metrics_bind).await.context("binding metrics listener")?;
-        let speech = Arc::new(SpeechClips::default());
-        if let (Some(dir), Some(days)) = (args.dump_utterances.clone(), args.dump_keep_days) {
-            info!(dir = %dir.display(), days, "recordings kept");
-            tokio::spawn(voice_engine::recordings::keep(dir, days));
-        }
-        let voice = match args.english_tts {
-            EnglishTts::Say => {
-                format!("macOS say{}", args.say_voice.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
-            }
-            EnglishTts::Piper => {
-                format!("Piper{}", args.piper_voice_en.as_deref().map(|v| format!(", {v}")).unwrap_or_default())
-            }
-            EnglishTts::Kokoro | EnglishTts::KokoroOnnx => format!("Kokoro, {}", args.kokoro_voice),
-            EnglishTts::Phonon => format!("Phonon, {}", args.phonon_voice),
+    let metrics = Arc::new(Metrics::default());
+    let http = tokio::net::TcpListener::bind(args.metrics_bind).await.context("binding metrics listener")?;
+    let speech = Arc::new(SpeechClips::default());
+    if let (Some(dir), Some(days)) = (args.dump_utterances.clone(), args.dump_keep_days) {
+        info!(dir = %dir.display(), days, "recordings kept");
+        tokio::spawn(voice_engine::recordings::keep(dir, days));
+    }
+    let voice = args.english_tts.voice(&args).0;
+    let version = option_env!("INNESTEMME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+    let web = args.web.then(|| web(&args, threads, &voice, version, handle.clone(), speech.clone(), &shared));
+    tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));
+    if let Some(bind) = args.wyoming_bind {
+        let assistant = handle.clone().context("`--wyoming-bind` needs `--processor assistant`")?;
+        let listener = tokio::net::TcpListener::bind(bind).await.context("binding the Wyoming listener")?;
+        let about = voice_engine::wyoming_server::About {
+            version: version.to_owned(),
+            listener: args.listener.name().to_owned(),
+            voice,
         };
-        let version = option_env!("INNESTEMME_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
-        let web = args.web.then(|| {
-            let about = serde_json::json!({
-                "name": args.wake_name,
-                "wake_words": args.satellite_wake_words,
-                "voice": voice.clone(),
-                "honorific": args.honorific,
-                "honorific_female": args.honorific_female,
-                "norwegian": args.norwegian,
-                "language_model": args.llm_url.is_some(),
-                "version": version,
-                "listener": format!("{:?}", args.listener).to_lowercase(),
-                "wake_model": args.wake_model,
-                "wake_threshold": args.wake_threshold,
-                "wake_check_from": args.wake_check_from,
-                "norwegian_groceries": args.norwegian_groceries,
-                "answer_player": args.answer_player,
-                "threads": threads,
-                "speech_cache": args.speech_cache.as_ref().map(|dir| dir.display().to_string()),
-            });
-            info!(url = format!("http://{}/", args.metrics_bind), "web page");
-            let wake = WakeWord::new(&args.wake_name).with_spellings(&args.wake_spellings);
-            let hub =
-                voice_engine::hub::Hub::new(args.ha_url.clone().zip(args.ha_token.clone()), args.hub_faces.clone());
-            info!(url = format!("http://{}/hub", args.metrics_bind), "hub page");
-            let control = Arc::new(voice_engine::control::Control::new(args.ha_url.clone().zip(args.ha_token.clone())));
-            Arc::new(
-                Web::new(wake, about, handle.clone(), speech.clone(), unhandled.clone())
-                    .with_hub(hub)
-                    .with_control(control)
-                    .with_learned(learned.clone())
-                    .with_announce_token(args.announce_token.clone())
-                    .with_ask_token(args.ask_token.clone()),
-            )
-        });
-        tokio::spawn(serve_http(http, metrics.clone(), speech.clone(), web));
-        if let Some(bind) = args.wyoming_bind {
-            let assistant = handle.clone().context("`--wyoming-bind` needs `--processor assistant`")?;
-            let listener = tokio::net::TcpListener::bind(bind).await.context("binding the Wyoming listener")?;
-            let about = voice_engine::wyoming_server::About {
-                version: version.to_owned(),
-                listener: format!("{:?}", args.listener).to_lowercase(),
-                voice,
-            };
-            info!(%bind, "wyoming server for Home Assistant");
-            tokio::spawn(voice_engine::wyoming_server::serve(listener, assistant, about));
+        info!(%bind, "wyoming server for Home Assistant");
+        tokio::spawn(voice_engine::wyoming_server::serve(listener, assistant, about));
+    }
+    if let Some(address) = args.satellite.clone() {
+        let assistant = handle.context("`--satellite` needs `--processor assistant`")?;
+        let cfg = satellite_config(&args, address, server_wake)?;
+        tokio::spawn(voice_engine::satellite::run(cfg, assistant, speech));
+    }
+    let transport = UdpTransport::bind(args.bind, 1 << 20, args.busy_poll_us).context("binding udp socket")?;
+    info!(udp = %args.bind, metrics = %args.metrics_bind, "listening");
+    serve(transport, processor, cfg, metrics, async {
+        let _ = tokio::signal::ctrl_c().await;
+    })
+    .await
+}
+
+/// The page on the metrics port, with the hub and the control page.
+fn web(
+    args: &Args,
+    threads: usize,
+    voice: &str,
+    version: &str,
+    handle: Option<AssistantHandle>,
+    speech: Arc<SpeechClips>,
+    shared: &Shared,
+) -> Arc<Web> {
+    let about = serde_json::json!({
+        "name": args.wake_name,
+        "wake_words": args.satellite_wake_words,
+        "voice": voice,
+        "honorific": args.honorific,
+        "honorific_female": args.honorific_female,
+        "norwegian": args.norwegian,
+        "language_model": args.llm_url.is_some(),
+        "version": version,
+        "listener": args.listener.name(),
+        "wake_model": args.wake_model,
+        "wake_threshold": args.wake_threshold,
+        "wake_check_from": args.wake_check_from,
+        "norwegian_groceries": args.norwegian_groceries,
+        "answer_player": args.answer_player,
+        "threads": threads,
+        "speech_cache": args.speech_cache.as_ref().map(|dir| dir.display().to_string()),
+    });
+    info!(url = format!("http://{}/", args.metrics_bind), "web page");
+    let hub = voice_engine::hub::Hub::new(args.home_assistant(), args.hub_faces.clone());
+    info!(url = format!("http://{}/hub", args.metrics_bind), "hub page");
+    let control = Arc::new(voice_engine::control::Control::new(args.home_assistant()));
+    Arc::new(
+        Web::new(args.wake_word(), about, handle, speech, shared.unhandled.clone())
+            .with_hub(hub)
+            .with_control(control)
+            .with_learned(shared.learned.clone())
+            .with_announce_token(args.announce_token.clone())
+            .with_ask_token(args.ask_token.clone()),
+    )
+}
+
+fn satellite_config(args: &Args, address: String, server_wake: Option<ServerWake>) -> Result<SatelliteConfig> {
+    let key = args.satellite_key.as_deref().map(voice_esphome::frame::parse_key).transpose()?;
+    let engine = SocketAddr::new(
+        if args.bind.ip().is_unspecified() { [127, 0, 0, 1].into() } else { args.bind.ip() },
+        args.bind.port(),
+    );
+    let answer_player = match &args.answer_player {
+        Some(entity) => {
+            let (url, token) = args
+                .home_assistant()
+                .context("`--answer-player` needs Home Assistant (`--ha-url` and `--ha-token`)")?;
+            if args.answer_volume.is_some_and(|v| !(0.0..=1.0).contains(&v)) {
+                anyhow::bail!("`--answer-volume` is 0 to 1");
+            }
+            Some(Arc::new(AnswerPlayer {
+                ha: HomeAssistant::new(&url, &token),
+                entity: entity.clone(),
+                volume: args.answer_volume,
+            }))
         }
-        if let Some(address) = args.satellite.clone() {
-            let assistant = handle.context("`--satellite` needs `--processor assistant`")?;
-            let key = args.satellite_key.as_deref().map(voice_esphome::frame::parse_key).transpose()?;
-            let engine = SocketAddr::new(
-                if args.bind.ip().is_unspecified() { [127, 0, 0, 1].into() } else { args.bind.ip() },
-                args.bind.port(),
-            );
-            let answer_player = match &args.answer_player {
-                Some(entity) => {
-                    let (url, token) = args
-                        .ha_url
-                        .as_deref()
-                        .zip(args.ha_token.as_deref())
-                        .context("`--answer-player` needs Home Assistant (`--ha-url` and `--ha-token`)")?;
-                    if args.answer_volume.is_some_and(|v| !(0.0..=1.0).contains(&v)) {
-                        anyhow::bail!("`--answer-volume` is 0 to 1");
-                    }
-                    Some(Arc::new(AnswerPlayer {
-                        ha: HomeAssistant::new(url, token),
-                        entity: entity.clone(),
-                        volume: args.answer_volume,
-                    }))
-                }
-                None => None,
-            };
-            let cfg = SatelliteConfig {
-                address,
-                key,
-                engine,
-                public_url: args.public_url.clone(),
-                http_port: args.metrics_bind.port(),
-                stream_answers: args.satellite_stream,
-                answer_player,
-                wake_words: args.satellite_wake_words.clone(),
-                server_wake,
-                dump: args.dump_utterances.clone(),
-            };
-            tokio::spawn(voice_engine::satellite::run(cfg, assistant, speech));
-        }
-        let transport = UdpTransport::bind(args.bind, 1 << 20, args.busy_poll_us).context("binding udp socket")?;
-        info!(udp = %args.bind, metrics = %args.metrics_bind, "listening");
-        serve(transport, processor, cfg, metrics, async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
+        None => None,
+    };
+    Ok(SatelliteConfig {
+        address,
+        key,
+        engine,
+        public_url: args.public_url.clone(),
+        http_port: args.metrics_bind.port(),
+        stream_answers: args.satellite_stream,
+        answer_player,
+        wake_words: args.satellite_wake_words.clone(),
+        server_wake,
+        dump: args.dump_utterances.clone(),
     })
 }
 
