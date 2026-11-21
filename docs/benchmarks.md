@@ -370,3 +370,25 @@ M4 Pro, 4 threads.
   sound like groceries are in the list under their own names.
 - A synthetic voice saying single words is harder than a person: these are a floor. Misses get "Added ..."
   with what was written, so "undo" takes them back.
+
+## Phonon 31M against Kokoro, 2026-11-21
+
+Gradium's Phonon 31M (`gradium/phonon-31m-en`, Apache 2.0, English, released 2026-10-20) through its own
+runtime `ptts` 0.7.1 (f32, NEON), in a `python:3.12-slim` container on the M4 Pro (colima, 6 CPUs), on the
+sentences of `examples/kokoro_speed.rs` plus two persona lines. Kokoro: `kokoro_speed` natively on the same Mac,
+4 threads, sherpa-onnx 2.0.1. First audio is from the request to the first streamed chunk; Kokoro does not
+stream, so its first audio is the whole sentence.
+
+| | First audio p50 | Whole sentence p50 | Audio per second of work |
+|---|---|---|---|
+| Phonon 31M, 4 threads (6 male voices) | 6.6-8.2 ms | 204-254 ms | 16.1-17.2x |
+| Phonon 31M, 6 threads | 6.8-8.4 ms | 209-249 ms | 16.4-17.3x |
+| Kokoro `am_onyx`, 4 threads | 460-760 ms | 460-760 ms | 4.1-4.4x |
+
+What Whisper base hears back (`examples/stt_eval.rs`):
+- Phonon says every number in all six voices (Edwin, Toby, Preston, Miles, Hugh, Sir Bramwell). Four voices add
+  a syllable after "13" at the end of a sentence ("13-ter", "13 deaths"); Toby, Miles and Preston do not.
+  "øre" comes out as "year" or "or", and Rikshospitalet is garbled, as with Kokoro.
+- Kokoro on sherpa-onnx 2.0.1 drops every number and "degrees" ("It's in the living room.", "Seconds left on
+  the minute timer.", "The next tram is the two in the..."): the bug #109 reverts.
+- Not measured: the cluster's x86 node (the `ptts` build here has NEON, no AVX), and the voices by ear.
