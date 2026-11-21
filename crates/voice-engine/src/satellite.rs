@@ -891,6 +891,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 self.device.event(Event::SttEnd, &[("text", &text)]).await?;
                 self.device.event(Event::IntentStart, &[]).await?;
                 self.run = Run::Answering;
+                // The quiet the watchdog counts starts with this answer, not with the last one's
+                // speech: kept from then, a request more than a minute later lost its answer.
+                self.answer_event_at = Some(Instant::now());
             }
             AssistantEvent::Answer { text } => {
                 if self.run != Run::Answering {
