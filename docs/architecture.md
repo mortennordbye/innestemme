@@ -15,7 +15,7 @@ As deployed: a Home Assistant Voice PE in the living room, answers on a Sonos.
 | 3. Parakeet TDT 0.6B checks the wake word's audio for the name, on a thread of its own, while the request is said and transcribed; music in the room is paused once it finds the name (queued, see below) | `assistant/wake.rs` `NameChecker`, `assistant/hush.rs` `hush` | about 0.12 s at 4 threads on an M4 Pro |
 | 4. An energy detector cuts the request: a draft after 0.24 s of quiet, the end after 0.64 s | `voice-assistant/src/vad.rs` | 0.24 or 0.64 s |
 | 5. Parakeet TDT 110M (int8, sherpa-onnx) transcribes the draft while the pause goes on | `parakeet.rs` | about 18 ms per second of audio on an M4 Pro |
-| 6. The rules parse it into an intent; a complete command acts on the draft at once | `intent.rs`, `assistant/quick.rs` `complete_at_once` | under 1 ms |
+| 6. The rules parse it into an intent; a complete command acts on the draft at once | `intent/`, `Intent::meta` `complete_at_once` | under 1 ms |
 | 7. The skill runs and words the answer; Home Assistant writes go to a queue | `assistant/`, `ha.rs`, skill modules | 0-50 ms for most |
 | 8. The persona styles it ("Very good, sir.", or "ma'am" for a female voice with `honorific-female`) | `persona.rs`, `voice_gender.rs` | |
 | 9. Each sentence comes from the speech cache, or from Kokoro | `speech_cache.rs`, `kokoro.rs` | 0 ms cached, 1-3 s on the cluster otherwise |
@@ -61,7 +61,7 @@ twice, those words mean that request, without a code change; only words that are
 rewritten. The pairs are kept in `learned.json` beside the unhandled log, and the web page's Log tab lists them
 with a button to forget one.
 
-**Rules first.** `intent.rs` handles every skill in the catalogue in English and Norwegian. A request the rules do
+**Rules first.** `intent/` handles every skill in the catalogue in English and Norwegian. A request the rules do
 not understand goes to a language model when `llm-url` is set (any OpenAI-compatible API, with the skills as
 tools), else gets the short fallback. The cluster runs without one.
 
