@@ -767,9 +767,9 @@ impl Worker {
         };
         let failed = ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s));
         if !failed && intent::split_commands(text).is_none() && heard_by_itself(&intent::parse(text)) {
-            info!(request = text, answer, after = ?start.elapsed(), "done without words");
-            let after_ms = self.speech_ended.take().map(|ended| ended.elapsed().as_millis() as u64);
             let turn = self.turn_for(text, Some(answer.clone()), Outcome::Done, start);
+            info!(request = text, answer, skill = turn.skill, after = ?start.elapsed(), "done without words");
+            let after_ms = self.speech_ended.take().map(|ended| ended.elapsed().as_millis() as u64);
             self.config.activity.record(activity::Turn { after_ms, ..turn });
             self.history.push_back((Instant::now(), Turn { user: text.to_owned(), assistant: answer }));
             self.follow_up_until = (!std::mem::take(&mut self.follow_up_closed)).then(|| Instant::now() + FOLLOW_UP);
@@ -779,8 +779,9 @@ impl Worker {
             self.busy.store(false, Relaxed);
             return;
         }
-        info!(request = text, answer, ?lang, after = ?start.elapsed(), "answering");
-        self.turn = Some(self.turn_for(text, Some(answer.clone()), Outcome::Answered, start));
+        let turn = self.turn_for(text, Some(answer.clone()), Outcome::Answered, start);
+        info!(request = text, answer, ?lang, skill = turn.skill, after = ?start.elapsed(), "answering");
+        self.turn = Some(turn);
         // The rules' own fallback, or a skill that could not do it ("Sorry, I couldn't find ...").
         let fallback = ["Sorry, I can't help with that yet.", "Beklager, det kan jeg ikke hjelpe med ennå."];
         if fallback.iter().any(|f| answer.starts_with(f)) {
