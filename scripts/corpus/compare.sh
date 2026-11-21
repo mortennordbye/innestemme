@@ -3,7 +3,9 @@
 # two builds, and the difference. Empty means the rules read every text the same way.
 #   compare.sh [base ref, default origin/main] [other ref, default the working tree]
 # A ref is checked out in a git worktree under target/corpus/ and gets this tree's
-# examples/intent_corpus.rs, so a ref from before the tool still builds it. Both builds share target/.
+# examples/intent_corpus.rs, so a ref from before the tool still builds it. Each build has a target
+# folder of its own: with one shared folder cargo took one tree's build as fresh for the other, and
+# both sides ran the same binary.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$PWD BASE=${1:-origin/main} OTHER=${2:-}
@@ -15,8 +17,9 @@ TOOL=crates/voice-assistant/examples/intent_corpus.rs
 build() {
   local tree=$1 name=$2
   if [ "$tree" != "$ROOT" ]; then cp "$TOOL" "$tree/$TOOL"; fi
-  (cd "$tree" && CARGO_TARGET_DIR="$ROOT/target" cargo build -q -p voice-assistant --example intent_corpus)
-  cp target/debug/examples/intent_corpus "$OUT/$name-intent_corpus"
+  local dir="$ROOT/$OUT/$name-target"
+  (cd "$tree" && CARGO_TARGET_DIR="$dir" cargo build -q -p voice-assistant --example intent_corpus)
+  cp "$dir/debug/examples/intent_corpus" "$OUT/$name-intent_corpus"
   "$OUT/$name-intent_corpus" --catalogue "$OUT/heard.txt" > "$OUT/$name.txt"
 }
 
@@ -37,6 +40,9 @@ if [ -n "$OTHER" ]; then
   build "$ROOT/$OUT/other" other
 else
   build "$ROOT" other
+fi
+if cmp -s "$OUT/base-intent_corpus" "$OUT/other-intent_corpus"; then
+  echo "warning: both builds are the same binary" >&2
 fi
 texts=$(grep -vc '^  ' "$OUT/other.txt")
 if diff -u "$OUT/base.txt" "$OUT/other.txt" > "$OUT/diff.txt"; then
