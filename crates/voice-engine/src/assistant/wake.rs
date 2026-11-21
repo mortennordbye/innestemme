@@ -234,7 +234,7 @@ impl Worker {
         self.unhandled(Reason::NotUnderstood, text, Some(answer));
         self.turn = Some(self.turn_for(text, Some(answer.to_owned()), Outcome::NotUnderstood, start));
         self.busy.store(true, Relaxed);
-        self.emit(AssistantEvent::Heard { text: text.to_owned() });
+        self.emit(AssistantEvent::Heard { text: text.to_owned(), words: true });
         // The music stays paused for a second try; it plays on if none comes.
         let hushed = self.conversation.hushed.take();
         self.say(answer.to_owned(), lang, start);

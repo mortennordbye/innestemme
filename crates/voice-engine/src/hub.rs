@@ -185,7 +185,7 @@ pub async fn events(stream: &mut TcpStream, assistant: &AssistantHandle, screen:
         let seconds = |samples: usize| samples as f32 / SAMPLE_RATE as f32;
         let messages = match event {
             AssistantEvent::Listening => vec![json!({ "state": "listening" })],
-            AssistantEvent::Heard { text } => vec![json!({ "state": "thinking", "heard": text })],
+            AssistantEvent::Heard { text, .. } => vec![json!({ "state": "thinking", "heard": text })],
             AssistantEvent::Answer { text } => {
                 samples = 0;
                 vec![json!({ "state": "speaking", "text": text })]

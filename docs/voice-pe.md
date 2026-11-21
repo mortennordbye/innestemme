@@ -43,6 +43,13 @@ can hold a device: stop a laptop instance before the cluster's starts, or the tw
   device would hear.
 - **Follow-ups.** With `wake-model` and an answer player, the engine listens for 6 s after an answer has played
   ("And turn off the kitchen."), recognised requests only.
+- **The answer on the player is announced when the request is heard**, before it is worded, so Home
+  Assistant's call and the Sonos fetch overlap the wording; the stream sends the audio once it exists. The
+  device's run still ends when the answer is worded. A request the worker says may end without words ("pause the
+  music", "never mind", one no rule takes) is announced only when words come, since an announce ducks the music.
+  One announced early that ends without words, or gets none within 3 s, plays 0.3 s of silence
+  (`no words for the answer announced early: ending it`). The follow-up window counts from the later of the
+  announce plus 0.8 s and the first audio plus 0.4 s.
 - **Interrupting.** "Hey Jarvis" over an answer stops it.
 - **The room.** "Turn off the lights" without a room means the satellite's room: its area in Home Assistant,
   looked up by the device's name when it connects. `room` overrides it. Renaming the device in Home Assistant
@@ -76,6 +83,14 @@ can hold a device: stop a laptop instance before the cluster's starts, or the tw
 - **The device's own Hey Jarvis model is marginal:** a real voice scored 0.84 to 0.86 against its most sensitive
   cutoff of 0.83, where openWakeWord scored the same voice at 0.99 and ordinary speech at 0.24 at most. That is
   why `wake-model` exists.
+- **How long the Sonos takes.** Each fetch of an answer logs one `answer stream` line when the response ends,
+  in milliseconds from the announce: `announce_ms` (Home Assistant's call returned), `fetch_ms` (the Sonos
+  asked for the URL), `audio_ms` (the first audio existed), `sent_ms` (the first audio went out), `ended_ms`
+  (the response ended), with `bytes` sent and `complete` (false: the Sonos hung up). -1 means it did not
+  happen. Then `fetch_ms` is the call and the Sonos start, `sent_ms - fetch_ms` the wait for the words, and
+  `answer heard on the device ... after` the sound in the room, all from the same announce. In Loki:
+  `{namespace="innestemme",container="innestemme"} |= "answer stream" | logfmt`. Answers on the device itself
+  log the line too, counted from when their URL was made, with `announce_ms=-1`.
 - **An answer whose end is lost does not block the device.** When the engine gets no word from the
   assistant for 60 s during an answer (after the last audio has played, on a streaming device), it ends the run
   and logs `the answer's end did not come: ending it`. Before that, the device's runs are refused.

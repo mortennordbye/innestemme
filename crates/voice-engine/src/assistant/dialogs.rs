@@ -328,6 +328,36 @@ fn said(answer: Option<String>) -> String {
 }
 
 #[test]
+fn heard_tells_whether_words_will_follow() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    let mut words = |text: &str| {
+        let heard = [Transcript { lang: Lang::English, text: text.to_owned(), score: 0.0 }];
+        let now = Instant::now();
+        dialog.worker.heard(&heard, &[], now, now, false);
+        let mut flag = None;
+        let mut spoken = false;
+        while let Ok(event) = dialog.events.try_recv() {
+            match event {
+                AssistantEvent::Heard { words, .. } => flag = Some(words),
+                AssistantEvent::Answer { .. } => spoken = true,
+                _ => {}
+            }
+        }
+        (flag, spoken)
+    };
+    assert_eq!(words("Jarvis, turn on the kitchen lights"), (Some(true), true));
+    assert_eq!(words("Jarvis, what's 5 plus 5"), (Some(true), true));
+    assert_eq!(words("Jarvis, pause the music and turn on the kitchen lights"), (Some(true), true));
+    // May end quietly: done without words, "never mind", and a request no rule takes (a language
+    // model, when there is one, may ignore it). The flag errs toward false.
+    // Nothing plays in the test, so it says so: the flag cannot know that ahead.
+    assert_eq!(words("Jarvis, pause the music"), (Some(false), true));
+    assert_eq!(words("Jarvis, never mind"), (Some(false), false));
+    assert_eq!(words("Jarvis, purple monkey dishwasher"), (Some(false), true));
+}
+
+#[test]
 fn a_light_request_without_a_room_asks_which_and_takes_the_room() {
     let ha = FakeHa::new();
     let mut dialog = Dialog::new(Some(&ha));

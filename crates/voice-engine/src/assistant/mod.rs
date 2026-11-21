@@ -181,8 +181,9 @@ pub struct AssistantConfig {
 pub enum AssistantEvent {
     /// The name was heard, or a device woke on its own wake word: listening for the request.
     Listening,
-    /// A request is being handled.
-    Heard { text: String },
+    /// A request is being handled. `words`: its answer will be spoken, by the tests the turn makes
+    /// (`Worker::words_follow`); false when it may end without words.
+    Heard { text: String, words: bool },
     /// The answer's text, before its audio.
     Answer { text: String },
     /// Answer audio, 24 kHz mono, as it is synthesized.
@@ -705,10 +706,11 @@ impl Worker {
 
     fn answer(&mut self, text: &str, lang: Lang, start: Instant) {
         self.interrupted.store(false, Relaxed);
-        self.emit(AssistantEvent::Heard { text: text.to_owned() });
         // A slow answer (weather, departures) opens with a lead-in rendered ahead of time, which
         // plays while the data is fetched and its sentence synthesized.
         let lead = self.lead_in(text, lang);
+        let words = self.words_follow(text, lead.is_some());
+        self.emit(AssistantEvent::Heard { text: text.to_owned(), words });
         // Its data kept, a slow skill's answer goes out at once, worded as after a lead-in: the forms
         // rendered ahead, with no honorific worked into the data sentence.
         let plain = lead.is_none() && self.data_kept(text, lang);
@@ -767,6 +769,30 @@ impl Worker {
         }
         self.speak(&answer, lang, &mut spoken);
         self.finish(spoken, start);
+    }
+
+    /// Whether the answer to `text` will be spoken, by the tests the turn makes below: a satellite
+    /// announces the answer on a player before it is worded only then, since an announce ducks the
+    /// music. A lead-in is words. False where it may end quietly: done without words, "never mind",
+    /// a sum that does not add up, and a request only a language model may take (it can ignore it).
+    fn words_follow(&self, text: &str, lead: bool) -> bool {
+        if lead {
+            return true;
+        }
+        let spoken = |intent: &Intent| match intent {
+            Intent::Cancel | Intent::Unknown => false,
+            Intent::Calculate(said) => voice_assistant::calc::parse(said).is_some(),
+            Intent::Lookup(_) => self.config.llm.is_none(),
+            _ => true,
+        };
+        match intent::split_commands(text) {
+            // Several requests end quietly only when each part does.
+            Some(parts) => parts.iter().any(|part| spoken(&intent::parse(part))),
+            None => {
+                let parsed = intent::parse(text);
+                !parsed.meta().heard_by_itself && spoken(&parsed)
+            }
+        }
     }
 
     fn turn_for(&self, heard: &str, answer: Option<String>, outcome: Outcome, start: Instant) -> activity::Turn {
