@@ -58,6 +58,7 @@ recordings in `target/utterances`. Say so before anything plays on the real spea
 | `cargo run -p voice-esphome --example fake_satellite -- ...` | a pretend Voice PE, see [voice-pe.md](voice-pe.md) |
 | `cargo run --release -p voice-engine --example party -- normal 60` | party mode from the Mac's microphone (Hue keys in `.env`; `normal`, `fast` or `relaxed`) |
 | `scripts/latency-bench/` | end of speech to answer, a build against `main`, with a fake Home Assistant ([benchmarks.md](benchmarks.md)) |
+| `scripts/replay/` | a build on a real day of Voice PE runs, live vs build per request (below) |
 | `voice-bench` | per-frame step times of the audio path ([benchmarks.md](benchmarks.md)) |
 
 ### The latency bench
@@ -74,6 +75,33 @@ Assistant reads from the real one in `.env` and never makes a service call; `run
 `HA_URL` from `.env` would otherwise win over the bench's settings file. A rendered speech cache in
 `target/latency-bench/seed` is copied into each run; flags after the rounds go to the engine
 (`--english-tts kokoro-onnx`), and `QUESTIONS_DIR` points at other questions.
+
+### Replaying a real day
+
+The cluster's engine keeps each Voice PE run as a wav (`dump-utterances`), the last 7 days of them counted from the newest
+(`dump-keep-days`), so a week away keeps the week before it. A
+replay runs a build on one day of them and compares it with what the live engine did:
+
+```
+kubectl --context admin@genesis -n monitoring port-forward svc/loki 3100:3100 &
+bash scripts/replay/fetch.sh 2026-11-25                    # the day's runs and log lines, Oslo time
+bash scripts/replay/run.sh main <voice-engine built from main> 2026-11-25
+bash scripts/replay/run.sh branch target/release/voice-engine 2026-11-25 [engine flags]
+open target/replay/branch/report.html
+```
+
+`fetch.sh` reads the files through a debug container, since the image has no shell. `run.sh` streams the day's
+runs into the engine as one microphone, with the real gaps capped at 30 s, through `fake_satellite --continuous`;
+answers go to an announce player on the fake Home Assistant (`scripts/latency-bench/fake_ha.py`), as in the
+cluster, so nothing plays and no service call is made. The engine runs with an empty environment and
+`scripts/replay/replay.yaml`. The report marks each run: `worse` (the build fails where live did not, or reaches
+another skill), `better`, `changed` (other words, same outcome) or `same`; a live request repeated within 10 s
+counts as failed. Replay `main` first: it should be close to all `same`, and the rest shows what a replay
+cannot reproduce. Limits: timings are this Mac's; Music Assistant, Hue and Plex are not there; the house is as
+it is now, not as it was; the clock, weather and prices are today's; wake words the live engine missed were never
+recorded. Runs reuse one speech cache, `target/replay/cache/<voice>-sherpa-<version>`, so only the first fills it (the
+common sentences first; `run.sh` waits at most `CACHE_WAIT`, 600 s). A new voice or sherpa-onnx version gets
+a cache of its own; another change to how speech sounds gets one with `CACHE=<name>`.
 
 ## The audio path on its own
 

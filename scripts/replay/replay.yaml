@@ -1,0 +1,27 @@
+# Replay (scripts/replay/run.sh): the cluster's behaviour settings, against the fake satellite in
+# continuous mode and the fake Home Assistant. Answers go to an announce player, as in the cluster, so
+# the follow-up window and the Voice PE's runs work the same; the fake never makes the call.
+# Left out: Hue, Plex, the device wake words (the fake satellite has none; the engine hears the wake
+# word itself), timers and notes files, the unhandled log and recordings.
+processor: assistant
+bind: 127.0.0.1:7200
+metrics-bind: 127.0.0.1:9290
+public-url: http://127.0.0.1:9290
+threads: 6
+wake-name: Jarvis
+honorific: sir
+honorific-female: ma'am
+home: Oslo
+norwegian: false
+english-tts: kokoro-onnx
+kokoro-voice: am_onyx
+listener: parakeet
+speaker: Living Room
+home-room: Living Room
+norwegian-groceries: true
+satellite: 127.0.0.1:16153
+wake-model: hey_jarvis
+wake-threshold: 0.65
+wake-check-from: 0.15
+answer-player: media_player.living_room
+answer-volume: 0.50

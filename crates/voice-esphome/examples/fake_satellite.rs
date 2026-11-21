@@ -7,9 +7,10 @@
 //! and announcements arrive; `--then <wav>` is the reply when the engine keeps the conversation
 //! open (a new run without the wake word, once the answer has played). Several wavs, comma
 //! separated, are asked one after the other, each in a run of its own with the wake word, 3 s
-//! after the answer before: a latency bench without reconnecting.
+//! after the answer before: a latency bench without reconnecting. `--continuous` streams one long
+//! wav as the Voice PE does in production (scripts/replay): the answer field is then unused.
 //!
-//! `cargo run -p voice-esphome --example fake_satellite -- 127.0.0.1:16053 question-16k.wav answer.wav [--speaker] [--timers] [--stay 15] [--then reply-16k.wav]`
+//! `cargo run -p voice-esphome --example fake_satellite -- 127.0.0.1:16053 question-16k.wav answer.wav [--speaker] [--timers] [--stay 15] [--then reply-16k.wav] [--continuous]`
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::time::{Duration, Instant};
@@ -29,6 +30,7 @@ async fn main() -> Result<()> {
     };
     let speaker = rest.iter().any(|a| a == "--speaker");
     let timers = rest.iter().any(|a| a == "--timers");
+    let continuous = rest.iter().any(|a| a == "--continuous");
     let stay: f32 = match rest.iter().position(|a| a == "--stay") {
         Some(i) => rest.get(i + 1).context("--stay needs seconds")?.parse()?,
         None => 0.0,
@@ -79,6 +81,10 @@ async fn main() -> Result<()> {
     println!("subscribed; starting a continuous run");
     let start = VoiceAssistantRequest { start: true, flags: proto::REQUEST_USE_WAKE_WORD, ..Default::default() };
     w.write(id::VOICE_ASSISTANT_REQUEST, &start.encode()).await?;
+
+    if continuous {
+        return replay(&mut r, &mut w, &mic).await;
+    }
 
     let t0 = Instant::now();
     let mut sent = 0usize;
@@ -236,6 +242,51 @@ async fn main() -> Result<()> {
     answer.iter().try_for_each(|&s| writer.write_sample(s))?;
     writer.finalize()?;
     println!("answer saved to {out} ({:.2} s at {rate} Hz)", answer.len() as f32 / rate as f32);
+    Ok(())
+}
+
+/// `--continuous`: the Voice PE with the wake word in the engine and answers on a player. The
+/// microphone streams the whole wav at real time with no gaps, and each run end starts the next
+/// wake word run at once, as the firmware does. Events are printed with the Unix time in ms, so a
+/// replay can line them up with the engine's log. Ends 15 s after the wav.
+async fn replay(r: &mut frame::FrameReader, w: &mut frame::FrameWriter, mic: &[i16]) -> Result<()> {
+    let unix = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    println!("{} stream start {:.1} s", unix(), mic.len() as f32 / 16_000.0);
+    let mut sent = 0usize;
+    let mut tick = tokio::time::interval(Duration::from_millis(64));
+    let end = mic.len() + 15 * 16_000;
+    while sent < end {
+        tokio::select! {
+            _ = tick.tick() => {
+                let chunk: Vec<i16> = (0..1024).map(|i| mic.get(sent + i).copied().unwrap_or(0)).collect();
+                sent += 1024;
+                let data = chunk.iter().flat_map(|s| s.to_le_bytes()).collect();
+                w.write(id::VOICE_ASSISTANT_AUDIO, &VoiceAssistantAudio { data, end: false }.encode()).await?;
+            }
+            message = r.read() => {
+                let (kind, payload) = message?;
+                match kind {
+                    id::VOICE_ASSISTANT_EVENT_RESPONSE => {
+                        let f = fields(&payload)?;
+                        let event = f.iter().find(|(n, _)| *n == 1).map_or(0, |(_, v)| v.uint());
+                        println!("{} event {} at {:.2} s", unix(), name(event), sent as f32 / 16_000.0);
+                        if event == 2 {
+                            let start =
+                                VoiceAssistantRequest { start: true, flags: proto::REQUEST_USE_WAKE_WORD, ..Default::default() };
+                            w.write(id::VOICE_ASSISTANT_REQUEST, &start.encode()).await?;
+                        }
+                    }
+                    id::VOICE_ASSISTANT_ANNOUNCE_REQUEST => {
+                        let finished = Writer::default().bool(1, true).finish();
+                        w.write(id::VOICE_ASSISTANT_ANNOUNCE_FINISHED, &finished).await?;
+                    }
+                    id::PING_REQUEST => w.write(id::PING_RESPONSE, &[]).await?,
+                    _ => {}
+                }
+            }
+        }
+    }
+    println!("{} stream end", unix());
     Ok(())
 }
 
