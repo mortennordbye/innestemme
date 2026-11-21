@@ -261,6 +261,11 @@ per second of audio matches the wake word check's timings, so the older figure i
   engine's own check): the 0.6B v2 heard it in 59, the 110M in 50 ("Hey Jonas", "Hey Jefferson", "Okay
   Jerusalem"). Since 2026-10-31 the engine transcribes requests with the 110M and keeps the 0.6B v2 for that
   check (`parakeet-wake-repo`), which runs while the request is still being spoken.
+- That check by thread count (2026-11-21, M4 Pro, the 12 recordings in `target/testset/runs`, the second pass
+  of `THREADS=<n> PARAKEET=<0.6B v2> examples/wake_text.rs`, median per wake word): 403 ms at 1 thread, 214 ms
+  at 2, 121 ms at 4, 91 ms at 6. In the cluster at 6 threads it took 248 ms (p50, 546 checks in 3 days). It
+  runs on a thread of its own with `wake-check-threads` (2), so it no longer holds up the request's draft, and
+  the listener and the speech keep the other cores.
 
 ## End to end in the cluster with Parakeet, 2026-10-17
 

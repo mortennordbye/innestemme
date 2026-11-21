@@ -15,9 +15,10 @@ pub fn whisper_from_env() -> Result<WhisperFiles> {
     WhisperFiles::fetch(&default_repo(false, &size))
 }
 
-/// The Parakeet model PARAKEET names (default the engine's), on 4 threads.
+/// The Parakeet model PARAKEET names (default the engine's), on THREADS threads (default 4).
 pub fn parakeet_from_env() -> Result<Parakeet> {
-    Parakeet::load(&ParakeetFiles::fetch(&std::env::var("PARAKEET").unwrap_or_else(|_| DEFAULT_REPO.into()))?, 4)
+    let threads = std::env::var("THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+    Parakeet::load(&ParakeetFiles::fetch(&std::env::var("PARAKEET").unwrap_or_else(|_| DEFAULT_REPO.into()))?, threads)
 }
 
 /// The highest wake word score in 16 kHz `pcm`, and the sample count at the end of the chunk that

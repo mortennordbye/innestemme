@@ -1,7 +1,8 @@
 //! What Parakeet hears in the wake word of each satellite recording (16 kHz mono, `dump-utterances`
 //! runs), to check that a false wake can be told from a real one by the name in it:
 //! `cargo run --release -p voice-assistant --example wake_text -- hey_jarvis target/utterances/run-*.wav`.
-//! PARAKEET=<model> picks another Parakeet model (default the engine's).
+//! PARAKEET=<model> picks another Parakeet model (default the engine's), THREADS its thread count
+//! (default 4).
 
 use std::sync::Arc;
 
