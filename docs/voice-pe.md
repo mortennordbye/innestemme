@@ -76,6 +76,9 @@ can hold a device: stop a laptop instance before the cluster's starts, or the tw
 - **The device's own Hey Jarvis model is marginal:** a real voice scored 0.84 to 0.86 against its most sensitive
   cutoff of 0.83, where openWakeWord scored the same voice at 0.99 and ordinary speech at 0.24 at most. That is
   why `wake-model` exists.
+- **An answer whose end is lost does not block the device.** When the engine gets no word from the
+  assistant for 60 s during an answer (after the last audio has played, on a streaming device), it ends the run
+  and logs `the answer's end did not come: ending it`. Before that, the device's runs are refused.
 - **Saying the wake word again during a run stops the run** on the official firmware (the engine logs
   `device ended the run`); the patched firmware ignores a second detection within 3 s.
 - **A stuck device** can be restarted with its Restart button (shown by the patched firmware) or over the API.
