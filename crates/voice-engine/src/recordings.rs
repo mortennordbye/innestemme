@@ -1,26 +1,33 @@
-//! Keeps the `dump-utterances` folder from growing without end: recordings older than
-//! `dump-keep-days` are deleted once an hour. The age comes from the millisecond stamp in the file
-//! name (`run-<ms>.wav`, `utterance-<ms>.wav`), not the file time, which a copy or an NFS volume
-//! can change. Files with other names are never touched.
+//! Keeps the `dump-utterances` folder from growing without end: once an hour, recordings made more
+//! than `dump-keep-days` before the newest one are deleted. Counting from the newest recording, not
+//! from today, keeps the last days of real use through a week with nobody talking to it, so a
+//! replay always has a day to run. The age comes from the millisecond stamp in the file name
+//! (`run-<ms>.wav`, `utterance-<ms>.wav`), not the file time, which a copy or an NFS volume can
+//! change. Files with other names are never touched.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use tracing::{info, warn};
 
 const EVERY: Duration = Duration::from_secs(3600);
 
-/// Deletes the recordings in `dir` made before `now - keep`; returns how many went.
-pub fn prune(dir: &Path, keep: Duration, now: SystemTime) -> std::io::Result<usize> {
-    let cutoff = now.checked_sub(keep).unwrap_or(UNIX_EPOCH).duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
-    let mut removed = 0;
+/// Deletes the recordings in `dir` made more than `keep` before the newest; returns how many went.
+pub fn prune(dir: &Path, keep: Duration) -> std::io::Result<usize> {
+    let mut recordings = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if stamp(&path).is_some_and(|ms| ms < cutoff) {
-            match std::fs::remove_file(&path) {
-                Ok(()) => removed += 1,
-                Err(error) => warn!(%error, path = %path.display(), "could not delete an old recording"),
-            }
+        if let Some(ms) = stamp(&path) {
+            recordings.push((ms, path));
+        }
+    }
+    let Some(newest) = recordings.iter().map(|(ms, _)| *ms).max() else { return Ok(0) };
+    let cutoff = newest.saturating_sub(keep.as_millis());
+    let mut removed = 0;
+    for (_, path) in recordings.iter().filter(|(ms, _)| *ms < cutoff) {
+        match std::fs::remove_file(path) {
+            Ok(()) => removed += 1,
+            Err(error) => warn!(%error, path = %path.display(), "could not delete an old recording"),
         }
     }
     Ok(removed)
@@ -40,7 +47,7 @@ pub async fn keep(dir: PathBuf, days: u32) {
     loop {
         tick.tick().await;
         let folder = dir.clone();
-        match tokio::task::spawn_blocking(move || prune(&folder, keep, SystemTime::now())).await {
+        match tokio::task::spawn_blocking(move || prune(&folder, keep)).await {
             Ok(Ok(0)) => {}
             Ok(Ok(removed)) => info!(removed, days, "old recordings deleted"),
             // The folder appears with the first recording.
@@ -55,40 +62,61 @@ pub async fn keep(dir: PathBuf, days: u32) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn deletes_only_old_recordings() {
-        let dir = std::env::temp_dir().join(format!("recordings-test-{}", std::process::id()));
+    fn folder(name: &str, files: &[String]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("recordings-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let now = UNIX_EPOCH + Duration::from_secs(10 * 86_400);
-        let day = 86_400_000u128;
-        let ms = |days_ago: u128| 10 * day - days_ago * day;
-        let names = [
-            format!("run-{}.wav", ms(8)),
-            format!("utterance-{}.wav", ms(8)),
-            format!("run-{}.wav", ms(6)),
-            format!("utterance-{}.wav", ms(1)),
+        for file in files {
+            std::fs::write(dir.join(file), b"x").unwrap();
+        }
+        dir
+    }
+
+    fn left(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> =
+            std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        std::fs::remove_dir_all(dir).unwrap();
+        names
+    }
+
+    const DAY: u128 = 86_400_000;
+    const WEEK: Duration = Duration::from_secs(7 * 86_400);
+
+    #[test]
+    fn deletes_only_recordings_a_week_older_than_the_newest() {
+        let newest = 100 * DAY;
+        let mut names = vec![
+            format!("run-{}.wav", newest - 8 * DAY),
+            format!("utterance-{}.wav", newest - 8 * DAY),
+            format!("run-{}.wav", newest - 6 * DAY),
+            format!("utterance-{newest}.wav"),
             "run-notanumber.wav".to_owned(),
             "speech.wav".to_owned(),
-            format!("run-{}.txt", ms(8)),
+            format!("run-{}.txt", newest - 8 * DAY),
         ];
-        for name in &names {
-            std::fs::write(dir.join(name), b"x").unwrap();
-        }
-        let removed = prune(&dir, Duration::from_secs(7 * 86_400), now).unwrap();
-        let mut left: Vec<String> =
-            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-        left.sort();
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert_eq!(removed, 2);
-        let mut expected = names[2..].to_vec();
-        expected.sort();
-        assert_eq!(left, expected);
+        let dir = folder("cut", &names);
+        assert_eq!(prune(&dir, WEEK).unwrap(), 2);
+        names.drain(..2);
+        names.sort();
+        assert_eq!(left(&dir), names);
+    }
+
+    #[test]
+    fn a_quiet_week_keeps_the_last_days_of_use() {
+        // Real clock: the newest recording is a month old, so it and the days before it all stay.
+        let old = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() - 30 * DAY;
+        let mut names = vec![format!("run-{old}.wav"), format!("run-{}.wav", old - 3 * DAY)];
+        let dir = folder("quiet", &names);
+        assert_eq!(prune(&dir, WEEK).unwrap(), 0);
+        names.sort();
+        assert_eq!(left(&dir), names);
     }
 
     #[test]
     fn missing_folder_is_an_error_not_a_panic() {
         let dir = std::env::temp_dir().join("recordings-test-missing-folder");
-        let error = prune(&dir, Duration::from_secs(1), SystemTime::now()).unwrap_err();
+        let error = prune(&dir, Duration::from_secs(1)).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 }

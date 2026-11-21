@@ -61,7 +61,8 @@ can hold a device: stop a laptop instance before the cluster's starts, or the tw
   entity and no longer reach it.
 - **Recordings.** `dump-utterances: <dir>` keeps every utterance and run as a wav; a run's wav starts two seconds
   before the wake word. `examples/wake_score.rs` and `examples/wake_text.rs` score them. `dump-keep-days: <n>`
-  deletes recordings older than n days, checked every hour (default: keep all).
+  deletes recordings made more than n days before the newest one, checked every hour (default: keep all); a
+  week with nobody talking to it deletes nothing.
 
 ## When it seems to stop responding
 
