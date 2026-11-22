@@ -155,7 +155,7 @@ pub fn parse(words: &[String]) -> Option<HouseCommand> {
     is_status(words).then_some(HouseCommand::Status)
 }
 
-const TEMPERATURE_WORDS: &[&str] = &[
+pub(crate) const TEMPERATURE_WORDS: &[&str] = &[
     "temperature",
     "temp",
     "warm",
@@ -171,7 +171,7 @@ const TEMPERATURE_WORDS: &[&str] = &[
     "grader",
     "iskaldt",
 ];
-const HUMIDITY_WORDS: &[&str] =
+pub(crate) const HUMIDITY_WORDS: &[&str] =
     &["humid", "humidity", "dry", "damp", "muggy", "fukt", "fuktig", "fuktighet", "fuktigheten", "tørr", "tørt"];
 /// Humidity by name, which is asked about indoors even without a place.
 const HUMIDITY_NOUNS: &[&str] = &["humidity", "fuktighet", "fuktigheten"];

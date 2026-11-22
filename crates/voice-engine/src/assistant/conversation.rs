@@ -111,6 +111,9 @@ pub(super) struct Conversation {
     pub(super) follow_up_closed: bool,
     /// Recent exchanges, oldest first, for the language model.
     pub(super) history: VecDeque<(Instant, Turn)>,
+    /// The last request answered, and when: "what about inside?" goes on from it. As text, which
+    /// parses back to its intent.
+    pub(super) last_request: Option<(String, Instant)>,
     /// The latest draft and its transcripts.
     pub(super) draft: Option<(Vec<i16>, Vec<Transcript>)>,
     /// A command was acted on from this draft: a later draft or the utterance that starts with
@@ -177,6 +180,19 @@ impl Conversation {
         }
     }
 
+    /// The request answered, for follow-ons. Several requests in one sentence leave no topic.
+    pub(super) fn answered(&mut self, request: &str) {
+        let one = voice_assistant::intent::split_commands(request).is_none();
+        self.last_request = one.then(|| (request.to_owned(), Instant::now()));
+    }
+
+    /// The last request answered, while it is recent enough to go on from: as long as the language
+    /// model's history, so the name keeps a topic open for minutes, the follow-up window for its
+    /// few seconds.
+    pub(super) fn last_request(&self) -> Option<&str> {
+        self.last_request.as_ref().filter(|(_, at)| at.elapsed() < HISTORY_MAX_AGE).map(|(text, _)| text.as_str())
+    }
+
     /// The exchanges recent enough to go on from.
     pub(super) fn recent_turns(&self) -> Vec<Turn> {
         self.history.iter().filter(|(at, _)| at.elapsed() < HISTORY_MAX_AGE).map(|(_, turn)| turn.clone()).collect()
@@ -184,7 +200,7 @@ impl Conversation {
 
     /// A session started: nothing said before it is gone on from.
     pub(super) fn restart(&mut self) {
-        (self.follow_up_until, self.pending_lights, self.wake) = (None, None, None);
+        (self.follow_up_until, self.pending_lights, self.wake, self.last_request) = (None, None, None, None);
         self.history.clear();
     }
 

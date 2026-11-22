@@ -148,7 +148,7 @@ const TIME_WORDS: &[&str] = &[
     "søndag",
 ];
 /// A place that means the home: "the weather at home", "here".
-const HOME_WORDS: &[&str] = &["home", "here", "house", "hjemme", "her", "huset"];
+pub(super) const HOME_WORDS: &[&str] = &["home", "here", "house", "hjemme", "her", "huset"];
 /// Clothes asked about for rain, with a verb: "should I bring a jacket", "trenger jeg jakke".
 const CLOTHES: &[&str] = &["jacket", "coat", "raincoat", "jakke", "jakken", "regnjakke", "regntøy"];
 const CLOTHES_VERBS: &[&str] = &["need", "bring", "take", "wear", "trenger", "ta", "bør"];
@@ -172,7 +172,7 @@ const WIND_WORDS: &[&str] = &["wind", "windy", "vind", "vindfullt", "blåser"];
 /// Words that ask for the whole weather even when rain or wind is named too.
 const GENERAL_WORDS: &[&str] =
     &["vær", "temperature", "degrees", "cold", "warm", "hot", "temperatur", "grader", "kaldt", "varmt"];
-const WEEKDAYS: &[(jiff::civil::Weekday, &str, &str)] = {
+pub(super) const WEEKDAYS: &[(jiff::civil::Weekday, &str, &str)] = {
     use jiff::civil::Weekday::*;
     &[
         (Monday, "monday", "mandag"),

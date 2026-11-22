@@ -747,3 +747,64 @@ fn every_question_asked_back_holds_the_lead_in_and_goes_with_a_new_request() {
         assert_eq!(dialog.worker.awaiting(), None, "{asks:?}");
     }
 }
+
+#[test]
+fn a_follow_on_goes_on_from_the_weather_to_inside() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    // With nothing answered before, it is the room talking.
+    assert_eq!(dialog.say("What about inside?"), None);
+    assert_eq!(said(dialog.say("Jarvis, what's the weather")), "Which place? Say, for example, the weather in London.");
+    // In the follow-up window, without the name: the rooms' sensors, of which the fake has none.
+    assert_eq!(
+        said(dialog.say("What about inside?")),
+        "I don't see a temperature sensor in any room in Home Assistant."
+    );
+}
+
+#[test]
+fn a_follow_on_switches_the_lights_in_another_room() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, turn off the kitchen lights")), "Okay, the kitchen lights are off.");
+    assert_eq!(said(dialog.say("and the living room")), "Okay, the living room lights are off.");
+    assert_eq!(
+        ha.take_calls(),
+        [r#"light.turn_off {"entity_id":["light.kitchen"]}"#, r#"light.turn_off {"entity_id":["light.sofa"]}"#]
+    );
+    // A new session goes on from nothing said before it.
+    dialog.worker.conversation.restart();
+    assert_eq!(said(dialog.say("Jarvis, and the kitchen")), "Sorry, I can't help with that yet.");
+    assert!(ha.take_calls().is_empty());
+}
+
+/// 15 November 2026: the assistant's own "Anything else?" came back as "Than anything else." and
+/// went on the list, and "No, no more." got "Sorry, I can't help with that yet."
+#[test]
+fn the_open_list_ignores_its_own_question_and_closes_on_no() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    let answer = said(dialog.say("Jarvis, add eggs to the shopping list"));
+    assert!(answer.ends_with("Anything else?"), "{answer}");
+    assert_eq!(dialog.say("Than anything else."), None);
+    assert!(dialog.worker.conversation.list_is_open());
+    assert_eq!(said(dialog.say("No, no more.")), "Okay, that's everything.");
+    assert!(!dialog.worker.conversation.list_is_open());
+    let added: Vec<String> = ha.take_calls().into_iter().filter(|c| c.starts_with("todo.add_item")).collect();
+    assert_eq!(added, [r#"todo.add_item {"entity_id":"todo.shopping_list","item":"Eggs"}"#]);
+    for no in ["no", "no more", "that's all", "nothing else", "no thanks", "nei", "det var alt"] {
+        said(dialog.say("Jarvis, add milk to the shopping list"));
+        assert_eq!(said(dialog.say(no)), "Okay, that's everything.", "{no}");
+    }
+}
+
+/// 16 November 2026: "Slope the party." while the open source party played started it again.
+#[test]
+fn an_unclear_party_request_stops_the_party_that_plays() {
+    let mut dialog = Dialog::new(None);
+    // No party on: the words start nothing.
+    assert_eq!(said(dialog.say("Jarvis, shop the party")), "Sorry, I can't help with that yet.");
+    dialog.worker.open_source_party = true;
+    // The test has no Hue bridge, so no party mode is on to stop; the request is the stop.
+    assert_eq!(said(dialog.say("Jarvis, shop the party")), "There's no party on.");
+}

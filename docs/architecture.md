@@ -54,6 +54,18 @@ and what follows it is taken as in the follow-up window: no small talk, and no l
 request. A question asked back waits a limited time for its reply: "Which room?" (lights or a scene) and the "yes"
 before a camera or alarm change for 30 s, the open shopping list for 60 s after the last item, "Remember what?" and
 the timers' "Which one?" by their own windows. No lead-in plays while one waits, and a new request drops it.
+On the open list, a "no" ("no more", "that's all", "nothing else", "nei", "det var alt") closes it with "Okay,
+that's everything.", and the assistant's own "Anything else?" heard back is dropped, not added.
+
+**Follow-ons.** Words no skill takes on their own may go on from the last request answered (`intent/follow_on.rs`):
+"what about inside?" after the weather, "and tomorrow?", "how about in Bergen?", "and the humidity?" after a room's
+temperature, "and the hallway" after switching the kitchen lights, "a bit more" or "again" after a volume step. They
+must open like one ("what about", "how about", "and", "what's it like", "hva med", "og"); a volume step needs only
+"more" or "again". The rest is joined to the last topic in a sentence the rules parse as usual, and the result is
+kept only in the same skill: the forecast and the rooms' readings count as one, and so do switching, asking about and
+dimming the lights. A follow-on is taken in the follow-up window, after a wake, or with the name up to 5 minutes after
+the last answer, while no question asked back waits; the usual filters still apply. While a party plays, "<verb> the
+party" without a word that starts one ("shop the party") stops it.
 
 **Sir or ma'am.** With `honorific-female` set, the end of the audio before each wake word (1.5 s) goes to a
 speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how

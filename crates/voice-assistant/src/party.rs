@@ -110,6 +110,20 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
     Some(PartyCommand::On(pace))
 }
 
+/// Words that name the party but neither start nor stop it, short enough to be a request:
+/// "shop the party", "get rid of the party". While a party is on, they mean stop. Not about its
+/// music ("pause the party music"), and not talk about one ("I loved that party").
+pub fn unclear(words: &[String]) -> bool {
+    const TALK: &[&str] = &["i", "we", "you", "they", "he", "she", "it", "that", "what", "jeg", "vi", "det"];
+    const MUSIC: &[&str] = &["music", "playlist", "song", "songs", "track", "musikk"];
+    let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
+    words.len() <= 5
+        && has(PARTY_WORDS)
+        && !has(MUSIC)
+        && !words.first().is_some_and(|w| TALK.contains(&w.as_str()))
+        && parse(words).is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +177,27 @@ mod tests {
         assert_eq!(party("Kill the party playlist"), None);
         for talk in ["Shop the party please", "Get rid of the party", "I didn't get invited to the party"] {
             assert_eq!(party(talk), None, "{talk}");
+        }
+    }
+
+    /// While a party is on, these mean stop; they start nothing either way.
+    #[test]
+    fn unclear_party_requests() {
+        let unclear = |text: &str| super::unclear(&crate::dialog::words(text));
+        for stop in ["Shop the party.", "Get rid of the party", "Shop the party please", "Drop the party"] {
+            assert!(unclear(stop), "{stop}");
+        }
+        for not in [
+            "Stop the party",
+            "Party mode",
+            "Start the party",
+            "Is party mode on?",
+            "Pause the party music",
+            "I loved that party",
+            "I didn't get invited to the party",
+            "Turn off the lights",
+        ] {
+            assert!(!unclear(not), "{not}");
         }
     }
 }

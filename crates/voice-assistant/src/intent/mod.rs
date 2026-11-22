@@ -4,12 +4,14 @@
 //! The order of the rules in `rules` is part of the logic: each skill's own rules live in its
 //! module, and the router asks them in turn.
 
+mod follow_on;
 mod lights;
 mod meta;
 mod music;
 mod people;
 mod weather;
 
+pub use follow_on::{follow_on, open_to_follow_on};
 use lights::{is_lights_question, level_target, light_level, mood, scheduled_switch, LIGHT_WORDS};
 pub use lights::{says_off, LightLevel};
 pub use meta::{Meta, LEADS};
