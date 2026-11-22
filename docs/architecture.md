@@ -127,8 +127,10 @@ tools, with the household's people from Home Assistant and the notes it was aske
 exchanges of the conversation. The answer streams in and is spoken a sentence at a time, live rather than from
 the speech cache, after a cached lead-in ("Hmm.", "Well.", "Ah."). The request sets the thread count
 (`chat-threads`, the server's CPU limit) and turns thinking off: on the cluster's CPUs both decide whether the first
-sentence comes in under two seconds (`docs/benchmarks.md`). After a chat answer, the follow-up window takes a reply
-without the name that no rule takes, so a conversation can go on; the room-talk and echo filters still apply. A
+sentence comes in under two seconds (`docs/benchmarks.md`). After a chat or small talk answer, the follow-up window
+takes a reply without the name that no rule takes, so a conversation can go on; the room-talk and echo filters
+still apply, and a word or two from the answer itself ("Sir.") is its echo. The prompt gives the model a personality
+with examples of its manner: with rules alone, Gemma refused recipes and said it had no preferences. A
 phone or Assist gets the answer as words. When the model is down, the rules' fallback answers. The model cannot act:
 the house stays with the rules. The log has `chat model answered` (first sentence, total time).
 

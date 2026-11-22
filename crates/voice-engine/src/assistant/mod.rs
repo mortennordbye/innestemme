@@ -800,7 +800,10 @@ impl Worker {
             self.finish(spoken, start);
             return;
         }
-        self.conversation.last_talk = None;
+        // Small talk is a conversation too: "Can you tell me a poem?" after "How are you feeling?"
+        // was dropped as the room (22 Nov).
+        let chatting = self.config.talk.is_some() && matches!(intent::parse(text), Intent::SmallTalk(_));
+        self.conversation.last_talk = chatting.then(Instant::now);
         self.ask_retry(text, Some(&answer));
         let failed = ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s));
         if !failed && intent::split_commands(text).is_none() && intent::parse(text).meta().heard_by_itself {
