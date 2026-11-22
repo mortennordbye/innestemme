@@ -129,9 +129,11 @@ the speech cache, after a cached lead-in that fits what was said: "Good question
 something asked for, "I see." for something said. The model gets the lead-in as the start of its answer and goes
 on from it, so it does not open again ("Good question. That is a great question!"). The model is read on a thread of its own: when it is still quiet
 0.4 s after the lead-in has played, a filler follows ("Let me see."), and the first part of the answer may end at a
-comma after five words, so the first words go out before the whole first sentence is written. The request sets the thread count
+comma after five words when two more follow it (so ", sir." stays with its sentence), and the first words go out
+before the whole first sentence is written. The request sets the thread count
 (`chat-threads`, the server's CPU limit) and turns thinking off: on the cluster's CPUs both decide whether the first
-sentence comes in under two seconds (`docs/benchmarks.md`). After a chat or small talk answer, the follow-up window
+sentence comes in under two seconds (`docs/benchmarks.md`). Once the model has answered in a conversation, small talk goes to it too, so "I'm sad" fits the talk ("Goodbye"
+keeps its own answer). After a chat or small talk answer, the follow-up window
 takes a reply without the name that no rule takes, so a conversation can go on; the room-talk and echo filters
 still apply. In such a conversation an echo is a run of words from the end of the answer ("Sir.", "Reality of this
 home."), not any of the words said lately, as a chat answer has so many that "Tell me." counted as one. The prompt gives the model a personality
@@ -139,11 +141,12 @@ with examples of its manner: with rules alone, Gemma refused recipes and said it
 phone or Assist gets the answer as words. When the model is down, the rules' fallback answers. The model cannot act:
 the house stays with the rules. Gemma 4's sliding-window attention lets Ollama reuse its prompt cache only for a prompt that extends the one it
 read last: a new question after the same system prompt was read whole again (2 s). So every request starts with a
-fixed base, the system prompt and three example exchanges, and the base is read ahead at start and again in quiet
+fixed base, the system prompt and three example exchanges, and the base is read ahead at start, after each answer when
+the prompt changed (the satellite's room, a note) or the history was cut (with the history kept), and in quiet
 time once a conversation is over (0.2 s while the server still keeps it). A first question then reads only its own
 words (0.2 s). The prompt is kept the same text between answers: the household's people
 are read from Home Assistant every 30 minutes, not per answer, and a changed prompt (a new day, a new note) is sent
-to the model in the background while the house is quiet. The history grows to eight exchanges and is then cut to
+to the model in the background while the house is quiet. The history grows to twelve exchanges and is then cut to
 four at once, and it holds the model's own words, so its start also stays in the cache. The log has `chat model
 answered` (first sentence, total time, `read_tokens` and `read`, the prompt the cache did not hold, and
 `tokens_per_second`).

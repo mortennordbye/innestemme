@@ -21,7 +21,7 @@ use super::{AssistantEvent, Worker, FOLLOW_UP};
 /// most and are then cut to the fewest at once, so the history's start stays the same between
 /// answers and the server's prompt cache holds it. Dropping one at a time changed it on each answer.
 const HISTORY_TURNS: usize = 4;
-const HISTORY_MOST_TURNS: usize = 8;
+const HISTORY_MOST_TURNS: usize = 12;
 pub(super) const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// How long "Turn on privacy mode?" waits for its "yes".
 pub(super) const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
@@ -168,6 +168,10 @@ pub(super) struct Conversation {
     pub(super) history: VecDeque<(Instant, Turn)>,
     /// The chat model gave the last answer, at this time: a reply without the name goes on with it.
     pub(super) last_talk: Option<Instant>,
+    /// The chat model last answered at this time, whatever answered since.
+    pub(super) model_talk: Option<Instant>,
+    /// The history was cut since the chat model's cache was last read again.
+    pub(super) history_cut: bool,
     /// The last request answered, and when: "what about inside?" goes on from it. As text, which
     /// parses back to its intent.
     pub(super) last_request: Option<(String, Instant)>,
@@ -247,6 +251,7 @@ impl Conversation {
         self.history.push_back((Instant::now(), Turn { user: user.to_owned(), assistant }));
         if self.history.len() > HISTORY_MOST_TURNS {
             self.history.drain(..self.history.len() - HISTORY_TURNS);
+            self.history_cut = true;
         }
     }
 
@@ -286,7 +291,7 @@ impl Conversation {
     /// A session started: nothing said before it is gone on from.
     pub(super) fn restart(&mut self) {
         (self.follow_up_until, self.pending_lights, self.wake, self.last_request) = (None, None, None, None);
-        (self.pending_choice, self.pending_retry, self.last_talk) = (None, None, None);
+        (self.pending_choice, self.pending_retry, self.last_talk, self.model_talk) = (None, None, None, None);
         self.history.clear();
     }
 
