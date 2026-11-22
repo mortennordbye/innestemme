@@ -136,7 +136,12 @@ still apply. In such a conversation an echo is a run of words from the end of th
 home."), not any of the words said lately, as a chat answer has so many that "Tell me." counted as one. The prompt gives the model a personality
 with examples of its manner: with rules alone, Gemma refused recipes and said it had no preferences. A
 phone or Assist gets the answer as words. When the model is down, the rules' fallback answers. The model cannot act:
-the house stays with the rules. The log has `chat model answered` (first sentence, total time).
+the house stays with the rules. The prompt is kept the same text between answers, so Ollama's prompt cache holds it: the household's people
+are read from Home Assistant every 30 minutes, not per answer, and a changed prompt (a new day, a new note) is sent
+to the model in the background while the house is quiet. The history grows to eight exchanges and is then cut to
+four at once, and it holds the model's own words, so its start also stays in the cache. The log has `chat model
+answered` (first sentence, total time, `read_tokens` and `read`, the prompt the cache did not hold, and
+`tokens_per_second`).
 
 **Skills.** One module each under `voice-assistant/src/` (weather, transit, power, music, timers, shopping,
 lights, scenes, house, lockdown, tv, news, lookup, calc, distance, party, smalltalk, jokes). A skill's module holds

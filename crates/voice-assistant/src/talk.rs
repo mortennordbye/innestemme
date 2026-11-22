@@ -27,6 +27,33 @@ pub struct Talk {
     agent: ureq::Agent,
 }
 
+/// A chat answer, and what it cost.
+#[derive(Debug, Default, Clone)]
+pub struct Answered {
+    /// The words as spoken, cut into sentences and cleaned.
+    pub said: String,
+    /// The words as the model wrote them: the history sends these back, so the server's prompt
+    /// cache, which holds the model's own tokens, still matches.
+    pub raw: String,
+    /// Prompt tokens the server read for this answer, and how long that took: what its prompt cache
+    /// did not hold.
+    pub read_tokens: u64,
+    pub read: Duration,
+    pub written_tokens: u64,
+    pub written: Duration,
+}
+
+impl Answered {
+    /// Tokens written per second.
+    pub fn speed(&self) -> f32 {
+        self.written_tokens as f32 / self.written.as_secs_f32().max(0.001)
+    }
+}
+
+fn nanos(value: &Value) -> Duration {
+    Duration::from_nanos(value.as_u64().unwrap_or(0))
+}
+
 /// What the household and the place are, for the system prompt.
 #[derive(Default)]
 pub struct TalkContext<'a> {
@@ -62,7 +89,7 @@ impl Talk {
     }
 
     /// The answer to `request`, each sentence handed to `sentence` as soon as it is whole; it
-    /// returns false to stop (the answer was interrupted). The whole answer as spoken.
+    /// returns false to stop (the answer was interrupted).
     pub fn answer(
         &self,
         system: &str,
@@ -70,7 +97,7 @@ impl Talk {
         request: &str,
         lang: Lang,
         sentence: &mut dyn FnMut(&str) -> bool,
-    ) -> Result<String> {
+    ) -> Result<Answered> {
         let body = self.body(system, history, request, lang);
         let response = self
             .agent
@@ -78,7 +105,7 @@ impl Talk {
             .send_json(&body)
             .map_err(|e| anyhow!("chat model request failed: {e}"))?;
         let mut sentences = Sentences::default();
-        let mut said = String::new();
+        let mut answered = Answered::default();
         let mut say = |text: &str, said: &mut String| -> bool {
             if !said.is_empty() {
                 said.push(' ');
@@ -86,7 +113,7 @@ impl Talk {
             said.push_str(text);
             sentence(text)
         };
-        let read = || -> Result<()> {
+        let read = |answered: &mut Answered| -> Result<()> {
             for line in BufReader::new(response.into_body().into_reader()).lines() {
                 let line = line.context("chat model stream broke off")?;
                 if line.trim().is_empty() {
@@ -96,28 +123,35 @@ impl Talk {
                 if let Some(error) = chunk["error"].as_str() {
                     return Err(anyhow!("chat model: {error}"));
                 }
-                for whole in sentences.push(chunk["message"]["content"].as_str().unwrap_or_default()) {
-                    if !say(&whole, &mut said) {
+                let piece = chunk["message"]["content"].as_str().unwrap_or_default();
+                answered.raw.push_str(piece);
+                for whole in sentences.push(piece) {
+                    if !say(&whole, &mut answered.said) {
                         return Ok(());
                     }
                 }
                 if chunk["done"].as_bool() == Some(true) {
+                    answered.read_tokens = chunk["prompt_eval_count"].as_u64().unwrap_or(0);
+                    answered.read = nanos(&chunk["prompt_eval_duration"]);
+                    answered.written_tokens = chunk["eval_count"].as_u64().unwrap_or(0);
+                    answered.written = nanos(&chunk["eval_duration"]);
                     break;
                 }
             }
             if let Some(rest) = sentences.finish() {
-                say(&rest, &mut said);
+                say(&rest, &mut answered.said);
             }
             Ok(())
         };
-        match read() {
+        match read(&mut answered) {
             // What was spoken stays the answer: the history and the log hold what was heard.
-            Err(error) if !said.is_empty() => {
+            Err(error) if !answered.said.is_empty() => {
                 tracing::warn!(%error, "chat answer broke off");
-                Ok(said)
+                answered.raw = answered.said.clone();
+                Ok(answered)
             }
             Err(error) => Err(error),
-            Ok(()) => Ok(said),
+            Ok(()) => Ok(answered),
         }
     }
 
@@ -262,7 +296,7 @@ impl Sentences {
                 ((matches!(c, '.' | '!' | '?') || clause) && next.is_whitespace()).then_some(i + c.len_utf8())
             });
             let Some(end) = end else { break };
-            let sentence = self.text[..end].trim().to_owned();
+            let sentence = tidy(&self.text[..end]);
             self.text = self.text[end..].trim_start().to_owned();
             if !sentence.is_empty() {
                 self.started = true;
@@ -273,19 +307,19 @@ impl Sentences {
     }
 
     fn finish(&mut self) -> Option<String> {
-        let rest = std::mem::take(&mut self.text).trim().to_owned();
+        let rest = tidy(&std::mem::take(&mut self.text));
         (!rest.is_empty()).then_some(rest)
     }
 }
 
 /// Markdown and symbols the speech would read out or stumble on.
 fn clean(piece: &str) -> String {
-    piece
-        .replace(" — ", ", ")
-        .replace('—', ", ")
-        .chars()
-        .filter(|c| !matches!(c, '*' | '#' | '_' | '`' | '~'))
-        .collect()
+    piece.replace('—', ",").chars().filter(|c| !matches!(c, '*' | '#' | '_' | '`' | '~')).collect()
+}
+
+/// A whole part as spoken: a dash streamed in pieces leaves "it ,  truly".
+fn tidy(sentence: &str) -> String {
+    sentence.split_whitespace().collect::<Vec<_>>().join(" ").replace(" ,", ",")
 }
 
 #[cfg(test)]

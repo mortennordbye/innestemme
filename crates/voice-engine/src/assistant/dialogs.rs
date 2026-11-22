@@ -258,6 +258,8 @@ impl Worker {
             lead_turn: 0,
             chat_turn: 0,
             talked: None,
+            talk_people: (Vec::new(), None),
+            talk_warmed: String::new(),
             answer_announced: false,
             last_audio: None,
             room: None,
@@ -1429,4 +1431,31 @@ fn a_short_reply_in_words_said_earlier_goes_on() {
     assert!(dialog.say("What is your favourite Bible quote?").is_some());
     assert!(dialog.say("Tell me.").is_some());
     assert_eq!(chat.asked.lock().unwrap().len(), 3);
+}
+
+/// The history's start stays the same between answers: the server's prompt cache holds it only so.
+#[test]
+fn the_history_is_cut_in_blocks() {
+    let mut dialog = Dialog::new(None);
+    let conversation = &mut dialog.worker.conversation;
+    for n in 0..8 {
+        conversation.remember(&format!("question {n}"), format!("answer {n}"));
+    }
+    assert_eq!(conversation.recent_turns()[0].user, "question 0");
+    // The ninth cuts it to the last four at once.
+    conversation.remember("question 8", "answer 8".into());
+    let turns = conversation.recent_turns();
+    assert_eq!(turns.len(), 4);
+    assert_eq!(turns[0].user, "question 5");
+    conversation.remember("question 9", "answer 9".into());
+    assert_eq!(conversation.recent_turns()[0].user, "question 5");
+}
+
+#[test]
+fn the_history_keeps_the_model_s_own_words() {
+    let chat = FakeChat::new("I **love** it — truly. ");
+    let mut dialog = chat.dialog(None);
+    assert_eq!(said(dialog.say("Jarvis, do you like jazz?")), "I love it, truly.");
+    // As the model wrote them, which the server's cache holds.
+    assert_eq!(dialog.worker.conversation.recent_turns()[0].assistant, "I **love** it — truly. ");
 }
