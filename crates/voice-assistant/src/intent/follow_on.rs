@@ -109,6 +109,15 @@ const DURATION_WORDS: &[&str] = &[
     "time",
     "timer",
 ];
+/// Words that end a request to lengthen a timer: "og ti minutter til" or "and 5 minutes more" is no
+/// new timer.
+const LONGER: &[&str] = &["til", "more", "extra", "longer", "ekstra", "mer", "lenger"];
+/// A timer's units, each kind said once: "5 minutes and 5 minutes" is two lengths, not one.
+const UNITS: &[&[&str]] = &[
+    &["second", "seconds", "sec", "secs", "sekund", "sekunder"],
+    &["minute", "minutes", "min", "mins", "minutt", "minutter"],
+    &["hour", "hours", "time", "timer"],
+];
 /// Words that join a timer's name and length: "one for the pasta for 10 minutes".
 const TIMER_WORDS: &[&str] = &["for", "på", "called", "named", "the", "timer", "kalt", "til"];
 /// Norwegian rooms that take "i", not "på": "i stua", "på kjøkkenet".
@@ -301,6 +310,9 @@ fn family(intent: &Intent) -> Option<&'static str> {
 /// 5 minutes", "and one for the pasta for 10 minutes", "og en til på ti minutter". The same timer
 /// again is meant here, so it is no reason to drop it.
 fn timer(rest: &[String], no: bool) -> Option<(String, Intent)> {
+    if rest.last().is_some_and(|w| LONGER.contains(&w.as_str())) || UNITS.iter().any(|unit| units(rest, unit) > 1) {
+        return None;
+    }
     let rest = &rest[rest.iter().take_while(|w| ANOTHER.contains(&w.as_str())).count()..];
     if rest.is_empty() {
         return None;
@@ -329,6 +341,15 @@ fn timer(rest: &[String], no: bool) -> Option<(String, Intent)> {
     })
 }
 
+/// How often `rest` says a length in `unit`: a unit word after a number, "a", "an" or "half", so
+/// the "timer" of "a pasta timer" is no hours.
+fn units(rest: &[String], unit: &[&str]) -> usize {
+    let number = |w: &str| {
+        w.chars().all(|c| c.is_ascii_digit()) || (DURATION_WORDS.contains(&w) && !UNITS.iter().any(|u| u.contains(&w)))
+    };
+    rest.windows(2).filter(|pair| number(&pair[0]) && unit.contains(&pair[1].as_str())).count()
+}
+
 /// The same music command in another room: "and in the bedroom" after "play jazz in the kitchen".
 /// Only a room on its own, as for the lights.
 fn music_in_room(command: &MusicCommand, rest: &[String], no: bool) -> Option<(String, Intent)> {
@@ -337,6 +358,10 @@ fn music_in_room(command: &MusicCommand, rest: &[String], no: bool) -> Option<(S
         MusicCommand::InRooms(rooms, inner) => (rooms.first().map(String::as_str), inner.as_ref()),
         command => (None, command),
     };
+    // "And the kitchen lights" is about the lights there, not the music.
+    if rest.iter().any(|w| LIGHT_WORDS.contains(&w.as_str())) {
+        return None;
+    }
     let room = bare_room(rest)?;
     if was.is_some_and(|was| crate::ha::is_room(was, room)) {
         return None;
@@ -664,6 +689,15 @@ mod tests {
             "and the kitchen",
             "and tomorrow",
             "another for 5 minutes",
+            // Longer, not another.
+            "og ti minutter til",
+            "og 10 minutter til",
+            "and 5 minutes more",
+            "and 5 more minutes",
+            "and 5 minutes extra",
+            // Two lengths.
+            "and one for 5 minutes and 5 minutes",
+            "og en på 5 minutter og 5 minutter",
         ] {
             assert_eq!(on(five, not), None, "{not}");
         }
@@ -725,6 +759,10 @@ mod tests {
         {
             assert_eq!(on("play jazz in the kitchen", not), None, "{not}");
         }
+        // A room's lights are the lights, not its music.
+        assert_eq!(on("stop the music", "and the kitchen lights"), None);
+        assert_eq!(on("play jazz", "and the office lights"), None);
+        assert_eq!(on("spill jazz", "og lyset på kjøkkenet"), None);
         assert_eq!(on("move the music to the bedroom", "and the kitchen"), None);
         assert_eq!(on("turn it up", "the bedroom"), None);
     }
@@ -739,6 +777,11 @@ mod tests {
         );
         assert_eq!(on("activate the relax scene", "and in the kitchen"), scene("activate relax in the kitchen"));
         assert_eq!(on("sett stua til relax", "og soverommet"), scene("aktiver relax på soverommet"));
+        // A scene sets the lights, so a room's lights are that room for it.
+        assert_eq!(
+            on("relaxing light in the living room", "and the bedroom lights"),
+            scene("activate relax in the bedroom")
+        );
         assert_eq!(on("relaxing light in the living room", "and the living room"), None);
         for not in ["and the bedroom is a mess", "and not the bedroom", "and tomorrow", "the bedroom"] {
             assert_eq!(on("relaxing light in the living room", not), None, "{not}");
