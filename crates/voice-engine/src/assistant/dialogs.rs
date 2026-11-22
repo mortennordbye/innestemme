@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
-use super::conversation::{CHOICE_WINDOW, CONFIRM_WINDOW, ROOM_WINDOW};
+use super::conversation::{CHOICE_WINDOW, CONFIRM_WINDOW, RETRY_WINDOW, ROOM_WINDOW};
 use super::*;
 
 /// Speech output that says nothing: the dialog is read from the answer events.
@@ -1170,4 +1170,63 @@ fn a_choice_answered_from_its_draft_is_not_answered_again() {
     assert_eq!(said(dialog.draft("never mind", &draft)), "Okay.");
     dialog.worker.utterance(&whole, Instant::now());
     assert_eq!(dialog.answers(), None);
+}
+
+/// 22 November 2026: "What is Kibberry Toilet?" found nothing, and "Skibby toilet." said again
+/// was dropped as the room talking.
+fn misheard_look_up(dialog: &mut Dialog) {
+    dialog.worker.ask_retry("What is Kibberry Toilet?", Some("Sorry, I couldn't find anything about Kibberry Toilet."));
+    assert_eq!(dialog.worker.awaiting(), Some(Awaiting::Retry));
+    dialog.worker.conversation.follow_up_until = Some(Instant::now() + FOLLOW_UP);
+}
+
+#[test]
+fn a_name_said_again_after_a_miss_is_put_in_its_place() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    misheard_look_up(&mut dialog);
+    // Without the name, in the follow-up window.
+    assert_eq!(said(dialog.say("Skibby toilet.")), "According to Wikipedia, Skibby toilet is a test article.");
+    assert_eq!(dialog.worker.awaiting(), None);
+    assert_eq!(dialog.worker.conversation.last_request(), Some("What is Skibby toilet?"));
+}
+
+#[test]
+fn a_request_after_a_miss_is_its_own() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    misheard_look_up(&mut dialog);
+    assert_eq!(said(dialog.say("what time is it")), time_of_day(Lang::English));
+    assert_eq!(dialog.worker.awaiting(), None);
+}
+
+#[test]
+fn long_talk_after_a_miss_is_the_room() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    misheard_look_up(&mut dialog);
+    assert_eq!(dialog.say("we should really get going to the shop now"), None);
+}
+
+#[test]
+fn the_name_goes_quietly_after_its_window() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    misheard_look_up(&mut dialog);
+    let retry = dialog.worker.conversation.pending_retry.as_mut().unwrap();
+    asked_earlier(&mut retry.at, RETRY_WINDOW + Duration::from_secs(1));
+    assert_eq!(dialog.worker.awaiting(), None);
+    assert_eq!(dialog.say("Skibby toilet."), None);
+}
+
+#[test]
+fn a_stop_not_found_takes_the_name_said_again() {
+    let mut dialog = Dialog::new(None);
+    dialog.worker.ask_retry("When is the next bus to Osla Esco?", Some("I couldn't find a stop called osla esco."));
+    let retry = dialog.worker.conversation.pending_retry.as_ref().unwrap();
+    assert_eq!(retry.with("Oslo S.").as_deref(), Some("When is the next bus to Oslo S?"));
+    // An answer that found something asks nothing.
+    dialog.worker.conversation.pending_retry = None;
+    dialog.worker.ask_retry("When is the next bus to Oslo S?", Some("The next bus to Oslo S leaves in 4 minutes."));
+    assert!(dialog.worker.conversation.pending_retry.is_none());
 }

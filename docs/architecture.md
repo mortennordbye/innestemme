@@ -97,6 +97,12 @@ the speaker ("look up therapy.") is dropped as the assistant's own words. Other 
 the question. A typed request and "who is", "tell me about" or "look up" never ask. English only for now; Norwegian
 comes later. The log has `asked which` (skill, topic) and `chose` (choice).
 
+**A name said again.** When departures find no stop by the name heard ("I couldn't find a stop called osla esco.")
+or a look-up finds no article ("Sorry, I couldn't find anything about Kibberry Toilet."), the name was most likely
+misheard. For 30 s, a reply without the name of at most four words that is no request of its own ("Oslo S.",
+"Skibby toilet.") takes the name's place in the request, which is then answered again. Longer words are still the
+room, and a request is its own. The log has `name said again` (heard, meant).
+
 **Sir or ma'am.** With `honorific-female` set, the end of the audio before each wake word (1.5 s) goes to a
 speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how
 female the voice sounds. It runs on a thread of its own as the device wakes, about 20 ms on an M4 Pro, and is

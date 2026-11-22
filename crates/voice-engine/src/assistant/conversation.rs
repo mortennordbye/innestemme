@@ -30,6 +30,37 @@ pub(super) const ROOM_WINDOW: Duration = Duration::from_secs(30);
 /// long as the other questions asked back.
 pub(super) const CHOICE_WINDOW: Duration = Duration::from_secs(30);
 
+/// How long "I couldn't find a stop called osla esco." takes the name said again ("Oslo S."): as
+/// long as the other questions asked back.
+pub(super) const RETRY_WINDOW: Duration = Duration::from_secs(30);
+/// A reply that is the name said again is short: "Oslo S.", "Skibidi toilet.".
+const RETRY_WORDS: usize = 4;
+
+/// A request that found nothing by a name, most likely misheard: the next short reply is the name
+/// said again, put in its place.
+pub(super) struct PendingRetry {
+    /// The request as answered.
+    pub(super) request: String,
+    /// The name as heard, lower case, as the answer said it.
+    pub(super) name: String,
+    pub(super) at: Instant,
+}
+
+impl PendingRetry {
+    /// The request with `reply` in the name's place, if `reply` is a short name and the name is in
+    /// the request.
+    pub(super) fn with(&self, reply: &str) -> Option<String> {
+        let words = voice_assistant::dialog::words(reply);
+        if words.is_empty() || words.len() > RETRY_WORDS {
+            return None;
+        }
+        let lower = self.request.to_lowercase();
+        let at = lower.find(&self.name)?;
+        let name = reply.trim().trim_end_matches(['.', '!', '?', ',']).trim();
+        Some(format!("{}{name}{}", &self.request[..at], &self.request[at + self.name.len()..]))
+    }
+}
+
 /// A look-up topic that sounds like a skill word, both readings kept until the reply picks one.
 pub(super) struct PendingChoice {
     pub(super) skill: &'static SkillWord,
@@ -84,6 +115,8 @@ pub(super) enum Awaiting {
     SceneRoom,
     /// "Did you mean the temperature? Or should I look up therapy?"
     Choice,
+    /// "I couldn't find a stop called osla esco.": the name said again.
+    Retry,
 }
 
 /// How a turn ends.
@@ -110,6 +143,8 @@ pub(super) struct Conversation {
     pub(super) pending_confirm: Option<(HouseCommand, Instant)>,
     /// "Did you mean the temperature?": the skill or the look-up, as the reply picks.
     pub(super) pending_choice: Option<PendingChoice>,
+    /// A name that found nothing: the next short reply is the name said again.
+    pub(super) pending_retry: Option<PendingRetry>,
     /// When an item was last added: the list takes more without "add" until `LIST_OPEN` later.
     pub(super) list_open: Option<Instant>,
     /// A satellite woke on its own wake word and nothing has been answered since.
@@ -191,7 +226,11 @@ impl Conversation {
     /// Drops the questions this conversation holds; the timers and the notes hold their own.
     pub(super) fn forget_questions(&mut self) {
         (self.pending_lights, self.pending_scene, self.pending_confirm, self.list_open) = (None, None, None, None);
-        self.pending_choice = None;
+        (self.pending_choice, self.pending_retry) = (None, None);
+    }
+
+    pub(super) fn retry_asked(&self) -> Option<&PendingRetry> {
+        self.pending_retry.as_ref().filter(|retry| retry.at.elapsed() < RETRY_WINDOW)
     }
 
     pub(super) fn choice_asked(&self) -> Option<&PendingChoice> {
@@ -232,7 +271,7 @@ impl Conversation {
     /// A session started: nothing said before it is gone on from.
     pub(super) fn restart(&mut self) {
         (self.follow_up_until, self.pending_lights, self.wake, self.last_request) = (None, None, None, None);
-        self.pending_choice = None;
+        (self.pending_choice, self.pending_retry) = (None, None);
         self.history.clear();
     }
 
@@ -269,6 +308,8 @@ impl Worker {
             Some(Awaiting::SceneRoom)
         } else if conversation.choice_asked().is_some() {
             Some(Awaiting::Choice)
+        } else if conversation.retry_asked().is_some() {
+            Some(Awaiting::Retry)
         } else {
             None
         }
