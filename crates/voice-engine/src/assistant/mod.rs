@@ -800,6 +800,7 @@ impl Worker {
         };
         if let Some((talked, raw)) = self.talked.take() {
             self.conversation.last_talk = Some(Instant::now());
+            self.conversation.model_talk = Some(Instant::now());
             self.conversation.answered(text);
             // The model's own words, as the server's cache holds them.
             self.conversation.remember(text, raw);
@@ -809,6 +810,7 @@ impl Worker {
             // The answer's event went out before its first sentence: a satellite starts its reply on it.
             spoken.extend(talked);
             self.finish(spoken, start);
+            self.keep_talk_warm();
             return;
         }
         // Small talk is a conversation too: "Can you tell me a poem?" after "How are you feeling?"
@@ -945,7 +947,9 @@ impl Worker {
                 return Some(answer);
             }
         }
-        if intent == Intent::Unknown && self.config.llm.is_none() {
+        let small_talk = matches!(intent, Intent::SmallTalk(kind) if kind != voice_assistant::smalltalk::Chat::Goodbye);
+        let to_model = intent == Intent::Unknown || (small_talk && self.talking_with_model());
+        if to_model && self.config.llm.is_none() {
             if let Some(answer) = self.converse(text, lang) {
                 return Some(answer);
             }
@@ -1470,6 +1474,7 @@ impl Worker {
                 info!(room = area, "satellite room from home assistant");
                 self.room = Some(area);
                 self.keep_warm();
+                self.keep_talk_warm();
             }
             Ok(None) => info!(?names, "the satellite has no area in home assistant; set `room`"),
             Err(error) => warn!(%error, "could not look up the satellite's room"),

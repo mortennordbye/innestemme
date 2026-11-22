@@ -89,8 +89,10 @@ impl Talk {
     /// on the node, where a request that only shares the system prompt read it all again in 2 s.
     /// Gemma 4's sliding-window attention lets the server keep only a prompt that the next one
     /// extends, so the base is read again after each conversation (0.2 s while it is still kept).
-    pub fn warm_up(&self, system: &str) -> Result<()> {
-        let mut body = self.body(system, &[], None, None, Lang::English);
+    /// With `history`, the base and the conversation so far: after the history was cut, its next
+    /// request then extends what is cached too.
+    pub fn warm_up(&self, system: &str, history: &[Turn]) -> Result<()> {
+        let mut body = self.body(system, history, None, None, Lang::English);
         body["stream"] = json!(false);
         body["options"]["num_predict"] = json!(1);
         let mut response = self
@@ -305,7 +307,7 @@ pub fn system_prompt(context: &TalkContext) -> String {
          lists, no markdown, no emoji. Ask back now and then.\n\
          You cannot control the house from this conversation: never say you turned something on, played music or \
          set a timer; tell them what to ask instead, such as \"say: turn on the kitchen lights\". About the \
-         household, use only what is written here.",
+         household, use only what is written here: never make up a memory, a visit or something a person said.",
     );
     prompt
 }
@@ -330,9 +332,11 @@ impl Sentences {
         loop {
             let first = !self.started;
             let end = self.text.char_indices().zip(self.text.chars().skip(1)).find_map(|((i, c), next)| {
+                // Two words after the comma, so a short tail (", sir.") stays with its sentence.
                 let clause = first
                     && matches!(c, ',' | ';' | ':')
-                    && self.text[..i].split_whitespace().count() >= FIRST_CLAUSE_WORDS;
+                    && self.text[..i].split_whitespace().count() >= FIRST_CLAUSE_WORDS
+                    && self.text[i + c.len_utf8()..].split_whitespace().count() >= 2;
                 ((matches!(c, '.' | '!' | '?') || clause) && next.is_whitespace()).then_some(i + c.len_utf8())
             });
             let Some(end) = end else { break };
@@ -387,6 +391,14 @@ mod tests {
         // Later parts end only with their sentence.
         assert!(sentences.push(", they are my favourite, truly").is_empty());
         assert_eq!(sentences.push(". "), vec!["sir, as it happens, they are my favourite, truly."]);
+    }
+
+    #[test]
+    fn a_short_tail_stays_with_its_sentence() {
+        let mut sentences = Sentences::default();
+        assert!(sentences.push("Then let us talk it through,").is_empty());
+        assert!(sentences.push(" sir").is_empty());
+        assert_eq!(sentences.push(". "), vec!["Then let us talk it through, sir."]);
     }
 
     #[test]

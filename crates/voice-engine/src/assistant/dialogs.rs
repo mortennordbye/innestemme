@@ -1241,7 +1241,10 @@ fn a_stop_not_found_takes_the_name_said_again() {
 /// model writes it. The requests' message lists are kept.
 struct FakeChat {
     url: String,
+    /// The answers' message lists.
     asked: Arc<Mutex<Vec<Value>>>,
+    /// The warm-ups' message lists: requests that do not stream.
+    warmed: Arc<Mutex<Vec<Value>>>,
     reply: Arc<Mutex<&'static str>>,
 }
 
@@ -1251,18 +1254,24 @@ impl FakeChat {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let asked = Arc::new(Mutex::new(Vec::new()));
         let reply = Arc::new(Mutex::new(reply));
-        let (kept, replies) = (asked.clone(), reply.clone());
+        let warmed = Arc::new(Mutex::new(Vec::new()));
+        let (kept, warm, replies) = (asked.clone(), warmed.clone(), reply.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
                 let reply = *replies.lock().unwrap();
-                let _ = Self::serve(stream, reply, &kept);
+                let _ = Self::serve(stream, reply, &kept, &warm);
             }
         });
-        Self { url, asked, reply }
+        Self { url, asked, warmed, reply }
     }
 
-    fn serve(stream: std::net::TcpStream, reply: &str, asked: &Mutex<Vec<Value>>) -> std::io::Result<()> {
+    fn serve(
+        stream: std::net::TcpStream,
+        reply: &str,
+        asked: &Mutex<Vec<Value>>,
+        warmed: &Mutex<Vec<Value>>,
+    ) -> std::io::Result<()> {
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut length = 0;
         loop {
@@ -1280,6 +1289,16 @@ impl FakeChat {
         let mut body = vec![0; length];
         reader.read_exact(&mut body)?;
         let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        let mut stream = stream;
+        if request["stream"] == false {
+            warmed.lock().unwrap().push(request["messages"].clone());
+            let done = json!({ "message": { "content": "M" }, "done": true }).to_string();
+            return write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{done}",
+                done.len()
+            );
+        }
         asked.lock().unwrap().push(request["messages"].clone());
         let mut lines = String::new();
         for piece in reply.split_inclusive(' ') {
@@ -1288,7 +1307,6 @@ impl FakeChat {
         }
         lines.push_str(&json!({ "message": { "content": "" }, "done": true }).to_string());
         lines.push('\n');
-        let mut stream = stream;
         write!(
             stream,
             "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{lines}",
@@ -1443,17 +1461,19 @@ fn a_short_reply_in_words_said_earlier_goes_on() {
 fn the_history_is_cut_in_blocks() {
     let mut dialog = Dialog::new(None);
     let conversation = &mut dialog.worker.conversation;
-    for n in 0..8 {
+    for n in 0..12 {
         conversation.remember(&format!("question {n}"), format!("answer {n}"));
     }
     assert_eq!(conversation.recent_turns()[0].user, "question 0");
-    // The ninth cuts it to the last four at once.
-    conversation.remember("question 8", "answer 8".into());
+    assert!(!conversation.history_cut);
+    // The 13th cuts it to the last four at once, and the cache is to be read again.
+    conversation.remember("question 12", "answer 12".into());
     let turns = conversation.recent_turns();
     assert_eq!(turns.len(), 4);
-    assert_eq!(turns[0].user, "question 5");
-    conversation.remember("question 9", "answer 9".into());
-    assert_eq!(conversation.recent_turns()[0].user, "question 5");
+    assert_eq!(turns[0].user, "question 9");
+    assert!(conversation.history_cut);
+    conversation.remember("question 13", "answer 13".into());
+    assert_eq!(conversation.recent_turns()[0].user, "question 9");
 }
 
 #[test]
@@ -1463,4 +1483,42 @@ fn the_history_keeps_the_model_s_own_words() {
     assert_eq!(said(dialog.say("Jarvis, do you like jazz?")), "I love it, truly.");
     // As the model wrote them, which the server's cache holds.
     assert_eq!(dialog.worker.conversation.recent_turns()[0].assistant, "I **love** it — truly. ");
+}
+
+/// 22 November 2026: "I'm sad" in the middle of a chat got the fixed "Sorry about that. Tomorrow's
+/// another day.", which broke the thread.
+#[test]
+fn small_talk_in_a_chat_goes_to_the_chat_model() {
+    let chat = FakeChat::new("Then let us talk it through, sir.");
+    let mut dialog = chat.dialog(None);
+    // Before the model has answered: the fixed small talk answer.
+    assert!(dialog.say("Jarvis, how are you?").is_some());
+    assert!(chat.asked.lock().unwrap().is_empty());
+    assert!(dialog.say("Jarvis, tell me about your day").is_some());
+    assert_eq!(said(dialog.say("I'm sad")), "Then let us talk it through, sir.");
+    assert_eq!(chat.asked.lock().unwrap().len(), 2);
+    // "Goodbye" keeps its own answer.
+    let goodbye = dialog.say("Jarvis, goodbye");
+    assert_eq!(chat.asked.lock().unwrap().len(), 2, "{goodbye:?}");
+}
+
+/// The cut history goes into the chat model's cache before the next request, which then extends it.
+#[test]
+fn a_cut_history_is_read_again_after_the_answer() {
+    let chat = FakeChat::new("Indeed.");
+    let mut dialog = chat.dialog(None);
+    for n in 0..12 {
+        dialog.worker.conversation.remember(&format!("question {n}"), format!("answer {n}"));
+    }
+    assert!(dialog.say("Jarvis, tell me something").is_some());
+    // The warm-up runs on a thread of its own.
+    let start = Instant::now();
+    while chat.warmed.lock().unwrap().is_empty() && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let warmed = chat.warmed.lock().unwrap().last().cloned().unwrap();
+    // The base and the four exchanges kept, ending with the last answer.
+    let messages = warmed.as_array().unwrap();
+    assert_eq!(messages.len(), 1 + 6 + 2 * 4);
+    assert_eq!(messages.last().unwrap()["content"], "Indeed.");
 }

@@ -198,24 +198,28 @@ impl Worker {
         }
     }
 
-    /// While idle: the base goes back into the chat model's cache in the background, after a
-    /// conversation and when the system prompt changed (a new day, a new note, the room), so the
-    /// next first question does not read it all (2 s on the node; 0.2 s when it is kept).
+    /// The base, and the conversation while it goes on, back into the chat model's cache in the
+    /// background: when the system prompt changed (a new day, a new note, the room), when the
+    /// history was cut, and once a conversation is over. The next request then extends what is
+    /// cached and reads only its own words (a miss read it all again: 2.6-3.6 s on 22 Nov). Run
+    /// after each answer and while idle; most times it finds nothing to do.
     pub(super) fn keep_talk_warm(&mut self) {
         let Some(chat) = self.config.talk.clone() else { return };
         self.refresh_talk_people();
         let system = self.talk_prompt();
+        let cut = std::mem::take(&mut self.conversation.history_cut);
         // Within `HISTORY_MAX_AGE` a request still carries the history and extends what is cached.
         let over = self.talk_base_gone && !self.conversation.going_on();
-        if system == self.talk_warmed && !over {
+        if system == self.talk_warmed && !over && !cut {
             return;
         }
+        let history = self.conversation.recent_turns();
         self.talk_warmed = system.clone();
-        self.talk_base_gone = false;
+        self.talk_base_gone = !history.is_empty();
         let spawned = std::thread::Builder::new().name("chat-warm".into()).spawn(move || {
             let start = Instant::now();
-            match chat.warm_up(&system) {
-                Ok(()) => info!(elapsed = ?start.elapsed(), "chat model's base read again"),
+            match chat.warm_up(&system, &history) {
+                Ok(()) => info!(elapsed = ?start.elapsed(), exchanges = history.len(), "chat model's cache read again"),
                 Err(error) => warn!(%error, "chat model warm-up failed"),
             }
         });
@@ -224,13 +228,21 @@ impl Worker {
         }
     }
 
+    /// The chat model gave an answer in this conversation: small talk goes to it too, as a fixed
+    /// answer breaks the thread ("I'm sad" got "Sorry about that. Tomorrow's another day.", 22 Nov).
+    pub(super) fn talking_with_model(&self) -> bool {
+        self.config.talk.is_some()
+            && self.conversation.going_on()
+            && self.conversation.model_talk.is_some_and(|at| at.elapsed() < HISTORY_MAX_AGE)
+    }
+
     /// Loads the chat model with the prompt it will see, so the first question pays for neither.
     pub(super) fn warm_talk(&mut self) {
         let Some(chat) = self.config.talk.clone() else { return };
         self.refresh_talk_people();
         let start = Instant::now();
         let system = self.talk_prompt();
-        match chat.warm_up(&system) {
+        match chat.warm_up(&system, &[]) {
             Ok(()) => {
                 info!(model = chat.model(), elapsed = ?start.elapsed(), "chat model warmed up");
                 self.talk_warmed = system;
