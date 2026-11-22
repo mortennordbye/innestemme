@@ -68,7 +68,7 @@ the same skill: the forecast and the rooms' readings count as one, and so do swi
 lights. A room given to "Which room?" counts as the whole request. A follow-on is taken in the follow-up window, after
 a wake, or with the name up to 5 minutes after the last answer, while no question asked back waits; the usual
 filters still apply, and "never mind" ends the topic. While a party plays and nothing asked back waits, "<verb> the
-party" with a verb that neither starts nor stops it ("shop the party") stops it; cheering ("great party") does not.
+party" with a known sound-alike of "stop" ("shop the party", "drop the party") stops it; "join the party" or cheering does not.
 
 **Sir or ma'am.** With `honorific-female` set, the end of the audio before each wake word (1.5 s) goes to a
 speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how

@@ -110,28 +110,19 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
     Some(PartyCommand::On(pace))
 }
 
-/// "<verb> the party" where the verb neither starts nor stops it: "shop the party", "drop the
-/// party". While a party is on, it means stop. Cheering ("great party", "love this party", "party
-/// all night") and talk about one do not have that shape.
+/// "Shop the party", "drop the party": "stop the party" misheard. While a party is on, it means
+/// stop. Only known sound-alikes of "stop" count, so "join the party" or "enjoy the party" said
+/// over the music leave it playing.
 pub fn unclear(words: &[String]) -> bool {
-    const NOT_VERBS: &[&str] = &[
-        "great", "love", "loved", "best", "good", "nice", "awesome", "fun", "cool", "this", "that", "the", "a", "an",
-        "my", "our", "your", "their", "his", "her", "what", "what's", "whats", "such", "whole", "big", "after", "at",
-        "to", "in", "for", "of", "i", "we", "you", "it", "is", "and", "og",
+    const MISHEARD_STOP: &[&str] = &[
+        "shop", "slop", "slope", "drop", "top", "stomp", "stock", "stub", "stob", "stuck", "stopped", "stops", "stap",
+        "stoppe", "stopper", "stup",
     ];
     let mut words: Vec<&str> = words.iter().map(String::as_str).collect();
     while words.last().is_some_and(|w| ["now", "please", "nå", "takk"].contains(w)) {
         words.pop();
     }
-    match words.as_slice() {
-        [verb, "the", party] => {
-            PARTY_WORDS.contains(party)
-                && !PARTY_WORDS.contains(verb)
-                && !NOT_VERBS.contains(verb)
-                && parse(&words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>()).is_none()
-        }
-        _ => false,
-    }
+    matches!(words.as_slice(), [stop, "the", party] if MISHEARD_STOP.contains(stop) && PARTY_WORDS.contains(party))
 }
 
 #[cfg(test)]
@@ -217,6 +208,14 @@ mod tests {
             "Best party ever",
             "Party hats",
             "Love the party",
+            // Other verbs said over the music.
+            "Join the party",
+            "Enjoy the party",
+            "Rock the party",
+            "Save the party",
+            "Feel the party",
+            "Plan the party",
+            "Leave the party",
         ] {
             assert!(!unclear(not), "{not}");
         }
