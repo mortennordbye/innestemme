@@ -30,6 +30,19 @@ pub(super) struct Spoken {
     first: Option<Instant>,
 }
 
+impl Spoken {
+    /// Whether any audio went out.
+    pub(super) fn started(&self) -> bool {
+        self.first.is_some()
+    }
+
+    /// Adds what `other` put out after this.
+    pub(super) fn extend(&mut self, other: Spoken) {
+        self.samples += other.samples;
+        self.first = self.first.or(other.first);
+    }
+}
+
 pub(super) fn push(reply: &mut rtrb::Producer<i16>, pcm: &[i16]) {
     let n = pcm.len().min(reply.slots());
     if let Ok(chunk) = reply.write_chunk_uninit(n) {
@@ -41,6 +54,8 @@ impl Worker {
     /// Speaks an answer and opens the follow-up window.
     pub(super) fn say(&mut self, answer: String, lang: Lang, start: Instant) {
         self.interrupted.store(false, Relaxed);
+        // Not the chat model's answer: a reply without the name no longer goes on with it.
+        self.conversation.last_talk = None;
         let answer = match &mut self.persona {
             Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),
             _ => answer,

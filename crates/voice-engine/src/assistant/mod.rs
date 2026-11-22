@@ -27,6 +27,7 @@ mod screen;
 mod shopping;
 mod skills;
 mod speech;
+mod talk;
 mod wake;
 
 use std::collections::{HashSet, VecDeque};
@@ -119,6 +120,8 @@ pub struct AssistantConfig {
     pub wake: WakeWord,
     /// Language model for requests the rules do not recognise.
     pub llm: Option<Llm>,
+    /// Local chat model for open talk the rules do not recognise, when `llm` is not set.
+    pub talk: Option<voice_assistant::talk::Talk>,
     /// Music Assistant player that music plays on: its name ("Living Room") or entity id.
     pub speaker: Option<String>,
     /// The room the microphone is in, for "turn off the lights" without a room. Default for a
@@ -337,6 +340,11 @@ struct Worker {
     /// Renders speech ahead of time, when there is a speech cache.
     render: Option<RenderAhead>,
     lead_turn: usize,
+    /// The chat model spoke the answer being composed, and when it finished: what it put out.
+    talked: Option<(speech::Spoken, Instant)>,
+    /// The answer being composed has sent its `Answer` event (a lead-in's), which a satellite
+    /// takes as the start of the reply: a second one would start it again.
+    answer_announced: bool,
     /// Small talk answers take turns.
     chat_turn: usize,
     /// The current utterance's recording, for the unhandled log.
@@ -719,7 +727,10 @@ impl Worker {
         let unnamed = self.conversation.unnamed();
         let room = !addressed && (self.conversation.wake.is_none() || unnamed) && room_talk(&as_heard);
         let chat = !addressed && unnamed && matches!(parsed, Intent::SmallTalk(_));
-        if !pending && (room || chat || (!addressed && unknown && self.config.llm.is_none())) {
+        // Open talk after a wake word with the name, or a reply in a conversation with the chat model.
+        let named_wake = self.conversation.wake.is_some() && !unnamed && self.config.talk.is_some();
+        let talk_on = !addressed && unknown && (named_wake || self.talk_reply(&as_heard));
+        if !pending && (room || chat || (!addressed && unknown && self.config.llm.is_none() && !talk_on)) {
             info!(text = heard.text, "not addressed");
             self.not_understood(&heard.text, audio, ended, heard.lang, start);
             return;
@@ -761,6 +772,7 @@ impl Worker {
         // rendered ahead, with no honorific worked into the data sentence.
         let plain = lead.is_none() && self.data_kept(text, lang);
         let mut spoken = Spoken::default();
+        self.answer_announced = lead.is_some();
         if let Some(lead) = &lead {
             self.emit(AssistantEvent::Answer { text: lead.clone() });
             self.speak(lead, lang, &mut spoken);
@@ -776,6 +788,19 @@ impl Worker {
             }
             return;
         };
+        if let Some((talked, _)) = self.talked.take() {
+            self.conversation.last_talk = Some(Instant::now());
+            self.conversation.answered(text);
+            self.conversation.remember(text, answer.clone());
+            let turn = self.turn_for(text, Some(answer.clone()), Outcome::Answered, start);
+            info!(request = text, answer, ?lang, skill = turn.skill, after = ?start.elapsed(), "answering");
+            self.turn = Some(turn);
+            // The answer's event went out before its first sentence: a satellite starts its reply on it.
+            spoken.extend(talked);
+            self.finish(spoken, start);
+            return;
+        }
+        self.conversation.last_talk = None;
         self.ask_retry(text, Some(&answer));
         let failed = ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s));
         if !failed && intent::split_commands(text).is_none() && intent::parse(text).meta().heard_by_itself {
@@ -829,7 +854,9 @@ impl Worker {
             return true;
         }
         let spoken = |intent: &Intent| match intent {
-            Intent::Cancel | Intent::Unknown => false,
+            Intent::Cancel => false,
+            // The chat model always says something; without it, the rules' fallback may stay quiet.
+            Intent::Unknown => self.config.talk.is_some() && self.config.llm.is_none(),
             Intent::Calculate(said) => voice_assistant::calc::parse(said).is_some(),
             Intent::Lookup(_) => self.config.llm.is_none(),
             _ => true,
@@ -901,6 +928,11 @@ impl Worker {
         if intent == Intent::Unknown {
             // A script or scene said by its name alone: "movie time".
             if let Some(answer) = self.by_exact_name(text, lang) {
+                return Some(answer);
+            }
+        }
+        if intent == Intent::Unknown && self.config.llm.is_none() {
+            if let Some(answer) = self.converse(text, lang) {
                 return Some(answer);
             }
         }

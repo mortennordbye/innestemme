@@ -172,6 +172,24 @@ understand on the Voice PE from 24 to 31 October (mishearings, the room, the TV,
 - In the "heard" set, the language model adds little over rules: "Oh, I'm home." (welcome home), a reply to
   "Why is your name Darby?", a joke for "Do something."; the rest is rightly ignored either way.
 
+## Chat model on the cluster node (2026-11-22, i7-8700T, Ollama 0.40.15, 4 threads, chat prompt without tools)
+
+Open talk for `chat-url` ("How are you feeling?", "Give me a cookie recipe."): a short butler prompt, no tools,
+streamed. The time is from the request to the end of the first sentence, after a warm-up.
+
+| Model | Writes | First sentence | Notes |
+|---|---|---|---|
+| gemma4:e2b (`think: false`) | 8.5-9.3 tok/s | 1.2-1.8 s (once 3.3 s) | chosen; short and polite, keeps the thread, asks back, invents no actions |
+| qwen3:4b-instruct | 5.7 tok/s | 0.9-5.6 s | the warmest, but long first sentences, and it says it did things ("I've turned the lights down") |
+| lfm2.5:8b (MoE, 1.5B active) | 13 tok/s | 1.7-4.4 s | thinks aloud unless an empty think block is forced, reads prompts slowly (1.4 s), loses the thread |
+
+- Without `num_thread` llama.cpp uses all 8 cores of the node, the pod's 4-CPU limit throttles it, and every
+  model wrote 1.2 tok/s. `chat-threads` sends the thread count with each request.
+- With thinking on, Gemma 4 thinks for about 30 s before its first word.
+- Loading the model takes over a minute: `keep_alive: -1` keeps it loaded.
+- End of speech to first sound: about 0.64 s end-of-turn wait, 1.2-1.8 s to the first sentence, 0.45 s for the
+  Sonos to start. A cached lead-in ("Hmm.") goes out after about 1.1 s.
+
 ## Name matching (2026-09-24, whisper-base, `say` voices, 44 utterances with the user's names)
 
 | Approach | Names right | Per utterance |

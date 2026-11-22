@@ -218,6 +218,15 @@ impl Worker {
         Some((meant, intent))
     }
 
+    /// Whether words heard without the name repeat any sentence spoken lately, a question too: a
+    /// chat answer ends in one ("And you?") and its earlier sentences come back as well.
+    pub(super) fn echoes_any(&self, heard: &str) -> bool {
+        self.said
+            .iter()
+            .filter(|(at, _)| at.elapsed() < ECHO_WINDOW)
+            .any(|(_, text)| is_echo(&[text.trim_end_matches('?')], heard))
+    }
+
     /// Whether words heard without the name are an answer spoken lately.
     pub(super) fn echo(&self, heard: &str) -> bool {
         let recent: Vec<&str> =

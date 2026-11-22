@@ -186,6 +186,7 @@ impl Worker {
             home_assistant: None,
             wake: WakeWord::new("Jarvis"),
             llm: None,
+            talk: None,
             speaker: None,
             room: None,
             honorific: None,
@@ -256,6 +257,8 @@ impl Worker {
             render: None,
             lead_turn: 0,
             chat_turn: 0,
+            talked: None,
+            answer_announced: false,
             last_audio: None,
             room: None,
             warmed_prompt: String::new(),
@@ -1229,4 +1232,162 @@ fn a_stop_not_found_takes_the_name_said_again() {
     dialog.worker.conversation.pending_retry = None;
     dialog.worker.ask_retry("When is the next bus to Oslo S?", Some("The next bus to Oslo S leaves in 4 minutes."));
     assert!(dialog.worker.conversation.pending_retry.is_none());
+}
+
+/// Ollama's chat API on a local port: every request streams `reply` back in small pieces, as the
+/// model writes it. The requests' message lists are kept.
+struct FakeChat {
+    url: String,
+    asked: Arc<Mutex<Vec<Value>>>,
+}
+
+impl FakeChat {
+    fn new(reply: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let kept = asked.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let _ = Self::serve(stream, reply, &kept);
+            }
+        });
+        Self { url, asked }
+    }
+
+    fn serve(stream: std::net::TcpStream, reply: &str, asked: &Mutex<Vec<Value>>) -> std::io::Result<()> {
+        let mut reader = BufReader::new(stream.try_clone()?);
+        let mut length = 0;
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header)?;
+            if header.trim().is_empty() {
+                break;
+            }
+            if let Some((name, value)) = header.split_once(':') {
+                if name.eq_ignore_ascii_case("content-length") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body)?;
+        let request: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        asked.lock().unwrap().push(request["messages"].clone());
+        let mut lines = String::new();
+        for piece in reply.split_inclusive(' ') {
+            lines.push_str(&json!({ "message": { "content": piece }, "done": false }).to_string());
+            lines.push('\n');
+        }
+        lines.push_str(&json!({ "message": { "content": "" }, "done": true }).to_string());
+        lines.push('\n');
+        let mut stream = stream;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{lines}",
+            lines.len()
+        )
+    }
+
+    fn dialog(&self, ha: Option<&FakeHa>) -> Dialog {
+        let mut dialog = Dialog::new(ha);
+        dialog.worker.config.talk =
+            Some(voice_assistant::talk::Talk::new(&self.url, "gemma4:e2b", 4, Duration::from_secs(5)));
+        dialog
+    }
+
+    fn last_messages(&self) -> Value {
+        self.asked.lock().unwrap().last().cloned().unwrap_or(Value::Null)
+    }
+}
+
+/// 22 November 2026: "How are you feeling?", "Give me a cookie recipe." and "What do you know about
+/// me?" went unanswered: no rule takes open talk.
+#[test]
+fn open_talk_goes_to_the_chat_model() {
+    let chat = FakeChat::new("Butter, sugar and flour. Shall I go on?");
+    let mut dialog = chat.dialog(None);
+    // The answer's event goes out with its first sentence, before its audio; the rest follows as speech.
+    assert_eq!(said(dialog.say("Jarvis, give me a cookie recipe.")), "Butter, sugar and flour.");
+    assert_eq!(dialog.worker.conversation.recent_turns()[0].assistant, "Butter, sugar and flour. Shall I go on?");
+    let messages = chat.last_messages();
+    assert_eq!(messages[0]["role"], "system");
+    assert_eq!(messages[1]["content"], "give me a cookie recipe.");
+}
+
+#[test]
+fn a_reply_without_the_name_goes_on_with_the_conversation() {
+    let chat = FakeChat::new("Then rest. Shall I dim the lights?");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, what should I cook tonight?").is_some());
+    // In the follow-up window, without the name: the conversation goes on, with what came before.
+    assert_eq!(said(dialog.say("I'm not that hungry, really.")), "Then rest.");
+    let messages = chat.last_messages();
+    assert_eq!(messages[1]["content"], "what should I cook tonight?");
+    assert_eq!(messages[2]["role"], "assistant");
+    assert_eq!(messages[3]["content"], "I'm not that hungry, really.");
+}
+
+#[test]
+fn words_without_the_name_after_a_skill_answer_are_still_the_room() {
+    let chat = FakeChat::new("Indeed.");
+    let mut dialog = chat.dialog(None);
+    assert_eq!(said(dialog.say("Jarvis, what time is it")), time_of_day(Lang::English));
+    assert_eq!(dialog.say("I'm not that hungry, really."), None);
+    assert!(chat.asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_chat_model_that_is_down_leaves_the_fallback() {
+    let mut dialog = Dialog::new(None);
+    // Nothing listens there.
+    dialog.worker.config.talk =
+        Some(voice_assistant::talk::Talk::new("http://127.0.0.1:9", "gemma4:e2b", 4, Duration::from_secs(1)));
+    assert_eq!(said(dialog.say("Jarvis, give me a cookie recipe.")), "Sorry, I can't help with that yet.");
+}
+
+#[test]
+fn a_typed_question_gets_the_chat_answer_as_words() {
+    let chat = FakeChat::new("Butter, sugar and flour, sir.");
+    let mut dialog = chat.dialog(None);
+    assert_eq!(said(dialog.compose_aside("give me a cookie recipe")), "Butter, sugar and flour, sir.");
+    assert!(dialog.worker.talked.is_none());
+}
+
+/// After "Hey Jarvis" on the Voice PE the request comes without the name.
+#[test]
+fn open_talk_after_a_wake_word_with_the_name_goes_to_the_chat_model() {
+    let chat = FakeChat::new("Butter, sugar and flour.");
+    let mut dialog = chat.dialog(None);
+    dialog.worker.conversation.wake = Some(Wake { at: Instant::now(), named: Some(true) });
+    assert_eq!(said(dialog.say("give me a cookie recipe")), "Butter, sugar and flour.");
+}
+
+#[test]
+fn open_talk_after_a_wake_word_without_the_name_is_the_room() {
+    let chat = FakeChat::new("Indeed.");
+    let mut dialog = chat.dialog(None);
+    dialog.worker.conversation.wake = Some(Wake { at: Instant::now(), named: Some(false) });
+    assert_eq!(dialog.say("give me a cookie recipe"), None);
+    assert!(chat.asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_chat_answer_heard_back_goes_nowhere() {
+    let chat = FakeChat::new("The bins go out on Tuesday morning. Anything else?");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, tell me something about the week").is_some());
+    // Its first sentence from the speaker, in the follow-up window.
+    assert_eq!(dialog.say("the bins go out on Tuesday morning"), None);
+    assert_eq!(chat.asked.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_long_reply_without_the_name_is_the_room() {
+    let chat = FakeChat::new("Indeed. And you?");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, how do you feel about winter").is_some());
+    assert_eq!(dialog.say("so I told him that the whole thing was never going to work out with the car"), None);
+    assert_eq!(chat.asked.lock().unwrap().len(), 1);
 }

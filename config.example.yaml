@@ -70,6 +70,11 @@ whisper-size: base
 # Ollama locally: `make ollama`. Key, when the API needs one: VOICE_LLM_KEY (a secret).
 # llm-url: http://127.0.0.1:11434/v1
 # llm-model: qwen3:4b-instruct
+# Open talk instead ("How are you feeling?"): Ollama's own API, no tools, spoken a sentence at a time.
+# Not used when llm-url is set. chat-threads is the Ollama server's CPU limit.
+# chat-url: http://127.0.0.1:11434
+# chat-model: gemma4:e2b
+# chat-threads: 4
 
 # --- Home Assistant ----------------------------------------------------------------------------
 # ha-url: http://homeassistant.local:8123
