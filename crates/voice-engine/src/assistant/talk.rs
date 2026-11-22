@@ -40,6 +40,7 @@ impl Worker {
         let aloud = !self.previewing;
         // A person's first sound while the model reads the request, from the speech cache. Here and
         // not in `lead_in`: only a request that reaches the model gets it.
+        let mut opening = None;
         if aloud && lang == Lang::English && self.render.is_some() && !self.answer_announced {
             self.lead_turn = self.lead_turn.wrapping_add(1);
             let leads = talk::leads_for(text);
@@ -47,12 +48,16 @@ impl Worker {
             let lead = lead_sentence(leads[self.lead_turn % leads.len()], honorific.as_deref());
             self.announce_answer(&lead);
             self.speak(&lead, lang, &mut spoken);
+            opening = Some(lead);
         }
         // The model is read on a thread of its own, so a pause after the lead-in can be filled.
         let (sentences, heard) = mpsc::channel::<String>();
         let request = text.to_owned();
         let reader = std::thread::Builder::new().name("chat".into()).spawn(move || {
-            chat.answer(&system, &history, &request, lang, &mut |sentence| sentences.send(sentence.to_owned()).is_ok())
+            let opening = opening.as_deref();
+            chat.answer(&system, &history, &request, opening, lang, &mut |sentence| {
+                sentences.send(sentence.to_owned()).is_ok()
+            })
         });
         let reader = match reader {
             Ok(reader) => reader,

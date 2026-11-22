@@ -126,7 +126,8 @@ cookie recipe.") goes to a local chat model through Ollama's chat API (`talk.rs`
 tools, with the household's people from Home Assistant and the notes it was asked to remember, and the last
 exchanges of the conversation. The answer streams in and is spoken a sentence at a time, live rather than from
 the speech cache, after a cached lead-in that fits what was said: "Good question." for a question, "Of course." for
-something asked for, "I see." for something said. The model is read on a thread of its own: when it is still quiet
+something asked for, "I see." for something said. The model gets the lead-in as the start of its answer and goes
+on from it, so it does not open again ("Good question. That is a great question!"). The model is read on a thread of its own: when it is still quiet
 0.4 s after the lead-in has played, a filler follows ("Let me see."), and the first part of the answer may end at a
 comma after five words, so the first words go out before the whole first sentence is written. The request sets the thread count
 (`chat-threads`, the server's CPU limit) and turns thinking off: on the cluster's CPUs both decide whether the first
