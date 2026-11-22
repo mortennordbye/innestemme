@@ -960,7 +960,11 @@ impl Worker {
                 _ => None,
             },
             Awaiting::SceneRoom => match scene {
-                Some((scene, _)) if unknown => Some(self.scene(&format!("{scene} in {text}"), lang)),
+                Some((scene, _)) if unknown => {
+                    let whole = format!("{scene} in {text}");
+                    self.conversation.answered_as = Some(whole.clone());
+                    Some(self.scene(&whole, lang))
+                }
                 _ => None,
             },
         };

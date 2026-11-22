@@ -798,6 +798,84 @@ fn a_follow_on_switches_the_lights_in_another_room() {
     assert!(ha.take_calls().is_empty());
 }
 
+#[test]
+fn a_follow_on_sets_another_timer() {
+    let mut dialog = Dialog::new(None);
+    let first = said(dialog.say("Jarvis, set a timer for 5 minutes"));
+    assert!(first.contains("5 minutes"), "{first}");
+    let second = said(dialog.say("and another for 10 minutes"));
+    assert!(second.contains("10 minutes"), "{second}");
+    // More than a length: the room talking.
+    assert_eq!(dialog.say("and one for 5 minutes is enough"), None);
+    let left = said(dialog.say("Jarvis, how much time is left"));
+    assert!(left.contains("5 minutes") && left.contains("10 minutes"), "{left}");
+}
+
+#[test]
+fn a_follow_on_asks_for_another_departure() {
+    let mut dialog = Dialog::new(None);
+    let unset = "I don't know where home is yet. Set address in the settings.";
+    // Words no skill takes, with no topic to go on from.
+    assert_eq!(said(dialog.say("Jarvis, and the tram to Fjellby")), "Sorry, I can't help with that yet.");
+    assert_eq!(said(dialog.say("Jarvis, when's the next bus")), unset);
+    // The test has no home, so the departures answer says so: the follow-on reached them.
+    assert_eq!(said(dialog.say("and the tram to Fjellby")), unset);
+    assert_eq!(dialog.say("and the bus is late"), None);
+}
+
+#[test]
+fn a_follow_on_plays_the_same_music_in_another_room() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    // The fake has no speakers, so each answer says the room has none.
+    let kitchen = said(dialog.say("Jarvis, pause the music in the kitchen"));
+    assert!(kitchen.contains("kitchen"), "{kitchen}");
+    let bedroom = said(dialog.say("and the bedroom"));
+    assert!(bedroom.contains("bedroom"), "{bedroom}");
+    assert_eq!(dialog.say("and the bedroom is a mess"), None);
+}
+
+#[test]
+fn a_follow_on_sets_the_same_scene_in_another_room() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, relaxing light in the kitchen")), "Okay, relax.");
+    assert_eq!(said(dialog.say("and the living room")), "Okay, relax.");
+    assert_eq!(
+        ha.take_calls(),
+        [
+            r#"scene.turn_on {"entity_id":"scene.kitchen_relax"}"#,
+            r#"scene.turn_on {"entity_id":"scene.living_room_relax"}"#
+        ]
+    );
+    assert_eq!(dialog.say("and the kitchen is a mess"), None);
+    // A room given to "Which room?" makes the scene whole for the next one.
+    assert_eq!(said(dialog.say("Jarvis, activate the relax scene")), "Which room?");
+    assert_eq!(said(dialog.say("the kitchen")), "Okay, relax.");
+    assert_eq!(said(dialog.say("and the living room")), "Okay, relax.");
+    assert_eq!(
+        ha.take_calls(),
+        [
+            r#"scene.turn_on {"entity_id":"scene.kitchen_relax"}"#,
+            r#"scene.turn_on {"entity_id":"scene.living_room_relax"}"#
+        ]
+    );
+}
+
+#[test]
+fn a_norwegian_follow_on_goes_on_in_norwegian() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    let kitchen = said(dialog.say_in(Lang::Norwegian, "Jarvis, skru av lyset på kjøkkenet"));
+    assert!(kitchen.starts_with("Ok, lyset") && kitchen.ends_with("er av."), "{kitchen}");
+    let living_room = said(dialog.say_in(Lang::Norwegian, "og stua"));
+    assert!(living_room.starts_with("Ok, lyset") && living_room.ends_with("er av."), "{living_room}");
+    assert_eq!(
+        ha.take_calls(),
+        [r#"light.turn_off {"entity_id":["light.kitchen"]}"#, r#"light.turn_off {"entity_id":["light.sofa"]}"#]
+    );
+}
+
 /// 15 November 2026: the assistant's own "Anything else?" came back as "Than anything else." and
 /// went on the list, and "No, no more." got "Sorry, I can't help with that yet."
 #[test]
