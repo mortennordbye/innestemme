@@ -12,7 +12,7 @@ mod people;
 mod weather;
 
 pub use follow_on::{follow_on, open_to_follow_on};
-use lights::{is_lights_question, level_target, light_level, mood, scheduled_switch, LIGHT_WORDS};
+use lights::{is_lights_question, level_target, light_level, mood, scheduled_switch, without_opening, LIGHT_WORDS};
 pub use lights::{says_off, LightLevel};
 pub use meta::{Meta, LEADS};
 use music::{music, NOT_FOR_YOU, PLAY_WORDS, POLITE};
@@ -427,7 +427,7 @@ fn rules(text: &str, notes: bool) -> Intent {
         return Intent::Unknown;
     }
     if let Some(level) = light_level(&words, text) {
-        return Intent::LightLevel { level, target: level_target(text) };
+        return Intent::LightLevel { level, target: level_target(&without_opening(text)) };
     }
     let first = words.iter().map(String::as_str).find(|w| !POLITE.contains(w)).unwrap_or_default();
     if ["script", "skript", "skriptet"].iter().any(|w| has(w)) || ["run", "kjør", "execute"].contains(&first) {
@@ -466,7 +466,7 @@ fn rules(text: &str, notes: bool) -> Intent {
         || (switching && crate::ha::names_only_room(&words))
     {
         if let Some(on) = on {
-            return Intent::Lights { on, target: text.to_owned() };
+            return Intent::Lights { on, target: without_opening(text) };
         }
     }
     if ["reverse", "undo", "revert", "angre"].iter().any(|w| has(w)) || (has("back") && switching) {
@@ -731,6 +731,8 @@ mod tests {
         assert_eq!(parse("What's the clock?"), Intent::Time);
         assert_eq!(parse("What does the clock say?"), Intent::Time);
         assert_ne!(parse("What is the clock made of?"), Intent::Time);
+        assert_eq!(parse("what is the clock"), Intent::Time);
+        assert!(matches!(parse("what is a clock"), Intent::Lookup(_)), "{:?}", parse("what is a clock"));
         assert_eq!(parse("What's the temperaturing size?"), parse("What's the temperature inside?"));
         assert_eq!(parse("What time is this?"), Intent::Time);
         assert_eq!(parse("Oh, I'm home."), Intent::Routine(house::Routine::Home));

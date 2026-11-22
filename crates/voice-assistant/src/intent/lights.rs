@@ -226,6 +226,27 @@ pub(super) fn level_target(text: &str) -> String {
     text.split_whitespace().filter(|t| !level_word(&normalize(t))).collect::<Vec<_>>().join(" ")
 }
 
+/// A light request without the greeting or filler it opens with: the target is matched against
+/// Home Assistant's names, so "Hey everybody turn on the lights" (19 Nov) looked for a light called
+/// "everybody". "Everybody" and the like go only after a greeting: "all the lights" stays the house.
+pub(super) fn without_opening(text: &str) -> String {
+    const OPENING: &[&str] = &["hey", "hi", "hello", "okay", "ok", "so", "um", "uh", "please", "well", "oh"];
+    const GREETED: &[&str] = &["everybody", "everyone", "guys", "folks", "y'all", "alle", "sammen"];
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut start = 0;
+    let mut greeted = false;
+    while let Some(token) = tokens.get(start) {
+        let word = normalize(token);
+        if OPENING.contains(&word.as_str()) || word.is_empty() {
+            greeted |= ["hey", "hi", "hello"].contains(&word.as_str());
+        } else if !(greeted && GREETED.contains(&word.as_str())) {
+            break;
+        }
+        start += 1;
+    }
+    tokens[start..].join(" ")
+}
+
 pub(super) fn is_lights_question(words: &[String]) -> bool {
     let has = |w: &str| words.iter().any(|x| x == w);
     // "Did I leave the lights on" is a question too, not "turn the lights on".
@@ -336,6 +357,21 @@ mod tests {
         assert_eq!(lights("how bright are the lights"), None);
         assert_eq!(lights("Turn all the living room lights."), Some(false));
         assert_eq!(lights("turn all the lights on"), Some(true));
+    }
+
+    #[test]
+    fn a_greeting_before_a_light_request_is_no_light() {
+        let target = |text: &str| match parse(text) {
+            Intent::Lights { target, .. } | Intent::LightLevel { target, .. } => Some(target),
+            _ => None,
+        };
+        assert_eq!(target("Hey everybody turn on the lights."), Some("turn on the lights.".into()));
+        assert_eq!(target("hey, everyone, turn off the kitchen lights"), Some("turn off the kitchen lights".into()));
+        assert_eq!(target("Um, so, please turn on the lights"), Some("turn on the lights".into()));
+        assert_eq!(target("okay dim the lights"), Some("the lights".into()));
+        // Without a greeting "all" is every light, and stays in the request.
+        assert_eq!(target("all the lights off"), Some("all the lights off".into()));
+        assert_eq!(target("everybody lights off"), Some("everybody lights off".into()));
     }
 
     #[test]

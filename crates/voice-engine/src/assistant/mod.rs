@@ -40,7 +40,7 @@ use tracing::{info, warn};
 use voice_assistant::dialog::WakeWord;
 use voice_assistant::geo::Location;
 use voice_assistant::ha::{HomeAssistant, Target};
-use voice_assistant::house::{confirm_question, HouseCommand, Routine};
+use voice_assistant::house::{self, confirm_question, HouseCommand, Routine};
 use voice_assistant::intent::{self, Intent, MusicCommand};
 use voice_assistant::jokes::Jokes;
 use voice_assistant::lang::Lang;
@@ -524,7 +524,8 @@ impl Worker {
         let undo = self.conversation.draft_undo.take();
         // Audio that does not start with the answered draft is a new utterance: the draft's own
         // end was lost while the engine was deaf to its answer.
-        if let Some(draft) = self.conversation.answered_draft.take().filter(|draft| audio.starts_with(draft)) {
+        if let Some((draft, _)) = self.conversation.answered_draft.take().filter(|(draft, _)| audio.starts_with(draft))
+        {
             if audio.len() <= draft.len() + closing {
                 info!("answered from the draft");
                 return;
@@ -572,10 +573,18 @@ impl Worker {
         // "Hey Jarvis stop the party" was answered twice, 0.6 s apart (16 Nov). The utterance's end
         // still takes the rest of it.
         let Some((audio, candidates)) = &self.conversation.draft else { return };
-        if self.conversation.answered_draft.as_ref().is_some_and(|answered| audio.starts_with(answered)) {
-            return;
-        }
         let Some(first) = candidates.first() else { return };
+        let said = voice_assistant::dialog::words(&self.config.wake.strip(&first.text).unwrap_or(first.text.clone()));
+        if let Some((answered, words)) = &mut self.conversation.answered_draft {
+            if audio.starts_with(answered) {
+                // The same words: the pause was broken by a sound (the answer, the music), not by more
+                // speech. The utterance's end follows this draft now, and it is that request too.
+                if *words == said {
+                    answered.clone_from(audio);
+                }
+                return;
+            }
+        }
         let follow_up = self.conversation.follow_up();
         let request = match self.config.wake.strip(&first.text) {
             Some(rest) if !rest.is_empty() => rest,
@@ -583,7 +592,9 @@ impl Worker {
             None if follow_up && !room_talk(&first.text) => first.text.clone(),
             _ => return,
         };
-        let request = self.learned_meaning(self.config.wake.drop_trailing(&request));
+        let named = self.config.wake.strip(&first.text).is_some();
+        let request = self.config.wake.drop_trailing(&request);
+        let request = self.learned_meaning(self.leaving_by_sound(&request, named).unwrap_or(request));
         if quick::goes_on(&request) {
             return;
         }
@@ -599,7 +610,7 @@ impl Worker {
         let pause = Duration::from_secs_f32((vad::DRAFT_FRAMES as usize * FRAME_SAMPLES) as f32 / SAMPLE_RATE as f32);
         let now = Instant::now();
         self.speech_ended = now.checked_sub(pause);
-        self.conversation.answered_draft = Some(audio.clone());
+        self.conversation.answered_draft = Some((audio.clone(), said));
         self.heard(&candidates, &audio, now, now, true);
         self.conversation.draft_undo = undo;
     }
@@ -650,6 +661,13 @@ impl Worker {
             }
             _ => request,
         };
+        let request = match self.leaving_by_sound(&request, addressed) {
+            Some(meant) => {
+                info!(heard = request, meant, "leaving by its shape");
+                meant
+            }
+            None => request,
+        };
         let request = self.learned_meaning(request);
         // A "Which one?" left unanswered goes, before a follow-on asks what waits for a reply.
         self.timers.forget_stale(Instant::now());
@@ -697,6 +715,14 @@ impl Worker {
         self.request_audio = audio.to_vec();
         self.answer(&request, heard.lang, start);
         self.request_audio.clear();
+    }
+
+    /// "Leaving.", "You're leaving." are the leaving routine only when said to the assistant: with
+    /// its name, or in a device wake run whose wake word held the name. The routine turns off the
+    /// house, and the follow-up window hears the room and the TV too.
+    fn leaving_by_sound(&self, request: &str, addressed: bool) -> Option<String> {
+        let said_to_us = addressed || (self.conversation.wake.is_some() && !self.conversation.unnamed());
+        (said_to_us && house::misheard_leaving(&voice_assistant::dialog::words(request))).then(|| "I'm leaving".into())
     }
 
     fn transcribe_draft(&mut self, audio: Vec<i16>) {

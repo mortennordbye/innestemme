@@ -119,9 +119,10 @@ pub(super) struct Conversation {
     pub(super) answered_as: Option<String>,
     /// The latest draft and its transcripts.
     pub(super) draft: Option<(Vec<i16>, Vec<Transcript>)>,
-    /// A command was acted on from this draft: a later draft or the utterance that starts with
-    /// the same audio is that speech going on, and is not answered again.
-    pub(super) answered_draft: Option<Vec<i16>>,
+    /// A command was acted on from this draft, with its words (the name taken off): a later draft
+    /// or the utterance that starts with the same audio is that speech going on, and is not
+    /// answered again.
+    pub(super) answered_draft: Option<(Vec<i16>, Vec<String>)>,
     /// What undoes the music command answered from the draft, for a request that goes on to name
     /// another room.
     pub(super) draft_undo: Option<MusicCommand>,

@@ -839,3 +839,89 @@ fn an_unclear_party_request_stops_the_party_that_plays() {
     assert!(dialog.worker.conversation.list_is_open());
     assert_ne!(said(dialog.say("drop the party")), "There's no party on.");
 }
+
+/// 16 November 2026: "Hey, Jarvis stop the party." was answered from its draft, then a second
+/// draft of the same speech 0.6 s later ("Hey Jarvis stop the party.") was answered again.
+#[test]
+fn a_later_draft_of_the_same_words_is_not_answered_again() {
+    let mut dialog = Dialog::new(None);
+    let (draft, _) = draft_audio();
+    assert_eq!(said(dialog.draft("Hey, Jarvis stop the party.", &draft)), "There's no party on.");
+    // A sound broke the pause and a new one followed: the same words, a little more audio.
+    let mut later = draft.clone();
+    later.resize(draft.len() + 4 * FRAME_SAMPLES, 0);
+    assert_eq!(dialog.draft("Hey Jarvis stop the party.", &later), None);
+    // The utterance's end follows the later draft: still the same request.
+    let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
+    let mut whole = later.clone();
+    whole.resize(later.len() + closing, 0);
+    dialog.worker.utterance(&whole, Instant::now());
+    assert_eq!(dialog.answers(), None);
+    // Said again after the answer, in speech of its own: a new request.
+    let again = vec![900i16; 20 * FRAME_SAMPLES];
+    assert_eq!(said(dialog.draft("Hey Jarvis, stop the party.", &again)), "There's no party on.");
+}
+
+#[test]
+fn a_later_draft_with_more_words_is_answered_at_its_end() {
+    let mut dialog = Dialog::new(None);
+    let (draft, _) = draft_audio();
+    assert_eq!(said(dialog.draft("Jarvis, stop the party.", &draft)), "There's no party on.");
+    // The speaker said it again before the utterance ended: a repeat, answered at the end.
+    let mut later = draft.clone();
+    later.resize(draft.len() + 20 * FRAME_SAMPLES, 1000);
+    assert_eq!(dialog.draft("Jarvis, stop the party. Stop the party.", &later), None);
+    let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
+    let mut whole = later.clone();
+    whole.resize(later.len() + closing, 0);
+    dialog.worker.utterance(&whole, Instant::now());
+    assert_eq!(said(dialog.answers()), "There's no party on.");
+}
+
+/// 19 and 21 November 2026: "Leaving." and "You're leaving." after a wake word with the name were
+/// dropped. Without the name they may be the room or the TV, and the routine turns off the house.
+#[test]
+fn leaving_heard_without_the_i_am_needs_the_name() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    dialog.worker.woken(Instant::now(), WakeName::Heard);
+    let answer = said(dialog.say("You're leaving."));
+    assert!(answer.contains("See you later"), "{answer}");
+    let answer = said(dialog.say("Jarvis, leaving"));
+    assert!(answer.contains("See you later"), "{answer}");
+    // In the follow-up window, without the name: not for the assistant.
+    assert!(dialog.worker.conversation.follow_up());
+    ha.take_calls();
+    assert_eq!(dialog.say("Leaving."), None);
+    assert_eq!(dialog.say("You're leaving."), None);
+    // A wake word whose name check found no name is as unsure.
+    dialog.worker.woken(Instant::now(), WakeName::Heard);
+    dialog.worker.conversation.set_wake_named(Some(false));
+    assert_eq!(dialog.say("You're leaving."), None);
+    assert!(ha.take_calls().is_empty());
+}
+
+/// "Leaving now" is the routine as before, with the name or without it.
+#[test]
+fn leaving_now_runs_the_routine() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    let answer = said(dialog.say("Jarvis, leaving now"));
+    assert!(answer.contains("See you later"), "{answer}");
+    assert!(dialog.worker.conversation.follow_up());
+    let answer = said(dialog.say("leaving now"));
+    assert!(answer.contains("See you later"), "{answer}");
+}
+
+/// 20 November 2026: "Soft music." after the wake word was dropped.
+#[test]
+fn a_kind_of_music_said_alone_plays_it() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    dialog.worker.woken(Instant::now(), WakeName::Heard);
+    let bare = (dialog.say("Soft music."), ha.take_calls());
+    // The fake house has no player: what matters is that it is the same request as "play soft music".
+    assert_ne!(bare.0, None);
+    dialog.worker.woken(Instant::now(), WakeName::Heard);
+    assert_eq!(bare, (dialog.say("play soft music"), ha.take_calls()));
+}
