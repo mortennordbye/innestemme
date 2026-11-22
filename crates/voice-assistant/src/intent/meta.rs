@@ -16,8 +16,14 @@ pub const LEADS_POWER: &[&str] =
 pub const LEADS_LIGHTS: &[&str] = &["Let me check the lights", "Checking the lights", "Looking around the house"];
 pub const LEADS_HOME: &[&str] = &["Let me see who's in", "Checking who's home", "Let me take a head count"];
 pub const LEADS_THINK: &[&str] = &["Let me think", "Give me a moment", "Let me consider that"];
-/// Before the chat model's answer: a person's first sound, not an announcement of work.
-pub const LEADS_TALK: &[&str] = &["Hmm", "Well", "Ah"];
+/// Before the chat model's answer: a person's first words, by what was said. A question.
+pub const LEADS_TALK_QUESTION: &[&str] = &["Good question", "Let me think about that", "Now there's a question"];
+/// Something asked for: "tell me a poem", "can you give me a recipe".
+pub const LEADS_TALK_ASK: &[&str] = &["Of course", "Certainly", "With pleasure"];
+/// Something said: "I'm tired", "I want a holiday".
+pub const LEADS_TALK: &[&str] = &["I see", "Ah", "Hmm"];
+/// When the chat model is still quiet after the lead-in: plain, no honorific.
+pub const TALK_FILLERS: &[&str] = &["Let me see", "Now then", "Bear with me"];
 pub const LEADS_NEWS: &[&str] = &["Fetching the headlines", "Let me check the news", "Checking the papers"];
 pub const LEADS_LOOKUP: &[&str] = &["Let me look that up", "One moment", "Let me find out"];
 pub const LEADS_HOUSE: &[&str] = &["Let me check the house", "Checking the house", "Doing the rounds"];
@@ -31,6 +37,9 @@ pub const LEADS: &[&[&str]] = &[
     LEADS_HOME,
     LEADS_THINK,
     LEADS_TALK,
+    LEADS_TALK_QUESTION,
+    LEADS_TALK_ASK,
+    TALK_FILLERS,
     LEADS_NEWS,
     LEADS_LOOKUP,
     LEADS_HOUSE,

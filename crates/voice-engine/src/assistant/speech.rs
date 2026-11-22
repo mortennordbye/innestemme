@@ -31,6 +31,11 @@ pub(super) struct Spoken {
 }
 
 impl Spoken {
+    /// How long the audio put out plays.
+    pub(super) fn duration(&self) -> Duration {
+        Duration::from_secs_f32(self.samples as f32 / SAMPLE_RATE as f32)
+    }
+
     /// Whether any audio went out.
     pub(super) fn started(&self) -> bool {
         self.first.is_some()

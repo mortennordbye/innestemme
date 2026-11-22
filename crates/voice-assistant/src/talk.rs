@@ -151,6 +151,46 @@ impl Talk {
     }
 }
 
+/// Words that open something asked for; "can you" and "could you" too.
+const ASKING: &[&str] = &[
+    "tell",
+    "give",
+    "sing",
+    "read",
+    "recite",
+    "say",
+    "show",
+    "make",
+    "teach",
+    "explain",
+    "describe",
+    "suggest",
+    "recommend",
+    "please",
+    "can",
+    "could",
+    "would",
+    "will",
+];
+/// Words that open a question.
+const QUESTIONING: &[&str] = &[
+    "what", "what's", "whats", "why", "how", "how's", "who", "who's", "where", "when", "which", "do", "does", "did",
+    "is", "are", "was", "were", "should", "shall", "have", "has",
+];
+
+/// The lead-ins that fit `request`: for a question, for something asked for, or for something said.
+pub fn leads_for(request: &str) -> &'static [&'static str] {
+    use crate::intent::{LEADS_TALK, LEADS_TALK_ASK, LEADS_TALK_QUESTION};
+    let first = request.split_whitespace().map(crate::dialog::normalize).find(|w| !w.is_empty()).unwrap_or_default();
+    if ASKING.contains(&first.as_str()) {
+        LEADS_TALK_ASK
+    } else if QUESTIONING.contains(&first.as_str()) || request.trim_end().ends_with('?') {
+        LEADS_TALK_QUESTION
+    } else {
+        LEADS_TALK
+    }
+}
+
 /// The system prompt: who the assistant is and what it knows of the household.
 pub fn system_prompt(context: &TalkContext) -> String {
     let mut prompt = format!("You are {}, the voice of a home.", context.name);
@@ -196,11 +236,17 @@ pub fn system_prompt(context: &TalkContext) -> String {
     prompt
 }
 
+/// The fewest words before a comma that the first part of an answer is cut at: it can be spoken
+/// while the rest of its sentence is written ("I would be delighted to, sir," then the rest).
+const FIRST_CLAUSE_WORDS: usize = 5;
+
 /// Text as it streams in, cut into whole sentences: a sentence ends at ".", "!" or "?" followed by
-/// a space, so "3.5" and a sentence still being written are not cut.
+/// a space, so "3.5" and a sentence still being written are not cut. The first part may end at a
+/// comma, so the first words go out sooner.
 #[derive(Default)]
 struct Sentences {
     text: String,
+    started: bool,
 }
 
 impl Sentences {
@@ -208,13 +254,18 @@ impl Sentences {
         self.text.push_str(&clean(piece));
         let mut whole = Vec::new();
         loop {
+            let first = !self.started;
             let end = self.text.char_indices().zip(self.text.chars().skip(1)).find_map(|((i, c), next)| {
-                (matches!(c, '.' | '!' | '?') && next.is_whitespace()).then_some(i + c.len_utf8())
+                let clause = first
+                    && matches!(c, ',' | ';' | ':')
+                    && self.text[..i].split_whitespace().count() >= FIRST_CLAUSE_WORDS;
+                ((matches!(c, '.' | '!' | '?') || clause) && next.is_whitespace()).then_some(i + c.len_utf8())
             });
             let Some(end) = end else { break };
             let sentence = self.text[..end].trim().to_owned();
             self.text = self.text[end..].trim_start().to_owned();
             if !sentence.is_empty() {
+                self.started = true;
                 whole.push(sentence);
             }
         }
@@ -249,6 +300,29 @@ mod tests {
         assert!(sentences.push(" quiet").is_empty());
         assert_eq!(sentences.push(". And you? "), vec!["The house is quiet.", "And you?"]);
         assert_eq!(sentences.finish(), None);
+    }
+
+    #[test]
+    fn the_first_part_may_end_at_a_comma() {
+        let mut sentences = Sentences::default();
+        assert!(sentences.push("Ah, cookies,").is_empty());
+        assert_eq!(
+            sentences.push(" I would be delighted to, sir, as it happens"),
+            vec!["Ah, cookies, I would be delighted to,"]
+        );
+        // Later parts end only with their sentence.
+        assert!(sentences.push(", they are my favourite, truly").is_empty());
+        assert_eq!(sentences.push(". "), vec!["sir, as it happens, they are my favourite, truly."]);
+    }
+
+    #[test]
+    fn the_lead_in_fits_what_was_said() {
+        assert_eq!(leads_for("Can you tell me a poem?"), crate::intent::LEADS_TALK_ASK);
+        assert_eq!(leads_for("Give me a cookie recipe."), crate::intent::LEADS_TALK_ASK);
+        assert_eq!(leads_for("Do you believe in God?"), crate::intent::LEADS_TALK_QUESTION);
+        assert_eq!(leads_for("What is your favorite Bible quote?"), crate::intent::LEADS_TALK_QUESTION);
+        assert_eq!(leads_for("Tired. Long day."), crate::intent::LEADS_TALK);
+        assert_eq!(leads_for("I would like just regular chocolate cookies."), crate::intent::LEADS_TALK);
     }
 
     #[test]

@@ -3,10 +3,12 @@
 //! follow-up window takes a reply without the name, so a conversation can go on.
 
 use std::sync::atomic::Ordering::Relaxed;
-use std::time::Instant;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
+use anyhow::anyhow;
 use tracing::{info, warn};
-use voice_assistant::intent::LEADS_TALK;
+use voice_assistant::intent::TALK_FILLERS;
 use voice_assistant::lang::Lang;
 use voice_assistant::talk::{self, TalkContext};
 
@@ -18,6 +20,9 @@ use crate::unhandled::Reason;
 
 /// The longest reply without the name that goes on with a conversation: longer is the room or the TV.
 const TALK_REPLY_WORDS: usize = 12;
+/// How long after the lead-in has played a quiet chat model gets a filler ("Let me see."): a pause
+/// longer than this reads as the assistant having stopped.
+const FILLER_AFTER: Duration = Duration::from_millis(400);
 
 impl Worker {
     /// The chat model's answer to `text`, already spoken; `None` when there is no chat model, or
@@ -35,21 +40,67 @@ impl Worker {
         // not in `lead_in`: only a request that reaches the model gets it.
         if aloud && lang == Lang::English && self.render.is_some() && !self.answer_announced {
             self.lead_turn = self.lead_turn.wrapping_add(1);
+            let leads = talk::leads_for(text);
             let honorific = self.persona.as_ref().map(|persona| persona.honorific().to_owned());
-            let lead = lead_sentence(LEADS_TALK[self.lead_turn % LEADS_TALK.len()], honorific.as_deref());
+            let lead = lead_sentence(leads[self.lead_turn % leads.len()], honorific.as_deref());
             self.announce_answer(&lead);
             self.speak(&lead, lang, &mut spoken);
         }
-        let result = chat.answer(&system, &history, text, lang, &mut |sentence| {
-            first.get_or_insert_with(|| start.elapsed());
-            if aloud {
-                self.announce_answer(sentence);
-                // Each answer is new words: synthesized live, not kept in the speech cache.
-                self.live.insert(sentence.to_owned());
-                self.speak(sentence, lang, &mut spoken);
-            }
-            !self.interrupted.load(Relaxed)
+        // The model is read on a thread of its own, so a pause after the lead-in can be filled.
+        let (sentences, heard) = mpsc::channel::<String>();
+        let request = text.to_owned();
+        let reader = std::thread::Builder::new().name("chat".into()).spawn(move || {
+            chat.answer(&system, &history, &request, lang, &mut |sentence| sentences.send(sentence.to_owned()).is_ok())
         });
+        let reader = match reader {
+            Ok(reader) => reader,
+            Err(error) => {
+                warn!(%error, "could not start the chat model's reader");
+                return None;
+            }
+        };
+        // The lead-in was queued at once: it has played this long from now on.
+        let mut filler_at = (aloud && spoken.started()).then(|| Instant::now() + spoken.duration() + FILLER_AFTER);
+        let mut said = Vec::new();
+        let mut interrupted = false;
+        loop {
+            let next = match filler_at {
+                Some(at) => heard.recv_timeout(at.saturating_duration_since(Instant::now())),
+                None => heard.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            match next {
+                Ok(sentence) => {
+                    filler_at = None;
+                    first.get_or_insert_with(|| start.elapsed());
+                    if aloud {
+                        self.announce_answer(&sentence);
+                        // Each answer is new words: synthesized live, not kept in the speech cache.
+                        self.live.insert(sentence.clone());
+                        self.speak(&sentence, lang, &mut spoken);
+                    }
+                    said.push(sentence);
+                    if self.interrupted.load(Relaxed) {
+                        interrupted = true;
+                        break;
+                    }
+                }
+                // Silence after the lead-in sounds like a hang: one more phrase, from the cache.
+                Err(RecvTimeoutError::Timeout) => {
+                    filler_at = None;
+                    let filler = lead_sentence(TALK_FILLERS[self.lead_turn % TALK_FILLERS.len()], None);
+                    info!(filler, "chat model still quiet");
+                    self.speak(&filler, lang, &mut spoken);
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        drop(heard);
+        // Interrupted, the reader stops at its next sentence; nobody waits for it.
+        let result = if interrupted {
+            Ok(said.join(" "))
+        } else {
+            reader.join().unwrap_or_else(|_| Err(anyhow!("the chat model's reader panicked")))
+        };
         let answer = match result {
             Ok(answer) if !answer.is_empty() => {
                 info!(first_sentence = ?first, took = ?start.elapsed(), "chat model answered");
