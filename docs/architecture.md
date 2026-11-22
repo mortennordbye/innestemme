@@ -65,13 +65,19 @@ run whose wake word held the name, never in the follow-up window: the routine tu
 
 **Follow-ons.** Words no skill takes on their own may go on from the last request answered (`intent/follow_on.rs`):
 "what about inside?" after the weather, "and tomorrow?", "how about in Bergen?", "and the humidity?" after a room's
-temperature, "and the hallway" after switching the kitchen lights, "a bit more" or "and again" after a volume step.
-They must open like one ("what about", "how about", "and", "what's it like", "hva med", "og"); a volume step also
-takes "a bit more" or "more please" without one, but not a bare "more" or "again". For the lights the rest must be a
-room and nothing more ("the hallway", "in the bedroom", "the hallway lights too"), so "and not the hallway" switches
-nothing. The rest is joined to the last topic in a sentence the rules parse as usual, and the result is kept only in
-the same skill: the forecast and the rooms' readings count as one, and so do switching, asking about and dimming the
-lights. A room given to "Which room?" counts as the whole request. A follow-on is taken in the follow-up window, after
+temperature, "and the hallway" after switching the kitchen lights, "a bit more" or "and again" after a volume step,
+"and another for 10 minutes" after a timer, "and the tram to Fjellby" after the departures, "and in the bedroom" after
+a music request (it does the same there) and "and the bedroom" after a scene. They must open like one ("what about",
+"how about", "and", "what's it like", "hva med", "og"); a volume step also takes "a bit more" or "more please" without
+one, but not a bare "more" or "again". For the lights, music and scenes the rest must be a room and nothing more ("the
+hallway", "in the bedroom", "the hallway lights too"), so "and not the hallway" switches nothing. For a timer it must be
+a length, or a name and a length ("and one for the pasta for 10 minutes"); for the departures a mode, a line or a stop
+to or from (at most three words), and what it does not name is kept. There is no "and the one after that": each
+question asks for the next departures. The rest is joined to the last topic in a sentence the rules parse as usual,
+and the result is kept only in the same skill: the forecast and the rooms' readings count as one, and so do switching,
+asking about and dimming the lights. After a Norwegian opening the sentence is Norwegian ("hva med inne?" is "hva er
+temperaturen inne"), or English when the Norwegian one reads otherwise. A room given to "Which room?" for the lights or
+a scene counts as the whole request. A follow-on is taken in the follow-up window, after
 a wake, or with the name up to 5 minutes after the last answer, while no question asked back waits; the usual
 filters still apply, and "never mind" ends the topic. While a party plays and nothing asked back waits, "<verb> the
 party" with a known sound-alike of "stop" ("shop the party", "drop the party") stops it; "join the party" or cheering does not.

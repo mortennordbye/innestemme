@@ -382,6 +382,76 @@ pub fn parse(text: &str) -> Option<TransitQuery> {
     Some(TransitQuery { mode: mode.unwrap_or(Mode::Any), destination, line: line_at.map(|at| words[at].clone()), from })
 }
 
+/// Words that are no stop's name, so "and to be honest" or "and the bus is late" asks for nothing.
+const NOT_A_STOP: &[&str] = &[
+    "be", "is", "are", "was", "it", "its", "me", "you", "him", "her", "them", "us", "that", "this", "do", "go", "say",
+    "bed", "sleep", "late", "early", "er", "var", "det", "den", "deg", "meg", "seg", "si", "sove", "seng",
+];
+/// Longest stop name a follow-on may say: a longer rest is talk, not a stop.
+const STOP_WORDS_MAX: usize = 3;
+
+/// The departures question that `rest`, the words after a follow-on's opening, asks after `last`:
+/// "and the tram", "what about to Fjellby", "and the bus from Dalby". What the rest does not name
+/// is kept from `last`; a new mode or line replaces both. `None` when the rest says anything
+/// more, or nothing a question can take. There is no "the one after that": each question asks
+/// for the next departures.
+pub fn follow_on(last: &TransitQuery, rest: &[String], lang: Lang) -> Option<String> {
+    let said = rest.join(" ");
+    let names_vehicle = rest.iter().any(|w| is_mode(w) || DEPARTURE_WORDS.contains(&w.as_str()));
+    let named = parse(&format!("next {said}")).or_else(|| parse(&format!("next departure {said}")))?;
+    let vehicle = names_vehicle || named.line.is_some();
+    let stop = |place: &Option<String>| -> Option<Vec<String>> {
+        let words: Vec<String> = place.iter().flat_map(|place| place.split_whitespace().map(str::to_owned)).collect();
+        (words.len() <= STOP_WORDS_MAX && !words.iter().any(|w| NOT_A_STOP.contains(&w.as_str()))).then_some(words)
+    };
+    let (to, from) = (stop(&named.destination)?, stop(&named.from)?);
+    let covered = |w: &str| {
+        ["the", "a", "en"].contains(&w)
+            || is_mode(w)
+            || DEPARTURE_WORDS.contains(&w)
+            || LINE_WORDS.contains(&w)
+            || TOWARDS.contains(&w)
+            || FROM.contains(&w)
+            || DESTINATION_FILLER.contains(&w)
+            || named.line.as_deref() == Some(w)
+            || to.iter().chain(&from).any(|stop| stop == w)
+    };
+    if !rest.iter().all(|w| covered(w)) || (!vehicle && named.destination.is_none() && named.from.is_none()) {
+        return None;
+    }
+    let (mode, line) = if vehicle { (named.mode, named.line) } else { (last.mode, last.line.clone()) };
+    let meant = TransitQuery {
+        mode,
+        line,
+        destination: named.destination.or_else(|| last.destination.clone()),
+        from: named.from.or_else(|| last.from.clone()),
+    };
+    // Said in the follow-on's language, else in English, as long as it reads back as meant.
+    let mut carriers = vec![question(&meant, Lang::English)];
+    if lang == Lang::Norwegian {
+        carriers.insert(0, question(&meant, Lang::Norwegian));
+    }
+    carriers.into_iter().find(|carrier| parse(carrier).as_ref() == Some(&meant))
+}
+
+/// `query` as the rules read it: "when's the next bus 31 to Fjellby from Dalby".
+fn question(query: &TransitQuery, lang: Lang) -> String {
+    let no = lang == Lang::Norwegian;
+    let what = match (query.mode, &query.line) {
+        (Mode::Any, Some(line)) => format!("{} {line}", if no { "linje" } else { "line" }),
+        (mode, Some(line)) => format!("{} {line}", mode.word(lang)),
+        (mode, None) => mode.word(lang).to_owned(),
+    };
+    let mut question = format!("{} {what}", if no { "når går neste" } else { "when's the next" });
+    if let Some(to) = &query.destination {
+        question += &format!(" {} {to}", if no { "til" } else { "to" });
+    }
+    if let Some(from) = &query.from {
+        question += &format!(" {} {from}", if no { "fra" } else { "from" });
+    }
+    question
+}
+
 /// Places a request says for the town centre, and what the signs say instead.
 fn centre(destination: &str) -> bool {
     matches!(

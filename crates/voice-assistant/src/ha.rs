@@ -604,6 +604,15 @@ pub fn resolve_heard(lights: &[Light], request: &str) -> Option<Target> {
     resolve(lights, found.name)
 }
 
+/// The scene a request names, read as [`resolve_scene`] reads it: its own words, and the room's
+/// English name when one is said. "Set the living room to relax" is "relax" in the living room.
+pub fn scene_named(request: &str) -> Option<(String, Option<&'static str>)> {
+    let mut words: Vec<String> =
+        crate::dialog::words(request).into_iter().filter(|w| !SCENE_FILLER.contains(&w.as_str())).collect();
+    let room = take_room(&mut words).map(|group| ROOMS[group][0]);
+    (!words.is_empty()).then(|| (words.join(" "), room))
+}
+
 /// The scene a request names. The room is the one named in the request, else `here` (the
 /// satellite's room); a scene name found only in other rooms still counts when it is in exactly
 /// one of them.
