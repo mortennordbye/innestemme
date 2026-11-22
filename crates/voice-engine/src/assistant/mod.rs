@@ -72,7 +72,7 @@ use crate::render::RenderAhead;
 use crate::screen::Screen;
 use crate::unhandled::{Reason, UnhandledLog};
 
-use conversation::{AfterAnswer, Awaiting, Conversation, PendingChoice, TurnEnd, Wake};
+use conversation::{AfterAnswer, Awaiting, Conversation, PendingChoice, PendingRetry, TurnEnd, Wake};
 use follow_up::room_talk;
 use home::confirmation;
 use hush::{HUSH_CAP, HUSH_QUIET};
@@ -703,6 +703,12 @@ impl Worker {
                 .conversation
                 .choice_asked()
                 .is_some_and(|asked| sound_alike::choice(&request, asked.skill, &asked.topic).is_some()),
+            // "I couldn't find a stop called osla esco." takes a short name the rules do not read
+            // as a request of its own.
+            Some(Awaiting::Retry) => {
+                parsed == Intent::Unknown
+                    && self.conversation.retry_asked().is_some_and(|retry| retry.with(&request).is_some())
+            }
             // "Remember what?" is answered like any request: its answer still faces the filters.
             Some(Awaiting::RememberWhat) | None => false,
         };
@@ -770,6 +776,7 @@ impl Worker {
             }
             return;
         };
+        self.ask_retry(text, Some(&answer));
         let failed = ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s));
         if !failed && intent::split_commands(text).is_none() && intent::parse(text).meta().heard_by_itself {
             let turn = self.turn_for(text, Some(answer.clone()), Outcome::Done, start);
@@ -933,6 +940,7 @@ impl Worker {
         let scene = self.conversation.pending_scene.take();
         let confirm = self.conversation.pending_confirm.take();
         let choice = self.conversation.pending_choice.take();
+        let retry = self.conversation.pending_retry.take();
         self.conversation.list_open = None;
         let unknown = *intent == Intent::Unknown;
         let answer = match awaiting? {
@@ -980,12 +988,39 @@ impl Worker {
                 _ => None,
             },
             Awaiting::Choice => choice.and_then(|asked| self.choose(text, asked, lang)),
+            Awaiting::Retry => match retry.and_then(|retry| retry.with(text)) {
+                Some(whole) if unknown => {
+                    let again = intent::parse(&whole);
+                    info!(heard = text, meant = whole, "name said again");
+                    self.conversation.answered_as = Some(whole.clone());
+                    let answer = self.act(again, lang);
+                    self.ask_retry(&whole, answer.as_deref());
+                    answer
+                }
+                _ => None,
+            },
         };
         if answer.is_none() {
             self.timers.clear_pending();
             self.memory.clear_question();
         }
         answer
+    }
+
+    /// After an answer that found nothing by a name the transcriber may have misheard ("I couldn't
+    /// find a stop called osla esco."), the next short reply is that name said again.
+    fn ask_retry(&mut self, request: &str, answer: Option<&str>) {
+        let Some(answer) = answer else { return };
+        let name = match intent::parse(request) {
+            Intent::Transit(_) => answer.strip_prefix("I couldn't find a stop called "),
+            Intent::Lookup(_) => answer.strip_prefix("Sorry, I couldn't find anything about "),
+            _ => None,
+        };
+        let Some(name) = name.and_then(|rest| rest.strip_suffix('.')).map(str::to_lowercase) else { return };
+        if request.to_lowercase().contains(&name) {
+            self.conversation.pending_retry =
+                Some(PendingRetry { request: request.to_owned(), name, at: Instant::now() });
+        }
     }
 
     /// "What's therapy?": a look-up topic that sounds like a skill word asks which was meant, as

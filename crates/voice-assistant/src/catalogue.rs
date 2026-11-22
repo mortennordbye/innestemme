@@ -585,6 +585,8 @@ pub const SKILLS: &[Skill] = &[
         calls: &[],
         examples: &[
             "How are you doing today?",
+            "How are you feeling?",
+            "What can you do?",
             "Who are you?",
             "Do you love me?",
             "You're useless",

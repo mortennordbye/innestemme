@@ -11,6 +11,8 @@ pub enum Chat {
     HowAreYou,
     /// "Who are you?", "what's your name?"
     WhoAreYou,
+    /// "What can you do?", "what can I ask you?"
+    Abilities,
     /// "Hello", "hi there"
     Hello,
     /// "Good night"
@@ -84,12 +86,32 @@ const PHRASES: &[(Chat, &[&str])] = &[
             "how are things",
             "how's your day",
             "how is your day",
+            "how are you feeling",
+            "how you feeling",
+            "how do you feel",
+            "how was your day",
+            "how's your day been",
+            "how has your day been",
             "hvordan går det",
             "hvordan har du det",
             "går det bra",
         ],
     ),
     (Chat::WhoAreYou, &["who are you", "what's your name", "what is your name", "hvem er du", "hva heter du"]),
+    (
+        Chat::Abilities,
+        &[
+            "what can you do",
+            "what can you help me with",
+            "what can i ask you",
+            "what are you able to do",
+            "what do you do",
+            "what are your skills",
+            "hva kan du",
+            "hva kan du gjøre",
+            "hva kan jeg spørre deg om",
+        ],
+    ),
     (Chat::Hello, &["hello", "hi", "hi there", "hey", "hey there", "good to see you", "hei", "hallo", "heisann"]),
     (
         Chat::Praise,
@@ -332,7 +354,23 @@ const PHRASES: &[(Chat, &[&str])] = &[
         ],
     ),
     (Chat::Hungry, &["i'm hungry", "i am hungry", "i'm starving", "jeg er sulten"]),
-    (Chat::Tired, &["i'm tired", "i am tired", "i'm exhausted", "i'm so tired", "jeg er trøtt", "jeg er sliten"]),
+    (
+        Chat::Tired,
+        &[
+            "i'm tired",
+            "i am tired",
+            "i'm exhausted",
+            "i'm so tired",
+            "tired",
+            "tired long day",
+            "long day",
+            "what a long day",
+            "it's been a long day",
+            "it was a long day",
+            "jeg er trøtt",
+            "jeg er sliten",
+        ],
+    ),
     (Chat::Drunk, &["i'm drunk", "i am drunk", "i'm a bit drunk", "i'm wasted", "jeg er full"]),
     (Chat::Apology, &["sorry", "i'm sorry", "i am sorry", "my bad", "unnskyld", "beklager"]),
     (Chat::PodBayDoors, &["open the pod bay doors", "open the pod bay door", "open the pod bay doors hal"]),
@@ -386,6 +424,10 @@ pub fn answers(chat: Chat, lang: Lang, name: &str) -> Vec<String> {
             "Very well, thank you. Quiet day in the circuits.",
             "Splendid, thank you. Not a fuse out of place.",
             "Rather well. The house is behaving itself.",
+        ],
+        Chat::Abilities => &[
+            "I run the lights, scenes, music and the TV. I also do timers, the weather, buses and trains, the shopping list, electricity prices and notes.",
+            "Lights, music, the TV, timers, the weather, departures, the shopping list and notes. Just ask.",
         ],
         Chat::WhoAreYou => &[
             "I'm {name}, the house assistant. I look after the lights, the music, timers and the weather.",
@@ -526,6 +568,9 @@ pub fn answers(chat: Chat, lang: Lang, name: &str) -> Vec<String> {
     };
     let norwegian: &[&str] = match chat {
         Chat::HowAreYou => &["Det går fint, takk som spør.", "Bare bra. Alt i huset er i orden."],
+        Chat::Abilities => {
+            &["Jeg styrer lys, musikk og TV-en, og jeg tar tidtakere, været, avganger, handlelisten og notater."]
+        }
         Chat::WhoAreYou => &["Jeg er {name}, assistenten i huset. Jeg styrer lys, musikk, tidtakere og været."],
         Chat::Hello => &["Hei. Hva kan jeg hjelpe med?"],
         Chat::Praise => &["Takk. Jeg gjør mitt beste."],
@@ -607,6 +652,12 @@ mod tests {
         assert_eq!(chat("Open the pod bay doors."), Some(Chat::PodBayDoors));
         assert_eq!(chat("Initiate self-destruct."), Some(Chat::SelfDestruct));
         assert_eq!(chat("Knock knock."), Some(Chat::KnockKnock));
+        // From the living room on 22 Nov: open talk no rule took.
+        assert_eq!(chat("How are you feeling?"), Some(Chat::HowAreYou));
+        assert_eq!(chat("How you feeling?"), Some(Chat::HowAreYou));
+        assert_eq!(chat("Tired. Long day."), Some(Chat::Tired));
+        assert_eq!(chat("What can you do?"), Some(Chat::Abilities));
+        assert_eq!(chat("How was your day?"), Some(Chat::HowAreYou));
         assert_eq!(chat("Testing, testing."), Some(Chat::Testing));
     }
 
