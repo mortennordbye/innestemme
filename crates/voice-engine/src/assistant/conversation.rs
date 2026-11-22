@@ -17,8 +17,11 @@ use super::shopping::LIST_OPEN;
 use super::speech::ANSWER_START;
 use super::{AssistantEvent, Worker, FOLLOW_UP};
 
-/// Earlier exchanges the language model sees, for follow-ups ("and tomorrow?").
+/// Earlier exchanges the language model sees, for follow-ups ("and tomorrow?"): they grow to the
+/// most and are then cut to the fewest at once, so the history's start stays the same between
+/// answers and the server's prompt cache holds it. Dropping one at a time changed it on each answer.
 const HISTORY_TURNS: usize = 4;
+const HISTORY_MOST_TURNS: usize = 8;
 pub(super) const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// How long "Turn on privacy mode?" waits for its "yes".
 pub(super) const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
@@ -242,8 +245,8 @@ impl Conversation {
     /// An exchange for the language model's history; the oldest go.
     pub(super) fn remember(&mut self, user: &str, assistant: String) {
         self.history.push_back((Instant::now(), Turn { user: user.to_owned(), assistant }));
-        while self.history.len() > HISTORY_TURNS {
-            self.history.pop_front();
+        if self.history.len() > HISTORY_MOST_TURNS {
+            self.history.drain(..self.history.len() - HISTORY_TURNS);
         }
     }
 
@@ -266,8 +269,18 @@ impl Conversation {
     }
 
     /// The exchanges recent enough to go on from.
+    /// The last exchange is recent enough that the next request goes on from the history.
+    pub(super) fn going_on(&self) -> bool {
+        self.history.back().is_some_and(|(at, _)| at.elapsed() < HISTORY_MAX_AGE)
+    }
+
+    /// The whole conversation while it goes on (its last exchange recent enough), none once it is
+    /// over: a turn dropped by age from its start would change the history's start.
     pub(super) fn recent_turns(&self) -> Vec<Turn> {
-        self.history.iter().filter(|(at, _)| at.elapsed() < HISTORY_MAX_AGE).map(|(_, turn)| turn.clone()).collect()
+        if !self.going_on() {
+            return Vec::new();
+        }
+        self.history.iter().map(|(_, turn)| turn.clone()).collect()
     }
 
     /// A session started: nothing said before it is gone on from.

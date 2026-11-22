@@ -341,7 +341,13 @@ struct Worker {
     render: Option<RenderAhead>,
     lead_turn: usize,
     /// The chat model spoke the answer being composed, and when it finished: what it put out.
-    talked: Option<(speech::Spoken, Instant)>,
+    talked: Option<(speech::Spoken, String)>,
+    /// The household's people for the chat model's prompt, and when they were read.
+    talk_people: (Vec<String>, Option<Instant>),
+    /// The chat model's system prompt as last sent to it.
+    talk_warmed: String,
+    /// A conversation has been in the chat model's cache since the base was last read.
+    talk_base_gone: bool,
     /// The answer being composed has sent its `Answer` event (a lead-in's), which a satellite
     /// takes as the start of the reply: a second one would start it again.
     answer_announced: bool,
@@ -425,6 +431,9 @@ impl Worker {
                         render.hold(talking);
                     }
                     self.keep_warm();
+                    if !talking {
+                        self.keep_talk_warm();
+                    }
                     if !talking && self.refreshed.is_none_or(|at| at.elapsed() >= DATA_REFRESH) {
                         self.refresh_data();
                     }
@@ -789,10 +798,11 @@ impl Worker {
             }
             return;
         };
-        if let Some((talked, _)) = self.talked.take() {
+        if let Some((talked, raw)) = self.talked.take() {
             self.conversation.last_talk = Some(Instant::now());
             self.conversation.answered(text);
-            self.conversation.remember(text, answer.clone());
+            // The model's own words, as the server's cache holds them.
+            self.conversation.remember(text, raw);
             let turn = self.turn_for(text, Some(answer.clone()), Outcome::Answered, start);
             info!(request = text, answer, ?lang, skill = turn.skill, after = ?start.elapsed(), "answering");
             self.turn = Some(turn);

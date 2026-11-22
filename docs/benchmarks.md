@@ -187,6 +187,12 @@ streamed. The time is from the request to the end of the first sentence, after a
   model wrote 1.2 tok/s. `chat-threads` sends the thread count with each request.
 - With thinking on, Gemma 4 thinks for about 30 s before its first word.
 - Loading the model takes over a minute: `keep_alive: -1` keeps it loaded.
+- Prompt cache (22 Nov, 341-token prompt): a new question after the same system prompt read all of it again in
+  1.5-2.0 s (`n_swa = 512` in the Ollama log: Gemma 4's sliding-window attention keeps no cache for a prompt cut
+  short). A request that extends the last one read only its new tokens: the same question again 0.16-0.24 s, the
+  next turn of a conversation 0.40 s, a first question after a base read ahead (the system prompt and three
+  example exchanges, ending with the last example) 0.21-0.24 s, and the base read again after a conversation
+  0.19 s.
 - End of speech to first sound: about 0.64 s end-of-turn wait, 1.2-1.8 s to the first sentence, 0.45 s for the
   Sonos to start. A cached lead-in ("Hmm.") goes out after about 1.1 s.
 

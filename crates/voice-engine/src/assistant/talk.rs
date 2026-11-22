@@ -23,6 +23,8 @@ const TALK_REPLY_WORDS: usize = 12;
 /// How long after the lead-in has played a quiet chat model gets a filler ("Let me see."): a pause
 /// longer than this reads as the assistant having stopped.
 const FILLER_AFTER: Duration = Duration::from_millis(400);
+/// How often the household's people are read again from Home Assistant for the prompt.
+const PEOPLE_REFRESH: Duration = Duration::from_secs(30 * 60);
 
 impl Worker {
     /// The chat model's answer to `text`, already spoken; `None` when there is no chat model, or
@@ -97,15 +99,25 @@ impl Worker {
         drop(heard);
         // Interrupted, the reader stops at its next sentence; nobody waits for it.
         let result = if interrupted {
-            Ok(said.join(" "))
+            let said = said.join(" ");
+            Ok(talk::Answered { raw: said.clone(), said, ..Default::default() })
         } else {
             reader.join().unwrap_or_else(|_| Err(anyhow!("the chat model's reader panicked")))
         };
-        let answer = match result {
-            Ok(answer) if !answer.is_empty() => {
-                info!(first_sentence = ?first, took = ?start.elapsed(), "chat model answered");
-                self.unhandled(Reason::LanguageModel, text, Some(&answer));
-                answer
+        let (answer, raw) = match result {
+            Ok(answered) if !answered.said.is_empty() => {
+                // `read`: the prompt tokens the server's cache did not hold. Many of them mean the
+                // prompt or the history changed at its start.
+                info!(
+                    first_sentence = ?first,
+                    took = ?start.elapsed(),
+                    read_tokens = answered.read_tokens,
+                    read = ?answered.read,
+                    tokens_per_second = format!("{:.1}", answered.speed()),
+                    "chat model answered"
+                );
+                self.unhandled(Reason::LanguageModel, text, Some(&answered.said));
+                (answered.said, answered.raw)
             }
             failed => {
                 match failed {
@@ -118,12 +130,14 @@ impl Worker {
                 // The lead-in went out: the fallback follows it here rather than from the rules.
                 let fallback = "Sorry, I can't help with that yet.";
                 self.speak(fallback, lang, &mut spoken);
-                fallback.to_owned()
+                (fallback.to_owned(), fallback.to_owned())
             }
         };
         if aloud {
-            self.talked = Some((spoken, Instant::now()));
+            self.talked = Some((spoken, raw));
         }
+        // The server's cache now holds this conversation; the base goes back in once it is over.
+        self.talk_base_gone = true;
         Some(answer)
     }
 
@@ -148,15 +162,10 @@ impl Worker {
             && self.conversation.last_talk.is_some_and(|at| at.elapsed() < HISTORY_MAX_AGE)
     }
 
+    /// The system prompt, from what is known now: no call to Home Assistant, so it costs nothing
+    /// before an answer, and it stays the same text, so the server's prompt cache holds it.
     fn talk_prompt(&self) -> String {
-        let people: Vec<String> = self
-            .home_assistant
-            .as_ref()
-            .and_then(|ha| ha.people().ok())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|person| person.name)
-            .collect();
+        let people = &self.talk_people.0;
         let notes: Vec<String> = self.memory.sentences().map(str::to_owned).collect();
         let today = today();
         talk::system_prompt(&TalkContext {
@@ -165,17 +174,62 @@ impl Worker {
             room: self.room.as_deref(),
             today: &today,
             honorific: self.persona.as_ref().map(|persona| persona.honorific()),
-            people: &people,
+            people,
             notes: &notes,
         })
     }
 
+    /// The household's people from Home Assistant, at most every `PEOPLE_REFRESH`; a failed call
+    /// keeps the list it had, as an empty one would change the prompt.
+    fn refresh_talk_people(&mut self) {
+        if self.talk_people.1.is_some_and(|at| at.elapsed() < PEOPLE_REFRESH) {
+            return;
+        }
+        self.talk_people.1 = Some(Instant::now());
+        let Some(ha) = &self.home_assistant else { return };
+        match ha.people() {
+            Ok(people) => self.talk_people.0 = people.into_iter().map(|person| person.name).collect(),
+            Err(error) => warn!(%error, "could not read the household's people for the chat model"),
+        }
+    }
+
+    /// While idle: the base goes back into the chat model's cache in the background, after a
+    /// conversation and when the system prompt changed (a new day, a new note, the room), so the
+    /// next first question does not read it all (2 s on the node; 0.2 s when it is kept).
+    pub(super) fn keep_talk_warm(&mut self) {
+        let Some(chat) = self.config.talk.clone() else { return };
+        self.refresh_talk_people();
+        let system = self.talk_prompt();
+        // Within `HISTORY_MAX_AGE` a request still carries the history and extends what is cached.
+        let over = self.talk_base_gone && !self.conversation.going_on();
+        if system == self.talk_warmed && !over {
+            return;
+        }
+        self.talk_warmed = system.clone();
+        self.talk_base_gone = false;
+        let spawned = std::thread::Builder::new().name("chat-warm".into()).spawn(move || {
+            let start = Instant::now();
+            match chat.warm_up(&system) {
+                Ok(()) => info!(elapsed = ?start.elapsed(), "chat model's base read again"),
+                Err(error) => warn!(%error, "chat model warm-up failed"),
+            }
+        });
+        if let Err(error) = spawned {
+            warn!(%error, "could not start the chat model warm-up");
+        }
+    }
+
     /// Loads the chat model with the prompt it will see, so the first question pays for neither.
-    pub(super) fn warm_talk(&self) {
-        let Some(chat) = &self.config.talk else { return };
+    pub(super) fn warm_talk(&mut self) {
+        let Some(chat) = self.config.talk.clone() else { return };
+        self.refresh_talk_people();
         let start = Instant::now();
-        match chat.warm_up(&self.talk_prompt()) {
-            Ok(()) => info!(model = chat.model(), elapsed = ?start.elapsed(), "chat model warmed up"),
+        let system = self.talk_prompt();
+        match chat.warm_up(&system) {
+            Ok(()) => {
+                info!(model = chat.model(), elapsed = ?start.elapsed(), "chat model warmed up");
+                self.talk_warmed = system;
+            }
             Err(error) => warn!(%error, "chat model not reachable; open talk gets the fallback"),
         }
     }
