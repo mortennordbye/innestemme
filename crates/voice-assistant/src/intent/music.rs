@@ -352,6 +352,49 @@ pub(super) fn music(words: &[String]) -> Option<MusicCommand> {
     }
 }
 
+/// Kinds of music said before "music" with no verb: "soft music" in the follow-up window (20 Nov)
+/// was dropped. Only these, so a sentence that ends in "music" is not a request.
+const STYLES: &[&str] = &[
+    "soft",
+    "calm",
+    "relaxing",
+    "relaxed",
+    "quiet",
+    "chill",
+    "gentle",
+    "mellow",
+    "peaceful",
+    "ambient",
+    "background",
+    "jazz",
+    "jazzy",
+    "classical",
+    "piano",
+    "acoustic",
+    "romantic",
+    "dinner",
+    "happy",
+    "upbeat",
+    "christmas",
+    "rolig",
+    "stille",
+];
+
+/// The whole request is a kind of music: "soft music", "some jazz music", "relaxing music".
+fn bare_style(words: &[String]) -> bool {
+    let mut words: Vec<&str> = words.iter().map(String::as_str).collect();
+    while words.last().is_some_and(|w| TAIL.contains(w)) {
+        words.pop();
+    }
+    let Some((last, before)) = words.split_last() else { return false };
+    let before = before.strip_prefix(&["some"]).or_else(|| before.strip_prefix(&["a", "little"])).unwrap_or(before);
+    ["music", "musikk"].contains(last)
+        && !before.is_empty()
+        && before.len() <= 3
+        && before.iter().all(|w| STYLES.contains(w) || ["and", "nice", "litt", "og"].contains(w))
+        && before.iter().any(|w| STYLES.contains(w))
+}
+
 /// A music request with no room or queueing in it.
 fn music_core(words: &[String]) -> Option<MusicCommand> {
     let has = |w: &str| words.iter().any(|x| x == w);
@@ -410,6 +453,10 @@ fn music_core(words: &[String]) -> Option<MusicCommand> {
             return Some(if name.is_empty() { MusicCommand::Liked } else { MusicCommand::Playlist(name.join(" ")) });
         }
         return Some(MusicCommand::Song(rest.join(" ")));
+    }
+    if bare_style(words) {
+        let play: Vec<String> = std::iter::once("play".to_owned()).chain(words.iter().cloned()).collect();
+        return music_core(&play);
     }
     if words.iter().any(|w| LIGHT_WORDS.contains(&w.as_str())) {
         return None;
@@ -638,6 +685,13 @@ mod tests {
         assert_eq!(music("put the music at 30%."), Some(VolumeTo(30)));
         assert_eq!(music("volume 25"), Some(VolumeTo(25)));
         assert_eq!(music("skru opp lyden med 20 prosent"), Some(VolumeBy(20)));
+        // A kind of music said alone is a play request.
+        assert_eq!(music("Soft music."), song("soft music"));
+        assert_eq!(music("calm music"), song("calm music"));
+        assert_eq!(music("some jazz music"), music("play some jazz music"));
+        assert_eq!(music("relaxing music please"), song("relaxing music"));
+        assert_eq!(music("I like soft music"), None);
+        assert_eq!(music("music"), None);
         // Not music.
         assert_eq!(music("turn off the light in my living room"), None);
         assert_eq!(music("turn up the lights"), None);

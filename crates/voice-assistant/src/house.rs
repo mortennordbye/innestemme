@@ -583,12 +583,10 @@ pub fn routine(words: &[String]) -> Option<Routine> {
     if lockdown && words.len() <= 6 && !asks {
         return Some(Routine::Lockdown);
     }
-    // Said alone, the listener's "look down" (16 Nov) and "leaving" (19 Nov) are the routines; in a
-    // sentence they are ordinary words.
-    match text.as_str() {
-        "look down" => return Some(Routine::Lockdown),
-        "leaving" | "leaving now" => return Some(Routine::Leaving),
-        _ => {}
+    // Said alone, the listener's "look down" (16 Nov) is lockdown; in a sentence it is ordinary
+    // words. A bare "leaving" is `misheard_leaving`: it needs the name.
+    if text == "look down" {
+        return Some(Routine::Lockdown);
     }
     // Before leaving: "I'm off to bed" is bedtime.
     if starts(BEDTIME) {
@@ -598,6 +596,17 @@ pub fn routine(words: &[String]) -> Option<Routine> {
         return Some(Routine::Home);
     }
     starts(LEAVING).then_some(Routine::Leaving)
+}
+
+/// The listener's "I'm leaving" heard without the "I'm": "Leaving." (19 Nov), "You're leaving."
+/// (21 Nov). They are also what a TV or a person in the room says, and the routine turns off the
+/// house, so the engine takes them only when the request was said to the assistant.
+pub fn misheard_leaving(words: &[String]) -> bool {
+    let start = words.iter().position(|w| !OPENERS.contains(&w.as_str())).unwrap_or(words.len());
+    matches!(
+        words[start..].join(" ").as_str(),
+        "leaving" | "you're leaving" | "you are leaving" | "you're leaving now" | "your leaving"
+    )
 }
 
 // --- Home Assistant ----------------------------------------------------------------------------
@@ -1851,7 +1860,10 @@ mod tests {
     fn routines() {
         let routine = |t: &str| routine(&words(t));
         assert_eq!(routine("I'm leaving"), Some(Routine::Leaving));
-        assert_eq!(routine("Leaving."), Some(Routine::Leaving));
+        assert_eq!(routine("Leaving."), None);
+        assert_eq!(routine("we're leaving"), Some(Routine::Leaving));
+        assert_eq!(routine("I am leaving now"), Some(Routine::Leaving));
+        assert_eq!(routine("you're leaving"), None);
         assert_eq!(routine("Look down."), Some(Routine::Lockdown));
         assert_eq!(routine("look down at the floor"), None);
         assert_eq!(routine("the leaving party"), None);
@@ -1874,6 +1886,18 @@ mod tests {
         assert_eq!(routine("hva synes du om åpen kildekode"), Some(Routine::OpenSource));
         assert_eq!(routine("liker du åpen kildekode"), Some(Routine::OpenSource));
         assert_eq!(routine("what is open source"), None);
+    }
+
+    #[test]
+    fn leaving_misheard_alone() {
+        let misheard = |t: &str| misheard_leaving(&words(t));
+        assert!(misheard("Leaving."));
+        assert!(misheard("You're leaving."));
+        assert!(misheard("okay, leaving"));
+        assert!(misheard("you are leaving"));
+        assert!(!misheard("you're leaving already?"));
+        assert!(!misheard("the leaving party"));
+        assert!(!misheard("I'm leaving"));
     }
 
     fn phone(id: &str, owner: &str, location: &str) -> Phone {

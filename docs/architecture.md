@@ -30,6 +30,10 @@ So a cached answer is heard about 0.65 s after the end of a command that acts on
 after one that waits out the full pause; the early announce takes up to the time steps 7-9 need off that.
 `docs/benchmarks.md` has the measurements.
 
+A request acted on from its draft is answered once. A later draft of the same speech with the same words (the
+name taken off), after a sound broke the pause, is not acted on, and the end of the utterance that follows it is
+the same request too. A later draft with more words waits for the end, which answers it.
+
 ## The parts
 
 **Listener.** `listener: parakeet` (English) in the cluster. `listener: whisper` (the default) is the only one that
@@ -56,6 +60,8 @@ before a camera or alarm change for 30 s, the open shopping list for 60 s after 
 the timers' "Which one?" by their own windows. No lead-in plays while one waits, and a new request drops it.
 On the open list, a "no" ("no more", "that's all", "nothing else", "nei", "det var alt") closes it with "Okay,
 that's everything.", and the assistant's own "Anything else?" heard back is dropped, not added.
+A misheard "I'm leaving" ("Leaving.", "You're leaving.") starts the leaving routine only with the name or in a wake
+run whose wake word held the name, never in the follow-up window: the routine turns off the house.
 
 **Follow-ons.** Words no skill takes on their own may go on from the last request answered (`intent/follow_on.rs`):
 "what about inside?" after the weather, "and tomorrow?", "how about in Bergen?", "and the humidity?" after a room's
