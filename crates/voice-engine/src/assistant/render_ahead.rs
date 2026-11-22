@@ -83,9 +83,10 @@ impl Worker {
             .chain(lockdown::LOCKDOWN_THREATS)
             .chain(house::ROUTINE_ANSWERS)
             .chain(Jokes::english())
-            .chain(&["Sorry, I didn't catch that."])
+            .chain(&["Sorry, I didn't catch that.", "Okay."])
             .map(|a| a.to_string())
-            .chain(voice_assistant::smalltalk::all_english(self.config.wake.name()));
+            .chain(voice_assistant::smalltalk::all_english(self.config.wake.name()))
+            .chain(voice_assistant::sound_alike::fixed_questions());
         match &self.persona {
             Some(persona) => texts.extend(answers.flat_map(|a| persona.forms(&a))),
             None => texts.extend(answers),

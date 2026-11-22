@@ -82,6 +82,20 @@ a wake, or with the name up to 5 minutes after the last answer, while no questio
 filters still apply, and "never mind" ends the topic. While a party plays and nothing asked back waits, "<verb> the
 party" with a known sound-alike of "stop" ("shop the party", "drop the party") stops it; "join the party" or cheering does not.
 
+**Ask when unsure.** The look-up takes every "what is ..." that no other rule takes, so a misheard skill word went
+to Wikipedia ("What's therapy?" right after a temperature question). The transcriber gives one transcript, so the
+only sign of doubt is a topic that sounds like a skill word. `sound_alike.rs` keeps a short table of what the
+transcriber writes for the skill words that are easy to mishear (temperature, time, weather, news, timer, alarm,
+lights, music, shopping list): "therapy" for temperature, "thyme" for time, "whether" for weather, "noose" for news.
+It is an explicit list and not an edit distance, which also matched real topics ("tumor" and "timer"), and the skill
+word itself is not in it ("what is music" is a real topic). A "what is" question whose whole topic is in the table
+asks "Did you mean the temperature? Or should I look up therapy?" (the first sentence is fixed and rendered ahead)
+and waits 30 s for the reply, without the name: "the temperature", "the first one" or "first" answers the skill's
+plain request, "look it up", the topic, "the second one" or "Wikipedia" looks it up, and "no", "never mind" or
+"neither" says "Okay.". Other words without the name are the room; with the name they are a new request and drop
+the question. A typed request and "who is", "tell me about" or "look up" never ask. English only for now; Norwegian
+comes later. The log has `asked which` (skill, topic) and `chose` (choice).
+
 **Sir or ma'am.** With `honorific-female` set, the end of the audio before each wake word (1.5 s) goes to a
 speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how
 female the voice sounds. It runs on a thread of its own as the device wakes, about 20 ms on an M4 Pro, and is

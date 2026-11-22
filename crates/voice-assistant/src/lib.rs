@@ -38,6 +38,7 @@ pub mod sensors;
 pub mod shopping;
 pub mod skill;
 pub mod smalltalk;
+pub mod sound_alike;
 pub mod speech_cache;
 pub mod store;
 pub mod stt;

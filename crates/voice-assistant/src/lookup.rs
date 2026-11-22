@@ -128,6 +128,8 @@ fn related(topic: &str, title: &str) -> bool {
 
 pub struct Lookup {
     agent: ureq::Agent,
+    /// Where Wikipedia is asked instead, for tests: they must not reach the real site.
+    base: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -155,19 +157,26 @@ struct SearchHit {
 
 impl Lookup {
     pub fn new(user_agent: &str) -> Self {
-        Self { agent: crate::geo::agent(user_agent) }
+        Self { agent: crate::geo::agent(user_agent), base: None }
+    }
+
+    /// Asks `base` (`http://127.0.0.1:8123`) in place of Wikipedia.
+    pub fn at(user_agent: &str, base: &str) -> Self {
+        Self { base: Some(base.trim_end_matches('/').to_owned()), ..Self::new(user_agent) }
     }
 
     /// The answer about `topic`, or `None` when Wikipedia has no article on it.
     pub fn answer(&self, topic: &str, lang: Lang) -> Result<Option<String>> {
         let host = if lang == Lang::Norwegian { "no.wikipedia.org" } else { "en.wikipedia.org" };
+        let root = self.base.clone().unwrap_or_else(|| format!("https://{host}"));
+        let root = root.as_str();
         // The exact article first ("Black hole"), else the best search hit.
-        let mut extract = self.summary(host, topic)?;
+        let mut extract = self.summary(root, topic)?;
         if extract.is_none() {
             // A hit that shares no word with the topic is a misheard request ("what's the clap
             // shoe" found a murder case), not an answer to it.
-            for title in self.search(host, topic)?.into_iter().filter(|t| related(topic, t)) {
-                extract = self.summary(host, &title)?;
+            for title in self.search(root, topic)?.into_iter().filter(|t| related(topic, t)) {
+                extract = self.summary(root, &title)?;
                 if extract.is_some() {
                     break;
                 }
@@ -179,8 +188,8 @@ impl Lookup {
     }
 
     /// The article's summary, unless there is none or it is a disambiguation page.
-    fn summary(&self, host: &str, title: &str) -> Result<Option<String>> {
-        let url = format!("https://{host}/api/rest_v1/page/summary/{}", encode(&title.replace(' ', "_")));
+    fn summary(&self, root: &str, title: &str) -> Result<Option<String>> {
+        let url = format!("{root}/api/rest_v1/page/summary/{}", encode(&title.replace(' ', "_")));
         let response = self.agent.get(&url).config().http_status_as_error(false).build().call();
         let mut response = response.with_context(|| format!("fetching {url}"))?;
         if response.status() == 404 {
@@ -190,9 +199,9 @@ impl Lookup {
         Ok((summary.kind == "standard" && !summary.extract.is_empty()).then_some(summary.extract))
     }
 
-    fn search(&self, host: &str, topic: &str) -> Result<Vec<String>> {
+    fn search(&self, root: &str, topic: &str) -> Result<Vec<String>> {
         let url = format!(
-            "https://{host}/w/api.php?action=query&list=search&srlimit=3&format=json&utf8=1&srsearch={}",
+            "{root}/w/api.php?action=query&list=search&srlimit=3&format=json&utf8=1&srsearch={}",
             encode(topic)
         );
         let search: Search = self

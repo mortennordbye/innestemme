@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
-use super::conversation::{CONFIRM_WINDOW, ROOM_WINDOW};
+use super::conversation::{CHOICE_WINDOW, CONFIRM_WINDOW, ROOM_WINDOW};
 use super::*;
 
 /// Speech output that says nothing: the dialog is read from the answer events.
@@ -143,6 +143,11 @@ fn answer(path: &str, data: Value, house: &mut House) -> (&'static str, String) 
         };
         return ("200 OK", rendered);
     }
+    // Wikipedia's article summaries, served beside Home Assistant: every topic has an article.
+    if let Some(title) = path.strip_prefix("/api/rest_v1/page/summary/") {
+        let title = title.replace('_', " ");
+        return ("200 OK", json!({ "type": "standard", "extract": format!("{title} is a test article.") }).to_string());
+    }
     let Some(service) = path.strip_prefix("/api/services/") else { return ("404 Not Found", "{}".into()) };
     let (service, response) = match service.split_once('?') {
         Some((service, _)) => (service.replace('/', "."), true),
@@ -223,7 +228,8 @@ impl Worker {
             transit: Transit::new(agent, None, Vec::new()),
             power: None,
             news: News::new(agent, &[], &[]),
-            lookup: Lookup::new(agent),
+            // Nothing listens there: a look-up fails at once rather than reach Wikipedia.
+            lookup: Lookup::at(agent, "http://127.0.0.1:9"),
             live: HashSet::new(),
             home_location: None,
             jokes: Jokes::default(),
@@ -277,7 +283,10 @@ pub(super) struct Dialog {
 
 impl Dialog {
     pub(super) fn new(ha: Option<&FakeHa>) -> Self {
-        let (worker, events, reply) = Worker::for_test(ha.map(FakeHa::client));
+        let (mut worker, events, reply) = Worker::for_test(ha.map(FakeHa::client));
+        if let Some(ha) = ha {
+            worker.lookup = Lookup::at("innestemme-test", &ha.url);
+        }
         Self { worker, events, _reply: reply }
     }
 
@@ -673,6 +682,7 @@ fn never_mind_drops_every_question() {
         "Jarvis, add to the shopping list",
         "Jarvis, set a timer",
         "Jarvis, remember something",
+        "Jarvis, what's therapy",
     ] {
         let mut dialog = Dialog::new(Some(&ha));
         said(dialog.say(asks));
@@ -683,6 +693,7 @@ fn never_mind_drops_every_question() {
         let conversation = &dialog.worker.conversation;
         assert!(conversation.pending_lights.is_none() && conversation.pending_scene.is_none(), "{asks}");
         assert!(conversation.pending_confirm.is_none() && conversation.list_open.is_none(), "{asks}");
+        assert!(conversation.pending_choice.is_none(), "{asks}");
     }
 }
 
@@ -714,7 +725,8 @@ fn an_interrupt_with_nothing_asked_after_it_is_cleared() {
 fn every_question_asked_back_holds_the_lead_in_and_goes_with_a_new_request() {
     let ha = FakeHa::new();
     let weather = "what's the weather";
-    let setups: [(&[&str], Awaiting); 8] = [
+    let setups: [(&[&str], Awaiting); 9] = [
+        (&["Jarvis, what's therapy"], Awaiting::Choice),
         (&["Jarvis, turn on the lights"], Awaiting::LightsRoom),
         (&["Jarvis, activate the relax scene"], Awaiting::SceneRoom),
         (&["Jarvis, arm the alarm"], Awaiting::Confirm),
@@ -1002,4 +1014,126 @@ fn a_kind_of_music_said_alone_plays_it() {
     assert_ne!(bare.0, None);
     dialog.worker.woken(Instant::now(), WakeName::Heard);
     assert_eq!(bare, (dialog.say("play soft music"), ha.take_calls()));
+}
+
+const THERAPY_QUESTION: &str = "Did you mean the temperature? Or should I look up therapy?";
+
+/// What "what's the temperature" answers on its own, for a reply that chose it.
+fn temperature_answer(ha: &FakeHa) -> String {
+    said(Dialog::new(Some(ha)).say("Jarvis, what's the temperature"))
+}
+
+/// 21 November 2026: "What's therapy?" said right after a temperature question was looked up.
+#[test]
+fn a_topic_that_sounds_like_a_skill_word_asks_which() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+    assert_eq!(dialog.worker.awaiting(), Some(Awaiting::Choice));
+    // Nothing is looked up before the reply, and the question needs no lead-in.
+    dialog.worker.render = Some(RenderAhead::spawn(Box::new(Silent)).unwrap());
+    dialog.worker.conversation.pending_choice = None;
+    assert_eq!(dialog.worker.lead_in("what's therapy", Lang::English), None);
+    assert!(dialog.worker.lead_in("what is a black hole", Lang::English).is_some());
+}
+
+#[test]
+fn the_skill_word_or_the_first_one_picks_the_skill() {
+    let ha = FakeHa::new();
+    let expected = temperature_answer(&ha);
+    assert!(!expected.contains("Wikipedia"), "{expected}");
+    for reply in ["the temperature", "temperature", "the first one", "the first", "first"] {
+        let mut dialog = Dialog::new(Some(&ha));
+        assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+        // Without the name, in the follow-up window.
+        assert_eq!(said(dialog.say(reply)), expected, "{reply}");
+        assert_eq!(dialog.worker.awaiting(), None, "{reply}");
+        // The reply made the request whole: it is the topic to go on from.
+        assert_eq!(dialog.worker.conversation.last_request(), Some("what's the temperature"), "{reply}");
+    }
+}
+
+#[test]
+fn look_it_up_the_topic_or_the_second_one_picks_the_look_up() {
+    let ha = FakeHa::new();
+    for reply in ["look it up", "therapy", "the second one", "the second", "Wikipedia"] {
+        let mut dialog = Dialog::new(Some(&ha));
+        assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+        assert_eq!(said(dialog.say(reply)), "According to Wikipedia, therapy is a test article.", "{reply}");
+        assert_eq!(dialog.worker.awaiting(), None, "{reply}");
+    }
+}
+
+#[test]
+fn no_never_mind_or_neither_ends_the_question() {
+    let ha = FakeHa::new();
+    for reply in ["no", "never mind", "neither"] {
+        let mut dialog = Dialog::new(Some(&ha));
+        assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+        assert_eq!(said(dialog.say(reply)), "Okay.", "{reply}");
+        assert_eq!(dialog.worker.awaiting(), None, "{reply}");
+        // The question is gone: "the first one" now is the room talking.
+        assert_eq!(dialog.say("the first one"), None, "{reply}");
+    }
+}
+
+#[test]
+fn the_choice_goes_quietly_after_its_window() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+    let choice = dialog.worker.conversation.pending_choice.as_mut().unwrap();
+    asked_earlier(&mut choice.at, CHOICE_WINDOW + Duration::from_secs(1));
+    assert_eq!(dialog.worker.awaiting(), None);
+    // In the follow-up window, without the name: no longer taken as the reply.
+    assert_eq!(dialog.say("the first one"), None);
+    assert_eq!(dialog.answers(), None);
+}
+
+#[test]
+fn other_words_after_the_choice_are_a_new_request() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+    // Not a choice, without the name: the room talking, and the question still waits.
+    assert_eq!(dialog.say("we should get going"), None);
+    assert_eq!(dialog.worker.awaiting(), Some(Awaiting::Choice));
+    assert_eq!(said(dialog.say("Jarvis, what time is it")), time_of_day(Lang::English));
+    assert_eq!(dialog.worker.awaiting(), None);
+    assert!(dialog.worker.conversation.pending_choice.is_none());
+}
+
+#[test]
+fn a_real_topic_is_looked_up_without_asking() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(
+        said(dialog.say("Jarvis, what is a black hole?")),
+        "According to Wikipedia, black hole is a test article."
+    );
+    assert_eq!(dialog.worker.awaiting(), None);
+}
+
+#[test]
+fn a_typed_topic_that_sounds_like_a_skill_word_is_looked_up() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    // Typed words are spelt as meant, and a web button cannot hear the reply.
+    assert_eq!(said(dialog.compose_aside("what's therapy")), "According to Wikipedia, therapy is a test article.");
+    assert_eq!(dialog.worker.awaiting(), None);
+}
+
+#[test]
+fn a_choice_answered_from_its_draft_is_not_answered_again() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    let (draft, whole) = draft_audio();
+    // A question is not acted on from its draft: "what's therapy" may go on.
+    assert_eq!(dialog.draft("Jarvis, what's therapy?", &draft), None);
+    dialog.worker.conversation.draft = None;
+    assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+    // A reply acted on from its draft is answered once: the utterance's end is the same reply.
+    assert_eq!(said(dialog.draft("never mind", &draft)), "Okay.");
+    dialog.worker.utterance(&whole, Instant::now());
+    assert_eq!(dialog.answers(), None);
 }

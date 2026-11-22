@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use voice_assistant::house::HouseCommand;
 use voice_assistant::intent::MusicCommand;
 use voice_assistant::llm::Turn;
+use voice_assistant::sound_alike::SkillWord;
 use voice_assistant::whisper::Transcript;
 
 use super::hush::Hushed;
@@ -25,6 +26,16 @@ pub(super) const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 /// confirm and the timers' "Which one?": a reply comes within seconds, and "the kitchen" said much
 /// later is about something else, not a light to switch.
 pub(super) const ROOM_WINDOW: Duration = Duration::from_secs(30);
+/// How long "Did you mean the temperature? Or should I look up therapy?" waits for its reply: as
+/// long as the other questions asked back.
+pub(super) const CHOICE_WINDOW: Duration = Duration::from_secs(30);
+
+/// A look-up topic that sounds like a skill word, both readings kept until the reply picks one.
+pub(super) struct PendingChoice {
+    pub(super) skill: &'static SkillWord,
+    pub(super) topic: String,
+    pub(super) at: Instant,
+}
 
 /// The wake word that opened the conversation, from a satellite.
 pub(super) struct Wake {
@@ -71,6 +82,8 @@ pub(super) enum Awaiting {
     Confirm,
     /// "Which room?" for a scene.
     SceneRoom,
+    /// "Did you mean the temperature? Or should I look up therapy?"
+    Choice,
 }
 
 /// How a turn ends.
@@ -95,6 +108,8 @@ pub(super) struct Conversation {
     pub(super) pending_scene: Option<(String, Instant)>,
     /// A camera or alarm change waiting for "yes": a misheard request must not switch them.
     pub(super) pending_confirm: Option<(HouseCommand, Instant)>,
+    /// "Did you mean the temperature?": the skill or the look-up, as the reply picks.
+    pub(super) pending_choice: Option<PendingChoice>,
     /// When an item was last added: the list takes more without "add" until `LIST_OPEN` later.
     pub(super) list_open: Option<Instant>,
     /// A satellite woke on its own wake word and nothing has been answered since.
@@ -174,6 +189,11 @@ impl Conversation {
     /// Drops the questions this conversation holds; the timers and the notes hold their own.
     pub(super) fn forget_questions(&mut self) {
         (self.pending_lights, self.pending_scene, self.pending_confirm, self.list_open) = (None, None, None, None);
+        self.pending_choice = None;
+    }
+
+    pub(super) fn choice_asked(&self) -> Option<&PendingChoice> {
+        self.pending_choice.as_ref().filter(|choice| choice.at.elapsed() < CHOICE_WINDOW)
     }
 
     /// An exchange for the language model's history; the oldest go.
@@ -240,6 +260,8 @@ impl Worker {
             Some(Awaiting::Confirm)
         } else if conversation.scene_asked() {
             Some(Awaiting::SceneRoom)
+        } else if conversation.choice_asked().is_some() {
+            Some(Awaiting::Choice)
         } else {
             None
         }

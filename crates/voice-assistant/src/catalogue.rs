@@ -503,7 +503,9 @@ pub const SKILLS: &[Skill] = &[
         name: "Look it up",
         group: "Information",
         icon: "search",
-        does: "Who someone is or what something is: the first sentences of its Wikipedia article.",
+        does: "Who someone is or what something is: the first sentences of its Wikipedia article. A topic that \
+               sounds like a skill word (\"what's therapy?\") first asks: \"Did you mean the temperature? Or \
+               should I look up therapy?\"",
         source: "Wikipedia (English, or Norwegian in Norwegian)",
         calls: &["en.wikipedia.org", "no.wikipedia.org"],
         examples: &["Who is Jonas Gahr Støre?", "What is a black hole?", "Tell me about the Eiffel Tower"],
