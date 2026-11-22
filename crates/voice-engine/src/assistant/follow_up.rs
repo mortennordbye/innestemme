@@ -218,17 +218,31 @@ impl Worker {
         Some((meant, intent))
     }
 
-    /// Whether words heard without the name repeat any sentence spoken lately, a question too: a
-    /// chat answer ends in one ("And you?") and its earlier sentences come back as well.
-    pub(super) fn echoes_any(&self, heard: &str) -> bool {
-        let recent = || self.said.iter().filter(|(at, _)| at.elapsed() < ECHO_WINDOW).map(|(_, text)| text);
-        if recent().any(|text| is_echo(&[text.trim_end_matches('?')], heard)) {
+    /// Whether words heard without the name are the end of the answer heard back, in a
+    /// conversation: a run of the words of its last two sentences, as the microphone opens while
+    /// the speaker still plays it ("Sir.", "Reality of this home.", 22 Nov). Not all the words of
+    /// the answers lately, as `echo` takes them: a chat answer has so many that "Tell me." was
+    /// dropped as one (22 Nov).
+    pub(super) fn tail_echo(&self, heard: &str) -> bool {
+        let tail: Vec<String> = self
+            .said
+            .iter()
+            .rev()
+            .take(2)
+            .filter(|(at, _)| at.elapsed() < ECHO_WINDOW)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .flat_map(|(_, text)| echo_words(text))
+            .collect();
+        let heard = echo_words(heard);
+        if heard.is_empty() {
             return true;
         }
-        // A word or two with nothing new: "Sir." from the end of "..., sir?" was answered (22 Nov).
-        let heard = echo_words(heard);
-        let said: HashSet<String> = recent().flat_map(|text| echo_words(text)).collect();
-        heard.len() <= 2 && heard.iter().all(|w| said.contains(w))
+        // Up to four words exactly; a longer stretch may have one word misheard.
+        let misheard = usize::from(heard.len() > 4);
+        tail.windows(heard.len())
+            .any(|window| window.iter().zip(&heard).filter(|(said, heard)| said != heard).count() <= misheard)
     }
 
     /// Whether words heard without the name are an answer spoken lately.

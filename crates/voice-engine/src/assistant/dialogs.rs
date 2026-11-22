@@ -1239,6 +1239,7 @@ fn a_stop_not_found_takes_the_name_said_again() {
 struct FakeChat {
     url: String,
     asked: Arc<Mutex<Vec<Value>>>,
+    reply: Arc<Mutex<&'static str>>,
 }
 
 impl FakeChat {
@@ -1246,14 +1247,16 @@ impl FakeChat {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let asked = Arc::new(Mutex::new(Vec::new()));
-        let kept = asked.clone();
+        let reply = Arc::new(Mutex::new(reply));
+        let (kept, replies) = (asked.clone(), reply.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
+                let reply = *replies.lock().unwrap();
                 let _ = Self::serve(stream, reply, &kept);
             }
         });
-        Self { url, asked }
+        Self { url, asked, reply }
     }
 
     fn serve(stream: std::net::TcpStream, reply: &str, asked: &Mutex<Vec<Value>>) -> std::io::Result<()> {
@@ -1375,11 +1378,11 @@ fn open_talk_after_a_wake_word_without_the_name_is_the_room() {
 
 #[test]
 fn the_chat_answer_heard_back_goes_nowhere() {
-    let chat = FakeChat::new("The bins go out on Tuesday morning. Anything else?");
+    let chat = FakeChat::new("Anything else? The bins go out on Tuesday morning.");
     let mut dialog = chat.dialog(None);
     assert!(dialog.say("Jarvis, tell me something about the week").is_some());
-    // Its first sentence from the speaker, in the follow-up window.
-    assert_eq!(dialog.say("the bins go out on Tuesday morning"), None);
+    // The end of the answer from the speaker, in the follow-up window, a word misheard.
+    assert_eq!(dialog.say("the bins go out on Tuesday mourning"), None);
     assert_eq!(chat.asked.lock().unwrap().len(), 1);
 }
 
@@ -1413,4 +1416,17 @@ fn a_word_of_the_chat_answer_heard_back_goes_nowhere() {
     assert_eq!(chat.asked.lock().unwrap().len(), 1);
     // A short reply of its own still goes on.
     assert!(dialog.say("Chocolate ones.").is_some());
+}
+
+/// 22 November 2026: "Tell me." after an answer about a Bible quote was dropped as the answer
+/// heard back, as an earlier answer had said "Please tell me your desire."
+#[test]
+fn a_short_reply_in_words_said_earlier_goes_on() {
+    let chat = FakeChat::new("You want what, sir? Please tell me your desire.");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, I want").is_some());
+    *chat.reply.lock().unwrap() = "Psalm 23 is rather profound. It speaks of comfort.";
+    assert!(dialog.say("What is your favourite Bible quote?").is_some());
+    assert!(dialog.say("Tell me.").is_some());
+    assert_eq!(chat.asked.lock().unwrap().len(), 3);
 }
