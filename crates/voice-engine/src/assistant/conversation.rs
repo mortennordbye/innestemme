@@ -114,6 +114,9 @@ pub(super) struct Conversation {
     /// The last request answered, and when: "what about inside?" goes on from it. As text, which
     /// parses back to its intent.
     pub(super) last_request: Option<(String, Instant)>,
+    /// The request a reply to a question asked back made whole ("the kitchen" after "Which room?"),
+    /// kept as the last request in its place.
+    pub(super) answered_as: Option<String>,
     /// The latest draft and its transcripts.
     pub(super) draft: Option<(Vec<i16>, Vec<Transcript>)>,
     /// A command was acted on from this draft: a later draft or the utterance that starts with
@@ -182,8 +185,9 @@ impl Conversation {
 
     /// The request answered, for follow-ons. Several requests in one sentence leave no topic.
     pub(super) fn answered(&mut self, request: &str) {
-        let one = voice_assistant::intent::split_commands(request).is_none();
-        self.last_request = one.then(|| (request.to_owned(), Instant::now()));
+        let request = self.answered_as.take().unwrap_or_else(|| request.to_owned());
+        let one = voice_assistant::intent::split_commands(&request).is_none();
+        self.last_request = one.then(|| (request, Instant::now()));
     }
 
     /// The last request answered, while it is recent enough to go on from: as long as the language
@@ -260,7 +264,8 @@ impl Worker {
                 self.interrupted.store(false, Relaxed);
             }
             TurnEnd::Ended => {
-                self.conversation.follow_up_until = None;
+                // "Never mind" ends the topic too.
+                (self.conversation.follow_up_until, self.conversation.last_request) = (None, None);
                 self.emit(AssistantEvent::Done);
             }
             TurnEnd::Done => {

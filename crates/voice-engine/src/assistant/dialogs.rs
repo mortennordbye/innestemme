@@ -763,6 +763,19 @@ fn a_follow_on_goes_on_from_the_weather_to_inside() {
 }
 
 #[test]
+fn a_follow_on_goes_on_from_the_room_given_to_which_room() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, turn off the lights")), "Which room?");
+    assert_eq!(said(dialog.say("the kitchen")), "Okay, the kitchen lights are off.");
+    assert_eq!(said(dialog.say("and the living room")), "Okay, the living room lights are off.");
+    assert_eq!(
+        ha.take_calls(),
+        [r#"light.turn_off {"entity_id":["light.kitchen"]}"#, r#"light.turn_off {"entity_id":["light.sofa"]}"#]
+    );
+}
+
+#[test]
 fn a_follow_on_switches_the_lights_in_another_room() {
     let ha = FakeHa::new();
     let mut dialog = Dialog::new(Some(&ha));
@@ -772,6 +785,13 @@ fn a_follow_on_switches_the_lights_in_another_room() {
         ha.take_calls(),
         [r#"light.turn_off {"entity_id":["light.kitchen"]}"#, r#"light.turn_off {"entity_id":["light.sofa"]}"#]
     );
+    // Not a room on its own: the room talking.
+    assert_eq!(dialog.say("and the kitchen is a mess"), None);
+    // After "never mind" there is no topic to go on from.
+    said(dialog.say("Jarvis, turn off the kitchen lights"));
+    assert_eq!(dialog.say("Jarvis, never mind"), None);
+    assert_eq!(said(dialog.say("Jarvis, and the living room")), "Sorry, I can't help with that yet.");
+    ha.take_calls();
     // A new session goes on from nothing said before it.
     dialog.worker.conversation.restart();
     assert_eq!(said(dialog.say("Jarvis, and the kitchen")), "Sorry, I can't help with that yet.");
@@ -807,4 +827,15 @@ fn an_unclear_party_request_stops_the_party_that_plays() {
     dialog.worker.open_source_party = true;
     // The test has no Hue bridge, so no party mode is on to stop; the request is the stop.
     assert_eq!(said(dialog.say("Jarvis, shop the party")), "There's no party on.");
+    // Cheering is no stop.
+    assert_eq!(dialog.say("great party"), None);
+    // A question asked back takes the words as its reply.
+    assert_eq!(said(dialog.say("Jarvis, remember something")), "Remember what?");
+    assert_ne!(said(dialog.say("drop the party")), "There's no party on.");
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    dialog.worker.open_source_party = true;
+    said(dialog.say("Jarvis, add eggs to the shopping list"));
+    assert!(dialog.worker.conversation.list_is_open());
+    assert_ne!(said(dialog.say("drop the party")), "There's no party on.");
 }

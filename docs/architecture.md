@@ -59,13 +59,16 @@ that's everything.", and the assistant's own "Anything else?" heard back is drop
 
 **Follow-ons.** Words no skill takes on their own may go on from the last request answered (`intent/follow_on.rs`):
 "what about inside?" after the weather, "and tomorrow?", "how about in Bergen?", "and the humidity?" after a room's
-temperature, "and the hallway" after switching the kitchen lights, "a bit more" or "again" after a volume step. They
-must open like one ("what about", "how about", "and", "what's it like", "hva med", "og"); a volume step needs only
-"more" or "again". The rest is joined to the last topic in a sentence the rules parse as usual, and the result is
-kept only in the same skill: the forecast and the rooms' readings count as one, and so do switching, asking about and
-dimming the lights. A follow-on is taken in the follow-up window, after a wake, or with the name up to 5 minutes after
-the last answer, while no question asked back waits; the usual filters still apply. While a party plays, "<verb> the
-party" without a word that starts one ("shop the party") stops it.
+temperature, "and the hallway" after switching the kitchen lights, "a bit more" or "and again" after a volume step.
+They must open like one ("what about", "how about", "and", "what's it like", "hva med", "og"); a volume step also
+takes "a bit more" or "more please" without one, but not a bare "more" or "again". For the lights the rest must be a
+room and nothing more ("the hallway", "in the bedroom", "the hallway lights too"), so "and not the hallway" switches
+nothing. The rest is joined to the last topic in a sentence the rules parse as usual, and the result is kept only in
+the same skill: the forecast and the rooms' readings count as one, and so do switching, asking about and dimming the
+lights. A room given to "Which room?" counts as the whole request. A follow-on is taken in the follow-up window, after
+a wake, or with the name up to 5 minutes after the last answer, while no question asked back waits; the usual
+filters still apply, and "never mind" ends the topic. While a party plays and nothing asked back waits, "<verb> the
+party" with a verb that neither starts nor stops it ("shop the party") stops it; cheering ("great party") does not.
 
 **Sir or ma'am.** With `honorific-female` set, the end of the audio before each wake word (1.5 s) goes to a
 speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how

@@ -110,18 +110,28 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
     Some(PartyCommand::On(pace))
 }
 
-/// Words that name the party but neither start nor stop it, short enough to be a request:
-/// "shop the party", "get rid of the party". While a party is on, they mean stop. Not about its
-/// music ("pause the party music"), and not talk about one ("I loved that party").
+/// "<verb> the party" where the verb neither starts nor stops it: "shop the party", "drop the
+/// party". While a party is on, it means stop. Cheering ("great party", "love this party", "party
+/// all night") and talk about one do not have that shape.
 pub fn unclear(words: &[String]) -> bool {
-    const TALK: &[&str] = &["i", "we", "you", "they", "he", "she", "it", "that", "what", "jeg", "vi", "det"];
-    const MUSIC: &[&str] = &["music", "playlist", "song", "songs", "track", "musikk"];
-    let has = |list: &[&str]| words.iter().any(|w| list.contains(&w.as_str()));
-    words.len() <= 5
-        && has(PARTY_WORDS)
-        && !has(MUSIC)
-        && !words.first().is_some_and(|w| TALK.contains(&w.as_str()))
-        && parse(words).is_none()
+    const NOT_VERBS: &[&str] = &[
+        "great", "love", "loved", "best", "good", "nice", "awesome", "fun", "cool", "this", "that", "the", "a", "an",
+        "my", "our", "your", "their", "his", "her", "what", "what's", "whats", "such", "whole", "big", "after", "at",
+        "to", "in", "for", "of", "i", "we", "you", "it", "is", "and", "og",
+    ];
+    let mut words: Vec<&str> = words.iter().map(String::as_str).collect();
+    while words.last().is_some_and(|w| ["now", "please", "nå", "takk"].contains(w)) {
+        words.pop();
+    }
+    match words.as_slice() {
+        [verb, "the", party] => {
+            PARTY_WORDS.contains(party)
+                && !PARTY_WORDS.contains(verb)
+                && !NOT_VERBS.contains(verb)
+                && parse(&words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>()).is_none()
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -184,7 +194,7 @@ mod tests {
     #[test]
     fn unclear_party_requests() {
         let unclear = |text: &str| super::unclear(&crate::dialog::words(text));
-        for stop in ["Shop the party.", "Get rid of the party", "Shop the party please", "Drop the party"] {
+        for stop in ["Shop the party.", "Shop the party please", "Drop the party", "Slop the party now"] {
             assert!(unclear(stop), "{stop}");
         }
         for not in [
@@ -196,6 +206,17 @@ mod tests {
             "I loved that party",
             "I didn't get invited to the party",
             "Turn off the lights",
+            "Get rid of the party",
+            // Cheering in the follow-up window.
+            "Great party",
+            "The party",
+            "Party people",
+            "Party all night",
+            "This party rocks",
+            "Love this party",
+            "Best party ever",
+            "Party hats",
+            "Love the party",
         ] {
             assert!(!unclear(not), "{not}");
         }

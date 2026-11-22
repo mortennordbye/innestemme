@@ -906,7 +906,11 @@ impl Worker {
                 })
             }
             Awaiting::LightsRoom => match lights {
-                Some((on, _)) if unknown => Some(self.lights(text, on, lang)),
+                Some((on, _)) if unknown => {
+                    let switch = if on { "on" } else { "off" };
+                    self.conversation.answered_as = Some(format!("turn {switch} the lights in {text}"));
+                    Some(self.lights(text, on, lang))
+                }
                 _ => None,
             },
             // "Milk and eggs", "og brunost", "add bacon too": more items while the list is open;

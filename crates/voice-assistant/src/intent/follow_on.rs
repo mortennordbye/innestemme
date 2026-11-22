@@ -39,8 +39,13 @@ pub fn follow_on(last: &Intent, text: &str) -> Option<(String, Intent)> {
     let words = crate::dialog::words(text);
     let rest = after_start(&words);
     if let Intent::Music(step @ (MusicCommand::Louder | MusicCommand::Quieter | MusicCommand::VolumeBy(_))) = last {
-        // "More" and "again" are follow-ons on their own: nothing else is that short.
-        let rest = rest.unwrap_or(&words);
+        // "A bit more" and "more please" go on without an opening; a bare "more" or "again" is too
+        // often a word of the room's.
+        let rest = match rest {
+            Some(rest) => rest,
+            None if words.len() >= 2 => &words,
+            None => return None,
+        };
         let more = !rest.is_empty()
             && rest.iter().all(|w| MORE.contains(&w.as_str()))
             && rest.iter().any(|w| MORE_KEYS.contains(&w.as_str()));
@@ -81,13 +86,14 @@ pub fn follow_on(last: &Intent, text: &str) -> Option<(String, Intent)> {
                 format!("what's the {} {said}", reading_words(*reading))
             }
         }
-        // A room or a light must be named: "and tomorrow" switches nothing.
-        Intent::Lights { on, .. } if names_light(&rest) => {
-            format!("turn {} {}", if *on { "on" } else { "off" }, light_target(&rest))
+        // Only a room on its own: "and tomorrow" switches nothing, and "and not the hallway" or "and
+        // the bedroom is a mess" are no request for its lights.
+        Intent::Lights { on, .. } => {
+            format!("turn {} the lights in the {}", if *on { "on" } else { "off" }, bare_room(&rest)?)
         }
-        Intent::LightsStatus { .. } if names_light(&rest) => format!("are {} on", light_target(&rest)),
-        Intent::LightLevel { level, .. } if names_light(&rest) => {
-            let target = light_target(&rest);
+        Intent::LightsStatus { .. } => format!("are the lights on in the {}", bare_room(&rest)?),
+        Intent::LightLevel { level, .. } => {
+            let target = format!("the lights in the {}", bare_room(&rest)?);
             match level {
                 LightLevel::Percent(percent) => format!("set {target} to {percent} percent"),
                 LightLevel::Brighter => format!("make {target} brighter"),
@@ -192,20 +198,20 @@ fn reading_words(reading: Reading) -> &'static str {
     }
 }
 
-fn names_light(rest: &[String]) -> bool {
-    rest.iter().any(|w| LIGHT_WORDS.contains(&w.as_str())) || crate::ha::room_named(rest).is_some()
-}
-
-/// "The hallway" as the lights in it; "the desk lamp" as it is.
-fn light_target(rest: &[String]) -> String {
-    let said = rest.join(" ");
-    if rest.iter().any(|w| LIGHT_WORDS.contains(&w.as_str())) {
-        return said;
+/// The room that `rest` is and nothing more: "the hallway", "in the bedroom", "the kitchen lights",
+/// "the hallway as well"; its English name.
+fn bare_room(rest: &[String]) -> Option<&'static str> {
+    let mut words: Vec<String> = rest.to_vec();
+    if words.ends_with(&["as".to_owned(), "well".to_owned()]) {
+        words.truncate(words.len() - 2);
     }
-    match rest.first().map(String::as_str) {
-        Some("in" | "i" | "på") => format!("the lights {said}"),
-        _ => format!("the lights in {said}"),
+    while words.last().is_some_and(|w| LIGHT_WORDS.contains(&w.as_str()) || TAIL.contains(&w.as_str())) {
+        words.pop();
     }
+    let lead = words.iter().take(2).take_while(|w| ["in", "i", "på", "the"].contains(&w.as_str())).count();
+    let words = &words[lead..];
+    let phrase = words.join(" ");
+    crate::ha::room_named(words).filter(|room| !phrase.is_empty() && crate::ha::is_room(&phrase, room))
 }
 
 #[cfg(test)]
@@ -297,12 +303,15 @@ mod tests {
 
     #[test]
     fn the_volume_steps_again() {
-        for more in ["a bit more", "more", "again", "and again", "even more", "litt mer"] {
+        for more in ["a bit more", "more please", "and more", "and again", "even more", "litt mer"] {
             assert_eq!(on("turn it up", more), Some(Intent::Music(MusicCommand::Louder)), "{more}");
             assert_eq!(on("turn the music down", more), Some(Intent::Music(MusicCommand::Quieter)), "{more}");
         }
-        assert_eq!(on("turn it up by 10 percent", "more"), Some(Intent::Music(MusicCommand::VolumeBy(10))));
+        assert_eq!(on("turn it up by 10 percent", "a bit more"), Some(Intent::Music(MusicCommand::VolumeBy(10))));
         assert_eq!(on("turn it up", "a bit"), None);
+        // Alone, one word is as likely the room's.
+        assert_eq!(on("turn it up", "more"), None);
+        assert_eq!(on("turn it up", "again"), None);
         assert_eq!(on("turn it up", "more cowbell"), None);
     }
 
@@ -320,6 +329,17 @@ mod tests {
         assert_eq!(on("what's the weather", "the kitchen"), None);
         assert_eq!(on("what's the weather", "tomorrow"), None);
         assert_eq!(on("turn off the kitchen lights", "the hallway"), None);
+        // More than a room after the opening.
+        for not in [
+            "and not the hallway",
+            "and leave the hallway",
+            "and the hallway stays on",
+            "and the bedroom is a mess",
+            "what about the kitchen table",
+            "and then the hallway",
+        ] {
+            assert_eq!(on("turn off the kitchen lights", not), None, "{not}");
+        }
         assert_eq!(on("what's the weather", "and"), None);
         // Requests with no topic to go on from.
         assert_eq!(on("tell me a joke", "and another one?"), None);

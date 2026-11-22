@@ -206,7 +206,8 @@ impl Worker {
     /// While the party is on, "<verb> the party" without a word that starts one is a misheard
     /// "stop": "Slope the party." restarted it (16 Nov).
     pub(super) fn party_stop(&self, request: &str, parsed: &Intent) -> Option<(String, Intent)> {
-        let partying = self.config.party.mode().is_some() || self.open_source_party;
+        // A question asked back takes the words as its reply: a list item, a note.
+        let partying = (self.config.party.mode().is_some() || self.open_source_party) && self.awaiting().is_none();
         let words = voice_assistant::dialog::words(request);
         if !partying || *parsed != Intent::Unknown || !voice_assistant::party::unclear(&words) {
             return None;
