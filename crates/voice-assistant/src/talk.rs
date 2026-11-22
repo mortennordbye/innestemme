@@ -90,7 +90,7 @@ impl Talk {
     /// Gemma 4's sliding-window attention lets the server keep only a prompt that the next one
     /// extends, so the base is read again after each conversation (0.2 s while it is still kept).
     pub fn warm_up(&self, system: &str) -> Result<()> {
-        let mut body = self.body(system, &[], None, Lang::English);
+        let mut body = self.body(system, &[], None, None, Lang::English);
         body["stream"] = json!(false);
         body["options"]["num_predict"] = json!(1);
         let mut response = self
@@ -106,16 +106,19 @@ impl Talk {
     }
 
     /// The answer to `request`, each sentence handed to `sentence` as soon as it is whole; it
-    /// returns false to stop (the answer was interrupted).
+    /// returns false to stop (the answer was interrupted). `opening` is what was already said (the
+    /// lead-in, "Of course, sir."): the model goes on from it, so it neither repeats an opener nor
+    /// spends its first words on one.
     pub fn answer(
         &self,
         system: &str,
         history: &[Turn],
         request: &str,
+        opening: Option<&str>,
         lang: Lang,
         sentence: &mut dyn FnMut(&str) -> bool,
     ) -> Result<Answered> {
-        let body = self.body(system, history, Some(request), lang);
+        let body = self.body(system, history, Some(request), opening, lang);
         let response = self
             .agent
             .post(&format!("{}/api/chat", self.url))
@@ -168,13 +171,20 @@ impl Talk {
                 Ok(answered)
             }
             Err(error) => Err(error),
-            Ok(()) => Ok(answered),
+            Ok(()) => {
+                // The history holds the opening too, as the server's cache does; with a space, as
+                // the joined text then reads well and still matched the cache on the node.
+                if let Some(opening) = opening {
+                    answered.raw = format!("{opening} {}", answered.raw);
+                }
+                Ok(answered)
+            }
         }
     }
 
     /// The request: the base (the system prompt and the examples, the same each time), the
     /// conversation, and `request`. Without one, the base alone, as `warm_up` sends it.
-    fn body(&self, system: &str, history: &[Turn], request: Option<&str>, lang: Lang) -> Value {
+    fn body(&self, system: &str, history: &[Turn], request: Option<&str>, opening: Option<&str>, lang: Lang) -> Value {
         let mut messages = vec![json!({ "role": "system", "content": system })];
         for (user, assistant) in EXAMPLES {
             messages.push(json!({ "role": "user", "content": user }));
@@ -190,6 +200,9 @@ impl Talk {
                 Lang::Norwegian => format!("{request} (svar på norsk bokmål)"),
             };
             messages.push(json!({ "role": "user", "content": request }));
+        }
+        if let Some(opening) = opening {
+            messages.push(json!({ "role": "assistant", "content": opening }));
         }
         json!({
             "model": self.model,
@@ -403,7 +416,7 @@ mod tests {
     fn the_request_turns_thinking_off_and_sets_the_threads() {
         let talk = Talk::new("http://ollama:11434/", "gemma4:e2b", 4, Duration::from_secs(30));
         let history = [Turn { user: "How are you?".into(), assistant: "Quite well.".into() }];
-        let body = talk.body("system", &history, Some("Why?"), Lang::English);
+        let body = talk.body("system", &history, Some("Why?"), None, Lang::English);
         assert_eq!(body["think"], false);
         assert_eq!(body["options"]["num_thread"], 4);
         assert_eq!(body["messages"][0]["role"], "system");
@@ -413,8 +426,12 @@ mod tests {
         assert_eq!(body["messages"][n + 1]["content"], "Quite well.");
         assert_eq!(body["messages"][n + 2]["content"], "Why?");
         // The base alone ends with the last example: a conversation extends it.
-        let base = talk.body("system", &[], None, Lang::English);
+        let base = talk.body("system", &[], None, None, Lang::English);
         assert_eq!(base["messages"].as_array().unwrap().last().unwrap()["content"], EXAMPLES[2].1);
+        // The lead-in already spoken goes last, for the model to go on from.
+        let led = talk.body("system", &[], Some("Tell me a poem."), Some("Of course, sir."), Lang::English);
+        let last = led["messages"].as_array().unwrap().last().unwrap().clone();
+        assert_eq!((last["role"].as_str(), last["content"].as_str()), (Some("assistant"), Some("Of course, sir.")));
         assert_eq!(talk.url, "http://ollama:11434");
     }
 
