@@ -35,6 +35,14 @@ impl Worker {
         if intent == Intent::Unknown && self.config.llm.is_none() {
             return None;
         }
+        // "What's therapy?" asks which was meant: "Let me look that up" would answer the question
+        // before it is asked.
+        if first.is_none()
+            && matches!(intent, Intent::Lookup(_))
+            && voice_assistant::sound_alike::sounds_like_skill(text).is_some()
+        {
+            return None;
+        }
         let leads = intent.meta().lead?;
         self.lead_turn = self.lead_turn.wrapping_add(1);
         Some(lead_sentence(leads[self.lead_turn % leads.len()], self.persona.as_ref().map(Persona::honorific)))

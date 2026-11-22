@@ -54,6 +54,7 @@ use voice_assistant::persona::Persona;
 use voice_assistant::power::Power;
 use voice_assistant::shopping::{Change, ListCommand, ShoppingList};
 use voice_assistant::skill::LightChange;
+use voice_assistant::sound_alike::{self, Choice};
 use voice_assistant::timer::{self, Notice, Timers};
 use voice_assistant::transit::Transit;
 use voice_assistant::tts::{self, Tts};
@@ -71,7 +72,7 @@ use crate::render::RenderAhead;
 use crate::screen::Screen;
 use crate::unhandled::{Reason, UnhandledLog};
 
-use conversation::{AfterAnswer, Awaiting, Conversation, TurnEnd, Wake};
+use conversation::{AfterAnswer, Awaiting, Conversation, PendingChoice, TurnEnd, Wake};
 use follow_up::room_talk;
 use home::confirmation;
 use hush::{HUSH_CAP, HUSH_QUIET};
@@ -647,7 +648,9 @@ impl Worker {
         };
         let (request, addressed) = request;
         let request = self.config.wake.drop_trailing(&request);
-        if !addressed && self.echo(&request) {
+        // The end of "... Or should I look up therapy?" heard back would be a look-up of its own.
+        let choice_echo = |asked: &PendingChoice| sound_alike::echoes_question(&request, &asked.topic);
+        if !addressed && (self.echo(&request) || self.conversation.choice_asked().is_some_and(choice_echo)) {
             info!(text = heard.text, "own answer heard");
             return;
         }
@@ -695,6 +698,11 @@ impl Worker {
             // still face the room-talk filter.
             Some(Awaiting::TimerDuration | Awaiting::WhichTimer) => self.timers.takes_answer(&request),
             Some(Awaiting::LightsRoom | Awaiting::SceneRoom | Awaiting::ListItems) => true,
+            // "Did you mean the temperature?" takes only a choice ("the first one", "look it up").
+            Some(Awaiting::Choice) => self
+                .conversation
+                .choice_asked()
+                .is_some_and(|asked| sound_alike::choice(&request, asked.skill, &asked.topic).is_some()),
             // "Remember what?" is answered like any request: its answer still faces the filters.
             Some(Awaiting::RememberWhat) | None => false,
         };
@@ -870,6 +878,9 @@ impl Worker {
             if let Some(answer) = self.reply(text, &intent, lang) {
                 return Some(answer);
             }
+            if let Some(question) = self.ask_which(text, lang) {
+                return Some(question);
+            }
         }
         // "Where is the spare key": a note about it, unless a person, a zone, a phone or a known place
         // is meant ("where's my phone" still rings it).
@@ -921,6 +932,7 @@ impl Worker {
         let lights = self.conversation.pending_lights.take();
         let scene = self.conversation.pending_scene.take();
         let confirm = self.conversation.pending_confirm.take();
+        let choice = self.conversation.pending_choice.take();
         self.conversation.list_open = None;
         let unknown = *intent == Intent::Unknown;
         let answer = match awaiting? {
@@ -967,12 +979,58 @@ impl Worker {
                 }
                 _ => None,
             },
+            Awaiting::Choice => choice.and_then(|asked| self.choose(text, asked, lang)),
         };
         if answer.is_none() {
             self.timers.clear_pending();
             self.memory.clear_question();
         }
         answer
+    }
+
+    /// "What's therapy?": a look-up topic that sounds like a skill word asks which was meant, as
+    /// the transcriber gives one reading and a misheard skill word would go to Wikipedia. Only by
+    /// voice and in English: a typed topic is spelt as meant.
+    fn ask_which(&mut self, text: &str, lang: Lang) -> Option<String> {
+        if lang != Lang::English || intent::split_commands(text).is_some() {
+            return None;
+        }
+        if !matches!(intent::parse(text), Intent::Lookup(_)) {
+            return None;
+        }
+        let (skill, topic) = sound_alike::sounds_like_skill(text)?;
+        info!(skill = skill.word, topic, "asked which");
+        let question = sound_alike::question(skill, &topic);
+        self.conversation.pending_choice = Some(PendingChoice { skill, topic, at: Instant::now() });
+        Some(question)
+    }
+
+    /// The reply to "Did you mean the temperature? Or should I look up therapy?", if it is one.
+    fn choose(&mut self, text: &str, asked: PendingChoice, lang: Lang) -> Option<String> {
+        let PendingChoice { skill, topic, .. } = asked;
+        let choice = sound_alike::choice(text, skill, &topic)?;
+        let chose = match choice {
+            Choice::Skill => skill.word,
+            Choice::Lookup => "look-up",
+            Choice::Neither => "neither",
+        };
+        info!(choice = chose, "chose");
+        match choice {
+            Choice::Skill => {
+                self.conversation.answered_as = Some(skill.request.to_owned());
+                self.act(intent::parse(skill.request), lang)
+            }
+            Choice::Lookup => {
+                self.conversation.answered_as = Some(format!("look up {topic}"));
+                self.act(Intent::Lookup(topic), lang)
+            }
+            // As "never mind" ends a conversation, with a word: no follow-up window, and no topic to
+            // go on from.
+            Choice::Neither => {
+                (self.conversation.follow_up_closed, self.conversation.topic_ended) = (true, true);
+                Some("Okay.".into())
+            }
+        }
     }
 
     /// A reply while the shopping list is open: items, changes, or the list closed.
