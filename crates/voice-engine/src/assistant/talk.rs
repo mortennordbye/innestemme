@@ -86,12 +86,15 @@ impl Worker {
     /// Words without the name, after an answer of the chat model's, that go on with the
     /// conversation ("Tired. Long day." after "And you?"): short, and not that answer heard back.
     pub(super) fn talk_reply(&self, heard: &str) -> bool {
+        self.in_talk() && heard.split_whitespace().count() <= TALK_REPLY_WORDS && !self.tail_echo(heard)
+    }
+
+    /// A conversation with the chat model is going on: its echo filter is `tail_echo`.
+    pub(super) fn in_talk(&self) -> bool {
         self.config.talk.is_some()
             && self.conversation.follow_up()
             && !self.conversation.unnamed()
             && self.conversation.last_talk.is_some_and(|at| at.elapsed() < HISTORY_MAX_AGE)
-            && heard.split_whitespace().count() <= TALK_REPLY_WORDS
-            && !self.echoes_any(heard)
     }
 
     fn talk_prompt(&self) -> String {

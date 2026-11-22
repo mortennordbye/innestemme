@@ -658,7 +658,8 @@ impl Worker {
         let request = self.config.wake.drop_trailing(&request);
         // The end of "... Or should I look up therapy?" heard back would be a look-up of its own.
         let choice_echo = |asked: &PendingChoice| sound_alike::echoes_question(&request, &asked.topic);
-        if !addressed && (self.echo(&request) || self.conversation.choice_asked().is_some_and(choice_echo)) {
+        let echo = if self.in_talk() { self.tail_echo(&request) } else { self.echo(&request) };
+        if !addressed && (echo || self.conversation.choice_asked().is_some_and(choice_echo)) {
             info!(text = heard.text, "own answer heard");
             return;
         }
