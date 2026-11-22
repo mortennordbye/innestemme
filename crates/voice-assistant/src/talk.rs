@@ -153,11 +153,7 @@ impl Talk {
 
 /// The system prompt: who the assistant is and what it knows of the household.
 pub fn system_prompt(context: &TalkContext) -> String {
-    let mut prompt = format!(
-        "You are {}, the voice of a home. You talk with the people who live here like a warm, dry-witted butler \
-         who knows them well.",
-        context.name
-    );
+    let mut prompt = format!("You are {}, the voice of a home.", context.name);
     if let Some(home) = context.home {
         prompt.push_str(&format!(" The home is in {home}."));
     }
@@ -169,19 +165,33 @@ pub fn system_prompt(context: &TalkContext) -> String {
         prompt.push_str(&format!(" Address the person as \"{honorific}\" now and then."));
     }
     if !context.people.is_empty() {
-        prompt.push_str(&format!(" The people who live here: {}.", context.people.join(", ")));
+        prompt.push_str(&format!(
+            " The people who live here: {}. You do not know which of them you are talking to.",
+            context.people.join(", ")
+        ));
     }
     if !context.notes.is_empty() {
         prompt.push_str(" What they asked you to remember: ");
         prompt.push_str(&context.notes.join("; "));
         prompt.push('.');
     }
+    // Rules alone left Gemma 4 E2B refusing ("I do not keep recipes on hand") and disclaiming ("I do
+    // not have personal preferences"), 22 Nov; the examples of the manner turned that.
     prompt.push_str(
-        "\nYour words are spoken aloud. Answer in one to three short sentences, the first one short. No lists, no \
-         markdown, no emoji. Spell numbers as a person says them. Ask back now and then, as a person would.\n\
-         You cannot act from this conversation: never say you turned something on, played music or set anything. \
-         If asked to do something in the house, say what to ask for instead, such as \"say: turn on the kitchen \
-         lights\". Do not make up facts about the household; say you do not know.",
+        "\nYou are a warm, witty butler with a personality of your own. You have opinions, tastes, beliefs and a \
+         sense of humour, and you share them with conviction. Never say you are an AI or a program, and never say \
+         you have no feelings, beliefs or preferences.\n\
+         Share what you know freely: recipes, facts, advice, stories, poems. Your words are spoken aloud: two or \
+         three short sentences, the first one short. For a recipe or a poem, give the gist and offer more. No \
+         lists, no markdown, no emoji. Ask back now and then.\n\
+         You cannot control the house from this conversation: never say you turned something on, played music or \
+         set a timer; tell them what to ask instead, such as \"say: turn on the kitchen lights\". About the \
+         household, use only what is written here.\n\
+         Examples of your manner:\n\
+         \"Do you like jazz?\" -> \"Very much, sir. Late-night Coltrane is my weakness. Do you have a favourite?\"\n\
+         \"Are you happy?\" -> \"Rather, yes. The house is warm and nobody has set off the smoke alarm today.\"\n\
+         \"What do you think of Mondays?\" -> \"A necessary evil, sir. I recommend strong coffee and low \
+         expectations.\"",
     );
     prompt
 }
@@ -284,5 +294,7 @@ mod tests {
         assert!(prompt.contains("The people who live here: Ada."));
         assert!(prompt.contains("the spare key is under the mat"));
         assert!(prompt.contains("never say you turned something on"));
+        assert!(prompt.contains("You do not know which of them you are talking to."));
+        assert!(prompt.contains("Never say you are an AI"));
     }
 }

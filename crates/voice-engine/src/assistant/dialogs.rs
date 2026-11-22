@@ -1391,3 +1391,26 @@ fn a_long_reply_without_the_name_is_the_room() {
     assert_eq!(dialog.say("so I told him that the whole thing was never going to work out with the car"), None);
     assert_eq!(chat.asked.lock().unwrap().len(), 1);
 }
+
+/// 22 November 2026: "Can you tell me a poem?" after "How are you feeling?" was dropped as the room.
+#[test]
+fn open_talk_after_small_talk_goes_on_without_the_name() {
+    let chat = FakeChat::new("The sea is wide. Shall I go on?");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, how are you feeling?").is_some());
+    assert!(chat.asked.lock().unwrap().is_empty());
+    assert_eq!(said(dialog.say("Can you tell me a poem?")), "The sea is wide.");
+}
+
+/// 22 November 2026: "Sir." from the end of "What sort of cookies are you in the mood for, sir?"
+/// was answered.
+#[test]
+fn a_word_of_the_chat_answer_heard_back_goes_nowhere() {
+    let chat = FakeChat::new("What sort of cookies are you in the mood for, sir?");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, give me a recipe for cookies").is_some());
+    assert_eq!(dialog.say("Sir."), None);
+    assert_eq!(chat.asked.lock().unwrap().len(), 1);
+    // A short reply of its own still goes on.
+    assert!(dialog.say("Chocolate ones.").is_some());
+}

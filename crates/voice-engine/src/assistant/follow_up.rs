@@ -221,10 +221,14 @@ impl Worker {
     /// Whether words heard without the name repeat any sentence spoken lately, a question too: a
     /// chat answer ends in one ("And you?") and its earlier sentences come back as well.
     pub(super) fn echoes_any(&self, heard: &str) -> bool {
-        self.said
-            .iter()
-            .filter(|(at, _)| at.elapsed() < ECHO_WINDOW)
-            .any(|(_, text)| is_echo(&[text.trim_end_matches('?')], heard))
+        let recent = || self.said.iter().filter(|(at, _)| at.elapsed() < ECHO_WINDOW).map(|(_, text)| text);
+        if recent().any(|text| is_echo(&[text.trim_end_matches('?')], heard)) {
+            return true;
+        }
+        // A word or two with nothing new: "Sir." from the end of "..., sir?" was answered (22 Nov).
+        let heard = echo_words(heard);
+        let said: HashSet<String> = recent().flat_map(|text| echo_words(text)).collect();
+        heard.len() <= 2 && heard.iter().all(|w| said.contains(w))
     }
 
     /// Whether words heard without the name are an answer spoken lately.
