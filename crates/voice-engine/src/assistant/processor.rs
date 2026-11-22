@@ -171,6 +171,8 @@ impl AssistantProcessor {
             render: None,
             lead_turn: 0,
             chat_turn: 0,
+            talked: None,
+            answer_announced: false,
             last_audio: None,
             room: None,
             warmed_prompt: String::new(),
@@ -256,6 +258,7 @@ impl AssistantProcessor {
                 }
             }
         }
+        worker.warm_talk();
         let start = Instant::now();
         worker.transcriber.transcribe(&[0i16; FRAME_SAMPLES * 12])?;
         if let Some(mut listener) = wake_listener {

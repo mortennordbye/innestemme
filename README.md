@@ -22,8 +22,8 @@ ESPHome satellites such as the Home Assistant Voice PE.
 A Voice PE streams its microphone to the engine, which hears "Hey Jarvis" (openWakeWord), transcribes the request
 with Parakeet, answers from its own rules and skills, and speaks with Kokoro, here on the living room Sonos.
 Common answers are rendered ahead, so a light switched by voice is confirmed about 0.65 s after you stop talking.
-A local language model (any OpenAI-compatible server) can take what the rules do not understand. English is the
-focus; Norwegian works with Whisper and Piper.
+A local language model (any OpenAI-compatible server) can take what the rules do not understand, or a local chat
+model (Ollama) can hold an open conversation. English is the focus; Norwegian works with Whisper and Piper.
 
 | Skill | Examples |
 |---|---|

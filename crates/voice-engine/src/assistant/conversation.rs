@@ -19,7 +19,7 @@ use super::{AssistantEvent, Worker, FOLLOW_UP};
 
 /// Earlier exchanges the language model sees, for follow-ups ("and tomorrow?").
 const HISTORY_TURNS: usize = 4;
-const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
+pub(super) const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// How long "Turn on privacy mode?" waits for its "yes".
 pub(super) const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
 /// How long "Which room?" waits for the room, for the lights and for a scene. As long as the
@@ -163,6 +163,8 @@ pub(super) struct Conversation {
     pub(super) topic_ended: bool,
     /// Recent exchanges, oldest first, for the language model.
     pub(super) history: VecDeque<(Instant, Turn)>,
+    /// The chat model gave the last answer, at this time: a reply without the name goes on with it.
+    pub(super) last_talk: Option<Instant>,
     /// The last request answered, and when: "what about inside?" goes on from it. As text, which
     /// parses back to its intent.
     pub(super) last_request: Option<(String, Instant)>,
@@ -271,7 +273,7 @@ impl Conversation {
     /// A session started: nothing said before it is gone on from.
     pub(super) fn restart(&mut self) {
         (self.follow_up_until, self.pending_lights, self.wake, self.last_request) = (None, None, None, None);
-        (self.pending_choice, self.pending_retry) = (None, None);
+        (self.pending_choice, self.pending_retry, self.last_talk) = (None, None, None);
         self.history.clear();
     }
 

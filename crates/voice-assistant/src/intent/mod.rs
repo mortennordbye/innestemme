@@ -14,7 +14,7 @@ mod weather;
 pub use follow_on::{follow_on, open_to_follow_on};
 use lights::{is_lights_question, level_target, light_level, mood, scheduled_switch, without_opening, LIGHT_WORDS};
 pub use lights::{says_off, LightLevel};
-pub use meta::{Meta, LEADS};
+pub use meta::{Meta, LEADS, LEADS_TALK};
 use music::{music, NOT_FOR_YOU, PLAY_WORDS, POLITE};
 pub use music::{MusicCommand, Repeat};
 use people::{where_is, whos_home};

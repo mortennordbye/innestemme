@@ -358,6 +358,21 @@ struct Args {
     /// Give up on the language model after this long and answer from the rules.
     #[arg(long, env = "VOICE_LLM_TIMEOUT_SECS", default_value_t = 15)]
     llm_timeout_secs: u64,
+    /// Ollama server for open talk the rules do not recognise ("How are you feeling?"), e.g.
+    /// http://127.0.0.1:11434. Spoken a sentence at a time. Not used when `--llm-url` is set. Off
+    /// when unset.
+    #[arg(long, env = "VOICE_CHAT_URL")]
+    chat_url: Option<String>,
+    /// Model at `--chat-url`. Gemma 4 E2B gave the first sentence in 1.2-1.8 s on the cluster's
+    /// CPUs (see docs/benchmarks.md).
+    #[arg(long, env = "VOICE_CHAT_MODEL", default_value = "gemma4:e2b")]
+    chat_model: String,
+    /// The chat model's threads: the CPU limit of its server. More than the limit is throttled.
+    #[arg(long, env = "VOICE_CHAT_THREADS", default_value_t = 4)]
+    chat_threads: u32,
+    /// Give up on a chat answer after this long, its speech included; what was said by then stays.
+    #[arg(long, env = "VOICE_CHAT_TIMEOUT_SECS", default_value_t = 60)]
+    chat_timeout_secs: u64,
     /// ESPHome voice satellite to be the voice assistant for, host:port (a Voice PE: its IP and
     /// 6053). Disable the device's Assist satellite entity in Home Assistant first: a device
     /// streams to one voice assistant only.
@@ -801,6 +816,15 @@ fn assistant_config(
                 Duration::from_secs(args.llm_timeout_secs),
             )
         }),
+        talk: args.chat_url.as_deref().filter(|_| args.llm_url.is_none()).map(|url| {
+            info!(url, model = args.chat_model, threads = args.chat_threads, "chat model");
+            voice_assistant::talk::Talk::new(
+                url,
+                &args.chat_model,
+                args.chat_threads,
+                Duration::from_secs(args.chat_timeout_secs),
+            )
+        }),
         wake: args.wake_word(),
     })
 }
@@ -888,6 +912,7 @@ fn web(
         "honorific_female": args.honorific_female,
         "norwegian": args.norwegian,
         "language_model": args.llm_url.is_some(),
+        "chat_model": args.chat_url.is_some() && args.llm_url.is_none(),
         "version": version,
         "listener": args.listener.name(),
         "wake_model": args.wake_model,

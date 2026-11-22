@@ -42,6 +42,7 @@ pub mod sound_alike;
 pub mod speech_cache;
 pub mod store;
 pub mod stt;
+pub mod talk;
 pub mod timer;
 pub mod transit;
 pub mod tts;
