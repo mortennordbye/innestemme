@@ -651,18 +651,24 @@ impl Worker {
             _ => request,
         };
         let request = self.learned_meaning(request);
+        // A "Which one?" left unanswered goes, before a follow-on asks what waits for a reply.
+        self.timers.forget_stale(Instant::now());
         // Without the name, only act on something recognisable: in the follow-up window the
         // microphone also hears the room.
         // With a language model, it decides whether unrecognised words were meant for the assistant.
         let parsed = intent::parse(&request);
+        // The room-talk filter judges the words as heard, not the request they were joined into.
+        let as_heard = request.clone();
+        let meant = self.follow_on(&request, &parsed).or_else(|| self.party_stop(&request, &parsed));
+        // A joined request holds the last topic: no rewrite learned from it holds without that.
+        let joined = meant.is_some();
+        let (request, parsed) = meant.unwrap_or((request, parsed));
         let unknown = parsed == Intent::Unknown;
-        if let (false, Some(learned)) = (unknown, &self.config.learned) {
+        if let (false, false, Some(learned)) = (unknown, joined, &self.config.learned) {
             if let Some(pair) = learned.understood(&request) {
                 info!(heard = pair.said, meant = pair.meant, "correction learned");
             }
         }
-        // A "Which one?" left unanswered goes.
-        self.timers.forget_stale(Instant::now());
         let pending = match self.awaiting() {
             // A question waiting for "yes" only takes a yes or a no: other words without the name
             // are the room.
@@ -679,7 +685,7 @@ impl Worker {
         // A wake word without the name is as unsure as the follow-up window: the TV's "just because
         // 2 bitches ..." set the volume to 70 percent, its "Sorry." was told "Don't mention it.".
         let unnamed = self.conversation.unnamed();
-        let room = !addressed && (self.conversation.wake.is_none() || unnamed) && room_talk(&request);
+        let room = !addressed && (self.conversation.wake.is_none() || unnamed) && room_talk(&as_heard);
         let chat = !addressed && unnamed && matches!(parsed, Intent::SmallTalk(_));
         if !pending && (room || chat || (!addressed && unknown && self.config.llm.is_none())) {
             info!(text = heard.text, "not addressed");
@@ -736,6 +742,7 @@ impl Worker {
             info!(request = text, answer, skill = turn.skill, after = ?start.elapsed(), "done without words");
             let after_ms = self.speech_ended.take().map(|ended| ended.elapsed().as_millis() as u64);
             self.config.activity.record(activity::Turn { after_ms, ..turn });
+            self.conversation.answered(text);
             self.conversation.remember(text, answer);
             self.end_turn(TurnEnd::Done);
             return;
@@ -750,6 +757,7 @@ impl Worker {
         } else if ["Sorry", "Beklager"].iter().any(|s| answer.starts_with(s) || answer.contains(&format!(". {s}"))) {
             self.unhandled(Reason::Apologised, text, Some(&answer));
         }
+        self.conversation.answered(text);
         self.conversation.remember(text, answer.clone());
         let answer = match &mut self.persona {
             Some(persona) if lang == Lang::English && (lead.is_some() || plain) => persona.after_lead(&answer),
@@ -898,7 +906,11 @@ impl Worker {
                 })
             }
             Awaiting::LightsRoom => match lights {
-                Some((on, _)) if unknown => Some(self.lights(text, on, lang)),
+                Some((on, _)) if unknown => {
+                    let switch = if on { "on" } else { "off" };
+                    self.conversation.answered_as = Some(format!("turn {switch} the lights in {text}"));
+                    Some(self.lights(text, on, lang))
+                }
                 _ => None,
             },
             // "Milk and eggs", "og brunost", "add bacon too": more items while the list is open;

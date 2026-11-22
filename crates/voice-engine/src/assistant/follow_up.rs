@@ -3,6 +3,9 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use tracing::info;
+use voice_assistant::intent::{self, Intent};
+
 use super::Worker;
 
 /// Speech without the name that repeats what was said this recently is the answer coming back from
@@ -182,6 +185,39 @@ fn echo_words(text: &str) -> Vec<String> {
 }
 
 impl Worker {
+    /// The request words go on to from the last one answered ("what about inside?" after the
+    /// weather), and its intent. Only while nothing asked back waits for the words, which are the
+    /// reply to it then, and while the last request is recent: the follow-up window, a wake, or the
+    /// name within minutes of it. The words must already be meant for the assistant; that is
+    /// decided before.
+    pub(super) fn follow_on(&self, request: &str, parsed: &Intent) -> Option<(String, Intent)> {
+        if self.awaiting().is_some() {
+            return None;
+        }
+        let last = intent::parse(self.conversation.last_request()?);
+        if !intent::open_to_follow_on(&last, parsed) {
+            return None;
+        }
+        let (meant, intent) = intent::follow_on(&last, request)?;
+        info!(skill = intent.meta().skill.unwrap_or_default(), meant, "follow-on");
+        Some((meant, intent))
+    }
+
+    /// While the party is on, "<verb> the party" without a word that starts one is a misheard
+    /// "stop": "Slope the party." restarted it (16 Nov).
+    pub(super) fn party_stop(&self, request: &str, parsed: &Intent) -> Option<(String, Intent)> {
+        // A question asked back takes the words as its reply: a list item, a note.
+        let partying = (self.config.party.mode().is_some() || self.open_source_party) && self.awaiting().is_none();
+        let words = voice_assistant::dialog::words(request);
+        if !partying || *parsed != Intent::Unknown || !voice_assistant::party::unclear(&words) {
+            return None;
+        }
+        info!("party request while it is on: stop");
+        let meant = "stop the party".to_owned();
+        let intent = intent::parse(&meant);
+        Some((meant, intent))
+    }
+
     /// Whether words heard without the name are an answer spoken lately.
     pub(super) fn echo(&self, heard: &str) -> bool {
         let recent: Vec<&str> =

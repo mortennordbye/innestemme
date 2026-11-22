@@ -110,6 +110,21 @@ pub fn parse(words: &[String]) -> Option<PartyCommand> {
     Some(PartyCommand::On(pace))
 }
 
+/// "Shop the party", "drop the party": "stop the party" misheard. While a party is on, it means
+/// stop. Only known sound-alikes of "stop" count, so "join the party" or "enjoy the party" said
+/// over the music leave it playing.
+pub fn unclear(words: &[String]) -> bool {
+    const MISHEARD_STOP: &[&str] = &[
+        "shop", "slop", "slope", "drop", "top", "stomp", "stock", "stub", "stob", "stuck", "stopped", "stops", "stap",
+        "stoppe", "stopper", "stup",
+    ];
+    let mut words: Vec<&str> = words.iter().map(String::as_str).collect();
+    while words.last().is_some_and(|w| ["now", "please", "nå", "takk"].contains(w)) {
+        words.pop();
+    }
+    matches!(words.as_slice(), [stop, "the", party] if MISHEARD_STOP.contains(stop) && PARTY_WORDS.contains(party))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +178,46 @@ mod tests {
         assert_eq!(party("Kill the party playlist"), None);
         for talk in ["Shop the party please", "Get rid of the party", "I didn't get invited to the party"] {
             assert_eq!(party(talk), None, "{talk}");
+        }
+    }
+
+    /// While a party is on, these mean stop; they start nothing either way.
+    #[test]
+    fn unclear_party_requests() {
+        let unclear = |text: &str| super::unclear(&crate::dialog::words(text));
+        for stop in ["Shop the party.", "Shop the party please", "Drop the party", "Slop the party now"] {
+            assert!(unclear(stop), "{stop}");
+        }
+        for not in [
+            "Stop the party",
+            "Party mode",
+            "Start the party",
+            "Is party mode on?",
+            "Pause the party music",
+            "I loved that party",
+            "I didn't get invited to the party",
+            "Turn off the lights",
+            "Get rid of the party",
+            // Cheering in the follow-up window.
+            "Great party",
+            "The party",
+            "Party people",
+            "Party all night",
+            "This party rocks",
+            "Love this party",
+            "Best party ever",
+            "Party hats",
+            "Love the party",
+            // Other verbs said over the music.
+            "Join the party",
+            "Enjoy the party",
+            "Rock the party",
+            "Save the party",
+            "Feel the party",
+            "Plan the party",
+            "Leave the party",
+        ] {
+            assert!(!unclear(not), "{not}");
         }
     }
 }
