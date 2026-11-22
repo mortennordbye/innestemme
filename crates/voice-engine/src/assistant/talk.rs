@@ -136,6 +136,8 @@ impl Worker {
         if aloud {
             self.talked = Some((spoken, raw));
         }
+        // The server's cache now holds this conversation; the base goes back in once it is over.
+        self.talk_base_gone = true;
         Some(answer)
     }
 
@@ -191,20 +193,24 @@ impl Worker {
         }
     }
 
-    /// While idle: a changed system prompt (a new day, a new note, the room) is sent to the chat
-    /// model in the background, so the next question does not read it all (1-3 s on the node).
+    /// While idle: the base goes back into the chat model's cache in the background, after a
+    /// conversation and when the system prompt changed (a new day, a new note, the room), so the
+    /// next first question does not read it all (2 s on the node; 0.2 s when it is kept).
     pub(super) fn keep_talk_warm(&mut self) {
         let Some(chat) = self.config.talk.clone() else { return };
         self.refresh_talk_people();
         let system = self.talk_prompt();
-        if system == self.talk_warmed {
+        // Within `HISTORY_MAX_AGE` a request still carries the history and extends what is cached.
+        let over = self.talk_base_gone && !self.conversation.going_on();
+        if system == self.talk_warmed && !over {
             return;
         }
         self.talk_warmed = system.clone();
+        self.talk_base_gone = false;
         let spawned = std::thread::Builder::new().name("chat-warm".into()).spawn(move || {
             let start = Instant::now();
             match chat.warm_up(&system) {
-                Ok(()) => info!(elapsed = ?start.elapsed(), "chat model warmed for the new prompt"),
+                Ok(()) => info!(elapsed = ?start.elapsed(), "chat model's base read again"),
                 Err(error) => warn!(%error, "chat model warm-up failed"),
             }
         });

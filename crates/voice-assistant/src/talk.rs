@@ -84,8 +84,25 @@ impl Talk {
     }
 
     /// Loads the model and reads the system prompt, so the first real question pays for neither.
+    /// Reads the base (the system prompt and the examples) into the server's prompt cache. A
+    /// conversation's first request extends the base, so the server reads only its new words: 0.2 s
+    /// on the node, where a request that only shares the system prompt read it all again in 2 s.
+    /// Gemma 4's sliding-window attention lets the server keep only a prompt that the next one
+    /// extends, so the base is read again after each conversation (0.2 s while it is still kept).
     pub fn warm_up(&self, system: &str) -> Result<()> {
-        self.answer(system, &[], "Hello.", Lang::English, &mut |_| true).map(|_| ())
+        let mut body = self.body(system, &[], None, Lang::English);
+        body["stream"] = json!(false);
+        body["options"]["num_predict"] = json!(1);
+        let mut response = self
+            .agent
+            .post(&format!("{}/api/chat", self.url))
+            .send_json(&body)
+            .map_err(|e| anyhow!("chat model request failed: {e}"))?;
+        let reply: Value = response.body_mut().read_json().context("chat model answer is not JSON")?;
+        match reply["error"].as_str() {
+            Some(error) => Err(anyhow!("chat model: {error}")),
+            None => Ok(()),
+        }
     }
 
     /// The answer to `request`, each sentence handed to `sentence` as soon as it is whole; it
@@ -98,7 +115,7 @@ impl Talk {
         lang: Lang,
         sentence: &mut dyn FnMut(&str) -> bool,
     ) -> Result<Answered> {
-        let body = self.body(system, history, request, lang);
+        let body = self.body(system, history, Some(request), lang);
         let response = self
             .agent
             .post(&format!("{}/api/chat", self.url))
@@ -155,18 +172,25 @@ impl Talk {
         }
     }
 
-    fn body(&self, system: &str, history: &[Turn], request: &str, lang: Lang) -> Value {
-        // The system prompt first and the same each time, so the server keeps it read.
+    /// The request: the base (the system prompt and the examples, the same each time), the
+    /// conversation, and `request`. Without one, the base alone, as `warm_up` sends it.
+    fn body(&self, system: &str, history: &[Turn], request: Option<&str>, lang: Lang) -> Value {
         let mut messages = vec![json!({ "role": "system", "content": system })];
+        for (user, assistant) in EXAMPLES {
+            messages.push(json!({ "role": "user", "content": user }));
+            messages.push(json!({ "role": "assistant", "content": assistant }));
+        }
         for turn in history {
             messages.push(json!({ "role": "user", "content": turn.user }));
             messages.push(json!({ "role": "assistant", "content": turn.assistant }));
         }
-        let request = match lang {
-            Lang::English => request.to_owned(),
-            Lang::Norwegian => format!("{request} (svar på norsk bokmål)"),
-        };
-        messages.push(json!({ "role": "user", "content": request }));
+        if let Some(request) = request {
+            let request = match lang {
+                Lang::English => request.to_owned(),
+                Lang::Norwegian => format!("{request} (svar på norsk bokmål)"),
+            };
+            messages.push(json!({ "role": "user", "content": request }));
+        }
         json!({
             "model": self.model,
             "messages": messages,
@@ -184,6 +208,14 @@ impl Talk {
         })
     }
 }
+
+/// Exchanges that show the model its manner, sent after the system prompt as if said earlier. Part
+/// of the base `warm_up` reads ahead: they stay the same, or the cache misses.
+const EXAMPLES: &[(&str, &str)] = &[
+    ("Do you like jazz?", "Very much, sir. Late-night Coltrane is my weakness. Do you have a favourite?"),
+    ("Are you happy?", "Rather, yes. The house is warm and nobody has set off the smoke alarm today."),
+    ("What do you think of Mondays?", "A necessary evil, sir. I recommend strong coffee and low expectations."),
+];
 
 /// Words that open something asked for; "can you" and "could you" too.
 const ASKING: &[&str] = &[
@@ -250,7 +282,7 @@ pub fn system_prompt(context: &TalkContext) -> String {
         prompt.push('.');
     }
     // Rules alone left Gemma 4 E2B refusing ("I do not keep recipes on hand") and disclaiming ("I do
-    // not have personal preferences"), 22 Nov; the examples of the manner turned that.
+    // not have personal preferences"), 22 Nov; the examples of its manner (`EXAMPLES`) turned that.
     prompt.push_str(
         "\nYou are a warm, witty butler with a personality of your own. You have opinions, tastes, beliefs and a \
          sense of humour, and you share them with conviction. Never say you are an AI or a program, and never say \
@@ -260,12 +292,7 @@ pub fn system_prompt(context: &TalkContext) -> String {
          lists, no markdown, no emoji. Ask back now and then.\n\
          You cannot control the house from this conversation: never say you turned something on, played music or \
          set a timer; tell them what to ask instead, such as \"say: turn on the kitchen lights\". About the \
-         household, use only what is written here.\n\
-         Examples of your manner:\n\
-         \"Do you like jazz?\" -> \"Very much, sir. Late-night Coltrane is my weakness. Do you have a favourite?\"\n\
-         \"Are you happy?\" -> \"Rather, yes. The house is warm and nobody has set off the smoke alarm today.\"\n\
-         \"What do you think of Mondays?\" -> \"A necessary evil, sir. I recommend strong coffee and low \
-         expectations.\"",
+         household, use only what is written here.",
     );
     prompt
 }
@@ -376,12 +403,18 @@ mod tests {
     fn the_request_turns_thinking_off_and_sets_the_threads() {
         let talk = Talk::new("http://ollama:11434/", "gemma4:e2b", 4, Duration::from_secs(30));
         let history = [Turn { user: "How are you?".into(), assistant: "Quite well.".into() }];
-        let body = talk.body("system", &history, "Why?", Lang::English);
+        let body = talk.body("system", &history, Some("Why?"), Lang::English);
         assert_eq!(body["think"], false);
         assert_eq!(body["options"]["num_thread"], 4);
         assert_eq!(body["messages"][0]["role"], "system");
-        assert_eq!(body["messages"][2]["content"], "Quite well.");
-        assert_eq!(body["messages"][3]["content"], "Why?");
+        // The examples, then the conversation.
+        assert_eq!(body["messages"][1]["content"], EXAMPLES[0].0);
+        let n = 1 + 2 * EXAMPLES.len();
+        assert_eq!(body["messages"][n + 1]["content"], "Quite well.");
+        assert_eq!(body["messages"][n + 2]["content"], "Why?");
+        // The base alone ends with the last example: a conversation extends it.
+        let base = talk.body("system", &[], None, Lang::English);
+        assert_eq!(base["messages"].as_array().unwrap().last().unwrap()["content"], EXAMPLES[2].1);
         assert_eq!(talk.url, "http://ollama:11434");
     }
 

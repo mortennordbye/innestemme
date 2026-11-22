@@ -260,6 +260,7 @@ impl Worker {
             talked: None,
             talk_people: (Vec::new(), None),
             talk_warmed: String::new(),
+            talk_base_gone: false,
             answer_announced: false,
             last_audio: None,
             room: None,
@@ -1302,8 +1303,12 @@ impl FakeChat {
         dialog
     }
 
+    /// The last request's messages, the system prompt first and without the base's three example
+    /// exchanges after it.
     fn last_messages(&self) -> Value {
-        self.asked.lock().unwrap().last().cloned().unwrap_or(Value::Null)
+        let last = self.asked.lock().unwrap().last().cloned().unwrap_or(Value::Null);
+        let messages = last.as_array().cloned().unwrap_or_default();
+        Value::Array(messages.iter().take(1).chain(messages.iter().skip(7)).cloned().collect())
     }
 }
 

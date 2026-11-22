@@ -269,11 +269,15 @@ impl Conversation {
     }
 
     /// The exchanges recent enough to go on from.
+    /// The last exchange is recent enough that the next request goes on from the history.
+    pub(super) fn going_on(&self) -> bool {
+        self.history.back().is_some_and(|(at, _)| at.elapsed() < HISTORY_MAX_AGE)
+    }
+
     /// The whole conversation while it goes on (its last exchange recent enough), none once it is
     /// over: a turn dropped by age from its start would change the history's start.
     pub(super) fn recent_turns(&self) -> Vec<Turn> {
-        let going_on = self.history.back().is_some_and(|(at, _)| at.elapsed() < HISTORY_MAX_AGE);
-        if !going_on {
+        if !self.going_on() {
             return Vec::new();
         }
         self.history.iter().map(|(_, turn)| turn.clone()).collect()

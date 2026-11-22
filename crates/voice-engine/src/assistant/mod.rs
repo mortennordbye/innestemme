@@ -346,6 +346,8 @@ struct Worker {
     talk_people: (Vec<String>, Option<Instant>),
     /// The chat model's system prompt as last sent to it.
     talk_warmed: String,
+    /// A conversation has been in the chat model's cache since the base was last read.
+    talk_base_gone: bool,
     /// The answer being composed has sent its `Answer` event (a lead-in's), which a satellite
     /// takes as the start of the reply: a second one would start it again.
     answer_announced: bool,

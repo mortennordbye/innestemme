@@ -136,7 +136,11 @@ still apply. In such a conversation an echo is a run of words from the end of th
 home."), not any of the words said lately, as a chat answer has so many that "Tell me." counted as one. The prompt gives the model a personality
 with examples of its manner: with rules alone, Gemma refused recipes and said it had no preferences. A
 phone or Assist gets the answer as words. When the model is down, the rules' fallback answers. The model cannot act:
-the house stays with the rules. The prompt is kept the same text between answers, so Ollama's prompt cache holds it: the household's people
+the house stays with the rules. Gemma 4's sliding-window attention lets Ollama reuse its prompt cache only for a prompt that extends the one it
+read last: a new question after the same system prompt was read whole again (2 s). So every request starts with a
+fixed base, the system prompt and three example exchanges, and the base is read ahead at start and again in quiet
+time once a conversation is over (0.2 s while the server still keeps it). A first question then reads only its own
+words (0.2 s). The prompt is kept the same text between answers: the household's people
 are read from Home Assistant every 30 minutes, not per answer, and a changed prompt (a new day, a new note) is sent
 to the model in the background while the house is quiet. The history grows to eight exchanges and is then cut to
 four at once, and it holds the model's own words, so its start also stays in the cache. The log has `chat model
