@@ -648,7 +648,9 @@ impl Worker {
         };
         let (request, addressed) = request;
         let request = self.config.wake.drop_trailing(&request);
-        if !addressed && self.echo(&request) {
+        // The end of "... Or should I look up therapy?" heard back would be a look-up of its own.
+        let choice_echo = |asked: &PendingChoice| sound_alike::echoes_question(&request, &asked.topic);
+        if !addressed && (self.echo(&request) || self.conversation.choice_asked().is_some_and(choice_echo)) {
             info!(text = heard.text, "own answer heard");
             return;
         }
@@ -1022,7 +1024,12 @@ impl Worker {
                 self.conversation.answered_as = Some(format!("look up {topic}"));
                 self.act(Intent::Lookup(topic), lang)
             }
-            Choice::Neither => Some("Okay.".into()),
+            // As "never mind" ends a conversation, with a word: no follow-up window, and no topic to
+            // go on from.
+            Choice::Neither => {
+                (self.conversation.follow_up_closed, self.conversation.topic_ended) = (true, true);
+                Some("Okay.".into())
+            }
         }
     }
 

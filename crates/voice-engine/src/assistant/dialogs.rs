@@ -1072,9 +1072,43 @@ fn no_never_mind_or_neither_ends_the_question() {
         assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
         assert_eq!(said(dialog.say(reply)), "Okay.", "{reply}");
         assert_eq!(dialog.worker.awaiting(), None, "{reply}");
-        // The question is gone: "the first one" now is the room talking.
+        // It ends the conversation as "never mind" does: no follow-up window and no topic.
+        assert!(!dialog.worker.conversation.follow_up(), "{reply}");
+        assert_eq!(dialog.worker.conversation.last_request(), None, "{reply}");
         assert_eq!(dialog.say("the first one"), None, "{reply}");
     }
+}
+
+#[test]
+fn yes_picks_the_skill() {
+    let ha = FakeHa::new();
+    let expected = temperature_answer(&ha);
+    for reply in ["yes", "yeah", "yep", "yes please"] {
+        let mut dialog = Dialog::new(Some(&ha));
+        assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+        assert_eq!(said(dialog.say(reply)), expected, "{reply}");
+    }
+}
+
+#[test]
+fn the_question_heard_back_picks_nothing() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+    // The end of the question from the speaker, in the follow-up window: no look-up.
+    for echo in ["look up therapy.", "should I look up therapy"] {
+        assert_eq!(dialog.say(echo), None, "{echo}");
+        assert_eq!(dialog.worker.awaiting(), Some(Awaiting::Choice), "{echo}");
+    }
+}
+
+#[test]
+fn a_new_session_drops_the_choice() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    assert_eq!(said(dialog.say("Jarvis, what's therapy?")), THERAPY_QUESTION);
+    dialog.worker.conversation.restart();
+    assert!(dialog.worker.conversation.pending_choice.is_none());
 }
 
 #[test]

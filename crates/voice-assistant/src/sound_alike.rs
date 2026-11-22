@@ -77,11 +77,15 @@ pub fn sounds_like_skill(text: &str) -> Option<(&'static SkillWord, String)> {
 /// "Did you mean the temperature? Or should I look up therapy?": the fixed sentence first, so the
 /// speech cache keeps it, and the topic in its own.
 pub fn question(skill: &SkillWord, topic: &str) -> String {
-    format!("{} Or should I look up {topic}?", fixed_question(skill))
+    format!("{} {}", fixed_question(skill), live_question(topic))
 }
 
 fn fixed_question(skill: &SkillWord) -> String {
     format!("Did you mean {}?", skill.said)
+}
+
+fn live_question(topic: &str) -> String {
+    format!("Or should I look up {topic}?")
 }
 
 /// The fixed sentences of the questions, for rendering them ahead.
@@ -102,10 +106,25 @@ pub enum Choice {
 
 /// Words around a reply that do not change it: "the first one please", "I meant the temperature".
 const FILLER: &[&str] =
-    &["the", "one", "please", "i", "meant", "mean", "oh", "um", "uh", "well", "just", "so", "okay", "ok", "yeah"];
+    &["the", "one", "please", "i", "meant", "mean", "oh", "um", "uh", "well", "just", "so", "okay", "ok"];
+/// A yes takes the first reading, the one the question asks about: "Did you mean the temperature?"
+const YES: &[&str] = &["yes", "yeah", "yep", "ja"];
+
+/// Whether `heard` is the end of the question coming back from the speaker ("look up therapy.",
+/// "should I look up therapy"): two words or more of its last sentence, which plays just before
+/// the device listens. Not the topic alone ("chopping lisp"), a reply that also ends it; the first
+/// sentence holds replies too ("the shopping list").
+pub fn echoes_question(heard: &str, topic: &str) -> bool {
+    let heard = words(heard);
+    let asked = words(&live_question(topic));
+    heard.len() >= 2 && asked.windows(heard.len()).any(|w| w == heard) && heard != words(topic)
+}
 
 /// The choice `reply` makes, if it is one; anything else is a new request.
 pub fn choice(reply: &str, skill: &SkillWord, topic: &str) -> Option<Choice> {
+    if echoes_question(reply, topic) {
+        return None;
+    }
     let all = words(reply);
     if matches!(
         all.iter().map(String::as_str).collect::<Vec<_>>().as_slice(),
@@ -126,14 +145,18 @@ pub fn choice(reply: &str, skill: &SkillWord, topic: &str) -> Option<Choice> {
     if said.len() > 1 && said[0] == "no" {
         said.remove(0);
     }
+    // "Yes", "yes please", "yeah, the temperature".
+    let yes = said.first().is_some_and(|w| YES.contains(w));
+    if yes {
+        said.remove(0);
+    }
     let said = said.join(" ");
     let topic = words(topic).join(" ");
-    let skill_word = skill.word;
-    if said == skill_word || said == "first" {
+    if said == skill.word || said == "first" || (yes && said.is_empty()) {
         return Some(Choice::Skill);
     }
     let lookup = ["second", "look it up", "look up", "look that up", "wikipedia", "look it up on wikipedia"];
-    if said == topic || lookup.contains(&said.as_str()) || said == format!("look up {topic}") {
+    if said == topic || lookup.contains(&said.as_str()) {
         return Some(Choice::Lookup);
     }
     None
@@ -238,14 +261,25 @@ mod tests {
             assert_eq!(pick(reply), Some(Choice::Skill), "{reply}");
         }
         assert_eq!(pick("no, the temperature"), Some(Choice::Skill));
-        for reply in ["look it up", "therapy", "the second one", "the second", "Wikipedia", "look up therapy", "second"]
-        {
+        for reply in ["yes", "yeah", "yep", "yes please", "ja", "Yes, the temperature."] {
+            assert_eq!(pick(reply), Some(Choice::Skill), "{reply}");
+        }
+        for reply in ["look it up", "therapy", "the second one", "the second", "Wikipedia", "second"] {
             assert_eq!(pick(reply), Some(Choice::Lookup), "{reply}");
         }
         for reply in ["no", "never mind", "neither", "No thanks.", "Neither of them."] {
             assert_eq!(pick(reply), Some(Choice::Neither), "{reply}");
         }
-        for reply in ["what's the weather", "turn on the lights", "yes", "the third one", "", "the"] {
+        // The question heard back from the speaker.
+        for reply in [
+            "look up therapy.",
+            "should I look up therapy",
+            "Or should I look up therapy?",
+            "did you mean the temperature",
+        ] {
+            assert_eq!(pick(reply), None, "{reply}");
+        }
+        for reply in ["what's the weather", "turn on the lights", "the third one", "", "the"] {
             assert_eq!(pick(reply), None, "{reply}");
         }
         let list = SKILL_WORDS.iter().find(|s| s.word == "shopping list").unwrap();

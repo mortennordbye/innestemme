@@ -124,6 +124,8 @@ pub(super) struct Conversation {
     pub(super) follow_up_until: Option<Instant>,
     /// The answer opens no follow-up window.
     pub(super) follow_up_closed: bool,
+    /// The answer ends the topic too, as "never mind" does: nothing goes on from it.
+    pub(super) topic_ended: bool,
     /// Recent exchanges, oldest first, for the language model.
     pub(super) history: VecDeque<(Instant, Turn)>,
     /// The last request answered, and when: "what about inside?" goes on from it. As text, which
@@ -207,6 +209,10 @@ impl Conversation {
     /// The request answered, for follow-ons. Several requests in one sentence leave no topic.
     pub(super) fn answered(&mut self, request: &str) {
         let request = self.answered_as.take().unwrap_or_else(|| request.to_owned());
+        if std::mem::take(&mut self.topic_ended) {
+            self.last_request = None;
+            return;
+        }
         let one = voice_assistant::intent::split_commands(&request).is_none();
         self.last_request = one.then(|| (request, Instant::now()));
     }
@@ -226,6 +232,7 @@ impl Conversation {
     /// A session started: nothing said before it is gone on from.
     pub(super) fn restart(&mut self) {
         (self.follow_up_until, self.pending_lights, self.wake, self.last_request) = (None, None, None, None);
+        self.pending_choice = None;
         self.history.clear();
     }
 

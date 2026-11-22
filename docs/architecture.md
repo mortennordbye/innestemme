@@ -90,9 +90,10 @@ lights, music, shopping list): "therapy" for temperature, "thyme" for time, "whe
 It is an explicit list and not an edit distance, which also matched real topics ("tumor" and "timer"), and the skill
 word itself is not in it ("what is music" is a real topic). A "what is" question whose whole topic is in the table
 asks "Did you mean the temperature? Or should I look up therapy?" (the first sentence is fixed and rendered ahead)
-and waits 30 s for the reply, without the name: "the temperature", "the first one" or "first" answers the skill's
-plain request, "look it up", the topic, "the second one" or "Wikipedia" looks it up, and "no", "never mind" or
-"neither" says "Okay.". Other words without the name are the room; with the name they are a new request and drop
+and waits 30 s for the reply, without the name: "the temperature", "the first one", "first" or "yes" answers the
+skill's plain request, "look it up", the topic, "the second one" or "Wikipedia" looks it up, and "no", "never mind"
+or "neither" says "Okay." and ends the conversation as "never mind" does. The end of the question heard back from
+the speaker ("look up therapy.") is dropped as the assistant's own words. Other words without the name are the room; with the name they are a new request and drop
 the question. A typed request and "who is", "tell me about" or "look up" never ask. English only for now; Norwegian
 comes later. The log has `asked which` (skill, topic) and `chose` (choice).
 
