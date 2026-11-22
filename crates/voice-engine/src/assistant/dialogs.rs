@@ -901,6 +901,18 @@ fn leaving_heard_without_the_i_am_needs_the_name() {
     assert!(ha.take_calls().is_empty());
 }
 
+/// "Leaving now" is the routine as before, with the name or without it.
+#[test]
+fn leaving_now_runs_the_routine() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    let answer = said(dialog.say("Jarvis, leaving now"));
+    assert!(answer.contains("See you later"), "{answer}");
+    assert!(dialog.worker.conversation.follow_up());
+    let answer = said(dialog.say("leaving now"));
+    assert!(answer.contains("See you later"), "{answer}");
+}
+
 /// 20 November 2026: "Soft music." after the wake word was dropped.
 #[test]
 fn a_kind_of_music_said_alone_plays_it() {

@@ -1864,6 +1864,7 @@ mod tests {
         assert_eq!(routine("we're leaving"), Some(Routine::Leaving));
         assert_eq!(routine("I am leaving now"), Some(Routine::Leaving));
         assert_eq!(routine("you're leaving"), None);
+        assert_eq!(routine("leaving now"), Some(Routine::Leaving));
         assert_eq!(routine("Look down."), Some(Routine::Lockdown));
         assert_eq!(routine("look down at the floor"), None);
         assert_eq!(routine("the leaving party"), None);
