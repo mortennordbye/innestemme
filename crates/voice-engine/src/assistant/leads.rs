@@ -4,6 +4,7 @@ use voice_assistant::intent::{self, Intent};
 use voice_assistant::lang::Lang;
 use voice_assistant::persona::Persona;
 
+use super::conversation::Awaiting;
 use super::Worker;
 
 pub(super) use voice_assistant::intent::LEADS;
@@ -22,9 +23,19 @@ impl Worker {
     /// The lead-in for a request whose answer is slow to get or to say, when speech is rendered
     /// ahead of time. Not when a question asked back takes the words ("Which room?" "The kitchen.").
     pub(super) fn lead_in(&mut self, text: &str, lang: Lang) -> Option<String> {
-        if lang != Lang::English || self.render.is_none() || self.awaiting().is_some() {
+        if lang != Lang::English || self.render.is_none() {
             return None;
         }
+        // A name said again is looked up again, as slow as the first time: "Who is Not at not all?"
+        // was 2.3 s of silence (23 Nov). Other replies to a question asked back get no lead-in.
+        let meant = match self.awaiting() {
+            None => None,
+            Some(Awaiting::Retry) if intent::parse(text) == Intent::Unknown => {
+                Some(self.conversation.retry_asked().and_then(|retry| retry.with(text))?)
+            }
+            Some(_) => return None,
+        };
+        let text = meant.as_deref().unwrap_or(text);
         // Several requests: the first one's lead-in.
         let first = intent::split_commands(text).and_then(|parts| parts.into_iter().next());
         // A lead-in plays before the answer, so with the data kept it only delays it.

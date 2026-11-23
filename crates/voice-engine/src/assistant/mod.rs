@@ -672,8 +672,9 @@ impl Worker {
             Some(rest) if rest.is_empty() => {
                 info!("wake word");
                 self.conversation.follow_up_until = Some(Instant::now() + FOLLOW_UP);
-                // The window of an earlier answer is over.
-                self.conversation.window_named = false;
+                // The window of an earlier answer is over; this one was opened by the name, so what
+                // no rule takes in it goes to the chat model, as after "Jarvis, ..." said whole.
+                self.conversation.window_named = true;
                 self.emit(AssistantEvent::Listening);
                 self.hush();
                 self.play(&tts::wake_chime());
@@ -829,8 +830,8 @@ impl Worker {
             self.conversation.last_talk = Some(Instant::now());
             self.conversation.model_talk = Some(Instant::now());
             self.conversation.answered(text);
-            // The model's own words, as the server's cache holds them.
-            self.conversation.remember(text, raw);
+            // The request and the model's own words, as the server's cache holds them.
+            self.conversation.remember(&voice_assistant::talk::as_meant(text), raw);
             let turn = self.turn_for(text, Some(answer.clone()), Outcome::Answered, start);
             info!(request = text, answer, ?lang, skill = turn.skill, after = ?start.elapsed(), "answering");
             self.turn = Some(turn);

@@ -62,7 +62,10 @@ impl Worker {
         }
         // The model is read on a thread of its own, so a pause after the lead-in can be filled.
         let (sentences, heard) = mpsc::channel::<String>();
-        let request = text.to_owned();
+        let request = talk::as_meant(text).into_owned();
+        if request != text {
+            info!(heard = text, meant = request, "chat request put right");
+        }
         let reader = std::thread::Builder::new().name("chat".into()).spawn(move || {
             let opening = opening.as_deref();
             chat.answer(&system, &history, &request, opening, lang, &mut |sentence| {

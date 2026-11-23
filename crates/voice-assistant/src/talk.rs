@@ -261,6 +261,24 @@ const QUESTIONING: &[&str] = &[
     "is", "are", "was", "were", "should", "shall", "have", "has",
 ];
 
+/// Whole requests the transcriber gets wrong in a way the chat model would answer: "I feel sick."
+/// came out "I feel safe." and got "Safety is a fine thing, sir." (23 Nov). Only said alone: in a
+/// longer sentence "safe" is meant.
+const MISHEARD_WHOLE: &[(&str, &str)] = &[
+    ("i feel safe", "I feel sick."),
+    ("i'm feeling safe", "I'm feeling sick."),
+    ("i am feeling safe", "I am feeling sick."),
+];
+
+/// `request` as the chat model should read it: a known whole-request mishearing put right.
+pub fn as_meant(request: &str) -> std::borrow::Cow<'_, str> {
+    let said = crate::dialog::phrase(request);
+    match MISHEARD_WHOLE.iter().find(|(heard, _)| said == *heard) {
+        Some((_, meant)) => std::borrow::Cow::Borrowed(meant),
+        None => std::borrow::Cow::Borrowed(request),
+    }
+}
+
 /// The lead-ins that fit `request`: for a question, for something asked for, or for something said.
 pub fn leads_for(request: &str) -> &'static [&'static str] {
     use crate::intent::{LEADS_TALK, LEADS_TALK_ASK, LEADS_TALK_QUESTION};
@@ -376,6 +394,13 @@ fn tidy(sentence: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_misheard_whole_request_is_put_right() {
+        assert_eq!(as_meant("I feel safe."), "I feel sick.");
+        assert_eq!(as_meant("I'm feeling safe"), "I'm feeling sick.");
+        assert_eq!(as_meant("I feel safe at home with you."), "I feel safe at home with you.");
+    }
 
     #[test]
     fn whole_sentences_come_out_as_they_are_written() {
