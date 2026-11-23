@@ -1214,6 +1214,17 @@ fn long_talk_after_a_miss_is_the_room() {
     assert_eq!(dialog.say("we should really get going to the shop now"), None);
 }
 
+/// 23 November 2026: a name said again was looked up again with 2.3 s of silence first.
+#[test]
+fn a_name_said_again_gets_the_look_up_s_lead_in() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    dialog.worker.render = Some(RenderAhead::spawn(Box::new(Silent)).unwrap());
+    misheard_look_up(&mut dialog);
+    assert!(dialog.worker.lead_in("Skibby toilet.", Lang::English).is_some());
+    assert_eq!(dialog.worker.lead_in("Not at not all.", Lang::English), None);
+}
+
 /// 23 November 2026: "Not at not all." after a miss looked up "Who is Not at not all?".
 #[test]
 fn an_answer_after_a_miss_is_not_a_name() {
@@ -1389,6 +1400,16 @@ fn words_after_an_answer_to_a_request_without_the_name_are_the_room() {
     assert_eq!(said(dialog.say("what time is it")), time_of_day(Lang::English));
     assert_eq!(dialog.say("I'm not that hungry, really."), None);
     assert!(chat.asked.lock().unwrap().is_empty());
+}
+
+/// After the name said alone, words no rule takes go to the chat model, as after "Jarvis, ..." whole.
+#[test]
+fn open_talk_after_the_name_alone_goes_to_the_chat_model() {
+    let chat = FakeChat::new("Rather well, sir.");
+    let mut dialog = chat.dialog(None);
+    said(dialog.say("Jarvis."));
+    assert_eq!(said(dialog.say("How is your evening going?")), "Rather well, sir.");
+    assert_eq!(chat.asked.lock().unwrap().len(), 1);
 }
 
 #[test]
