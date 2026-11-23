@@ -174,6 +174,7 @@ impl AssistantProcessor {
             lead_turn: 0,
             chat_turn: 0,
             talked: None,
+            draft_run: None,
             talk_people: (Vec::new(), None),
             talk_warmed: String::new(),
             talk_base_gone: false,

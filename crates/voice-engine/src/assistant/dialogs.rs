@@ -258,6 +258,7 @@ impl Worker {
             lead_turn: 0,
             chat_turn: 0,
             talked: None,
+            draft_run: None,
             talk_people: (Vec::new(), None),
             talk_warmed: String::new(),
             talk_base_gone: false,
@@ -1431,6 +1432,71 @@ fn a_chat_reply_of_nine_words_goes_on() {
     assert!(dialog.say("Jarvis, I feel safe.").is_some());
     assert_eq!(said(dialog.say("No I'm feeling sick like I'm not feeling well.")), "Then take it easy today, sir.");
     assert_eq!(chat.asked.lock().unwrap().len(), 2);
+}
+
+/// The last thing the chat model was asked, of all it was asked.
+fn last_asked(chat: &FakeChat) -> String {
+    let asked = chat.asked.lock().unwrap();
+    let messages = asked.last().unwrap().as_array().unwrap();
+    let user = messages.iter().rev().find(|m| m["role"] == "user").unwrap();
+    user["content"].as_str().unwrap().to_owned()
+}
+
+/// A request for the chat model starts on its draft, and the utterance's end with the same words
+/// takes that run: the model is asked once, and nothing is said before the end.
+#[test]
+fn the_chat_model_starts_on_the_draft() {
+    let chat = FakeChat::new("Whales are wonderful dreamers, sir.");
+    let mut dialog = chat.dialog(None);
+    let said_now = dialog.draft("Jarvis, I had a strange dream about whales.", &[1; 4]);
+    assert_eq!(said_now, None, "nothing before the utterance ends");
+    assert!(dialog.worker.draft_run.is_some());
+    assert_eq!(said(dialog.say("Jarvis, I had a strange dream about whales.")), "Whales are wonderful dreamers, sir.");
+    assert!(dialog.worker.draft_run.is_none());
+    assert_eq!(chat.asked.lock().unwrap().len(), 1);
+}
+
+/// More words after the draft stop its run; the whole request is asked again.
+#[test]
+fn more_words_after_the_draft_ask_the_chat_model_again() {
+    let chat = FakeChat::new("The moon is a fine companion.");
+    let mut dialog = chat.dialog(None);
+    assert_eq!(dialog.draft("Jarvis, I was thinking about", &[1; 4]), None);
+    assert!(dialog.worker.draft_run.is_some());
+    assert_eq!(said(dialog.say("Jarvis, I was thinking about the moon tonight.")), "The moon is a fine companion.");
+    assert_eq!(last_asked(&chat), "I was thinking about the moon tonight.");
+    assert_eq!(chat.asked.lock().unwrap().len(), 2);
+}
+
+/// A wake whose name check said yes starts a run; a rule's answer to other words stops it before it
+/// plays.
+#[test]
+fn a_rule_answer_stops_the_draft_run() {
+    let chat = FakeChat::new("Indeed.");
+    let mut dialog = chat.dialog(None);
+    dialog.worker.conversation.wake = Some(Wake { at: Instant::now(), named: Some(true) });
+    dialog.draft("I was thinking about", &[1; 4]);
+    assert!(dialog.worker.draft_run.is_some());
+    assert_eq!(said(dialog.say("what time is it")), time_of_day(Lang::English));
+    assert!(dialog.worker.draft_run.is_none());
+}
+
+/// A draft a rule takes, or one said to nobody, starts no chat run.
+#[test]
+fn only_a_draft_for_the_chat_model_starts_it() {
+    let chat = FakeChat::new("Indeed.");
+    let mut dialog = chat.dialog(None);
+    dialog.draft("Jarvis, what time is it", &[1; 4]);
+    assert!(dialog.worker.draft_run.is_none());
+    // A device wake whose name check has not said yes: most are the TV.
+    let mut dialog = chat.dialog(None);
+    dialog.worker.conversation.wake = Some(Wake { at: Instant::now(), named: None });
+    dialog.draft("I had a strange dream about whales", &[3; 4]);
+    assert!(dialog.worker.draft_run.is_none());
+    // No wake and no window: the room.
+    let mut dialog = chat.dialog(None);
+    dialog.draft("so I told him about the whales", &[2; 4]);
+    assert!(dialog.worker.draft_run.is_none());
 }
 
 /// 23 November 2026: a chat reply said twice, as it got no answer, was 14 words and taken for the room.

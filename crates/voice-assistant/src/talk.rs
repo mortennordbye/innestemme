@@ -5,6 +5,8 @@
 //! No tools: the house stays with the rules, and a short prompt is quick to read.
 
 use std::io::{BufRead, BufReader};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Relaxed;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -110,7 +112,10 @@ impl Talk {
     /// The answer to `request`, each sentence handed to `sentence` as soon as it is whole; it
     /// returns false to stop (the answer was interrupted). `opening` is what was already said (the
     /// lead-in, "Of course, sir."): the model goes on from it, so it neither repeats an opener nor
-    /// spends its first words on one.
+    /// spends its first words on one. Set, `stop` ends the answer at the next piece the server sends:
+    /// the stream is closed and the server stops writing (a run begun on a draft that more words
+    /// followed).
+    #[allow(clippy::too_many_arguments)]
     pub fn answer(
         &self,
         system: &str,
@@ -118,6 +123,7 @@ impl Talk {
         request: &str,
         opening: Option<&str>,
         lang: Lang,
+        stop: &AtomicBool,
         sentence: &mut dyn FnMut(&str) -> bool,
     ) -> Result<Answered> {
         let body = self.body(system, history, Some(request), opening, lang);
@@ -138,6 +144,9 @@ impl Talk {
         let read = |answered: &mut Answered| -> Result<()> {
             for line in BufReader::new(response.into_body().into_reader()).lines() {
                 let line = line.context("chat model stream broke off")?;
+                if stop.load(Relaxed) {
+                    return Ok(());
+                }
                 if line.trim().is_empty() {
                     continue;
                 }

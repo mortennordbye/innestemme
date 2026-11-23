@@ -131,7 +131,11 @@ something asked for, "I see." for something said. The model gets the lead-in as 
 on from it, so it does not open again ("Good question. That is a great question!"). The model is read on a thread of its own: when it is still quiet
 0.4 s after the lead-in has played, a filler follows ("Let me see."), and the first part of the answer may end at a
 comma after five words when two more follow it (so ", sir." stays with its sentence), and the first words go out
-before the whole first sentence is written. The request sets the thread count
+before the whole first sentence is written. The model starts on the draft (after 240 ms of silence), not after the
+utterance's whole closing silence (640 ms): its sentences wait until the utterance ends with the same words, so
+nothing is said earlier. More words stop that run (the stream is closed, and Ollama stops at once) and the whole
+request is asked again. The log has `chat model started on the draft`, `chat model's draft run stopped` and, on
+`chat model answered`, `started_on_draft` (how far ahead it began). The request sets the thread count
 (`chat-threads`, the server's CPU limit) and turns thinking off: on the cluster's CPUs both decide whether the first
 sentence comes in under two seconds (`docs/benchmarks.md`). Once the model has answered in a conversation, small talk goes to it too, so "I'm sad" fits the talk ("Goodbye"
 keeps its own answer). After a chat or small talk answer, after any answer to a request said with the name, and
