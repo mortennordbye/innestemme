@@ -57,6 +57,11 @@ impl PendingRetry {
         if words.is_empty() || words.len() > RETRY_WORDS {
             return None;
         }
+        // "Not at all." is an answer, not a name: it looked up "Do Not Track" (23 Nov).
+        let answer = ["no", "not", "nope", "nah", "never", "yes", "yeah", "nei", "ja"];
+        if super::home::confirmation(reply).is_some() || answer.contains(&words[0].as_str()) {
+            return None;
+        }
         let lower = self.request.to_lowercase();
         let at = lower.find(&self.name)?;
         let name = reply.trim().trim_end_matches(['.', '!', '?', ',']).trim();

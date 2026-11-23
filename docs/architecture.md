@@ -102,7 +102,7 @@ comes later. The log has `asked which` (skill, topic) and `chose` (choice).
 or a look-up finds no article ("Sorry, I couldn't find anything about Kibberry Toilet."), the name was most likely
 misheard. For 30 s, a reply without the name of at most four words that is no request of its own ("Oslo S.",
 "Skibby toilet.") takes the name's place in the request, which is then answered again. Longer words are still the
-room, and a request is its own. The log has `name said again` (heard, meant).
+room, a request is its own, and an answer ("Not at all.", "No.", "Okay.") is not a name. The log has `name said again` (heard, meant).
 
 **Sir or ma'am.** With `honorific-female` set, the end of the audio before each wake word (1.5 s) goes to a
 speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how
@@ -136,7 +136,7 @@ before the whole first sentence is written. The request sets the thread count
 sentence comes in under two seconds (`docs/benchmarks.md`). Once the model has answered in a conversation, small talk goes to it too, so "I'm sad" fits the talk ("Goodbye"
 keeps its own answer). After a chat or small talk answer, and after any answer to a request said with the name, the
 follow-up window takes a reply without the name that no rule takes ("I feel sick." after the morning briefing), so a
-conversation can go on. Such a reply has at most 12 words; the 8-word room-talk filter does not apply to it, and the
+conversation can go on. Such a reply has at most 12 words, a sentence said twice counted once; the 8-word room-talk filter does not apply to it, and the
 echo filter does. In such a conversation an echo is a run of words from the end of the answer ("Sir.", "Reality of this
 home."), not any of the words said lately, as a chat answer has so many that "Tell me." counted as one. The prompt gives the model a personality
 with examples of its manner: with rules alone, Gemma refused recipes and said it had no preferences. A

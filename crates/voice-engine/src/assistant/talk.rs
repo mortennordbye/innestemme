@@ -26,6 +26,16 @@ const FILLER_AFTER: Duration = Duration::from_millis(400);
 /// How often the household's people are read again from Home Assistant for the prompt.
 const PEOPLE_REFRESH: Duration = Duration::from_secs(30 * 60);
 
+/// The words of `heard`, a sentence said again counted once: "What about do you believe in
+/// Skibberty Toilet? Do you believe in Skibberty Toilet?" was 14 words, and a reply said twice for want
+/// of an answer was taken for the room (23 Nov).
+fn words_said_once(heard: &str) -> usize {
+    let sentences: Vec<Vec<String>> =
+        heard.split(['.', '?', '!']).map(voice_assistant::dialog::words).filter(|words| !words.is_empty()).collect();
+    let repeat = |i: usize| sentences[..i].iter().any(|earlier| earlier.ends_with(&sentences[i]));
+    (0..sentences.len()).filter(|&i| !repeat(i)).map(|i| sentences[i].len()).sum()
+}
+
 impl Worker {
     /// The chat model's answer to `text`, already spoken; `None` when there is no chat model, or
     /// it failed and nothing was spoken, so the rules' fallback answers.
@@ -158,7 +168,7 @@ impl Worker {
     /// request said with the name ("I feel sick." after the morning briefing, 23 Nov). Short, and
     /// not that answer heard back.
     pub(super) fn talk_reply(&self, heard: &str) -> bool {
-        let short = heard.split_whitespace().count() <= TALK_REPLY_WORDS;
+        let short = words_said_once(heard) <= TALK_REPLY_WORDS;
         if self.in_talk() {
             return short && !self.tail_echo(heard);
         }
@@ -259,5 +269,18 @@ impl Worker {
             }
             Err(error) => warn!(%error, "chat model not reachable; open talk gets the fallback"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_sentence_said_again_counts_once() {
+        let twice = "What about do you believe in Skibberty Toilet? Do you believe in Skibberty Toilet?";
+        assert_eq!(words_said_once(twice), 8);
+        assert_eq!(words_said_once("I'm sick. I'm sick."), 2);
+        assert_eq!(words_said_once("I found out you can go to China. I said no more."), 12);
     }
 }
