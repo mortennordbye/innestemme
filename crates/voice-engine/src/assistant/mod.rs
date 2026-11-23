@@ -867,7 +867,7 @@ impl Worker {
             self.unhandled(Reason::Apologised, text, Some(&answer));
         }
         self.conversation.answered(text);
-        self.conversation.remember(text, answer.clone());
+        self.conversation.remember_rule(text, &answer);
         let answer = match &mut self.persona {
             Some(persona) if lang == Lang::English && (lead.is_some() || plain) => persona.after_lead(&answer),
             Some(persona) if lang == Lang::English => persona.style(&answer, jiff::Zoned::now().hour() as u8),

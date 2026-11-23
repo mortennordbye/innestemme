@@ -22,6 +22,8 @@ use super::{AssistantEvent, Worker, FOLLOW_UP};
 /// answers and the server's prompt cache holds it. Dropping one at a time changed it on each answer.
 const HISTORY_TURNS: usize = 4;
 const HISTORY_MOST_TURNS: usize = 12;
+/// The most words of a rule's answer the history keeps (whole sentences; the first always).
+const HISTORY_ANSWER_WORDS: usize = 30;
 pub(super) const HISTORY_MAX_AGE: Duration = Duration::from_secs(300);
 /// How long "Turn on privacy mode?" waits for its "yes".
 pub(super) const CONFIRM_WINDOW: Duration = Duration::from_secs(30);
@@ -256,11 +258,31 @@ impl Conversation {
 
     /// An exchange for the language model's history; the oldest go.
     pub(super) fn remember(&mut self, user: &str, assistant: String) {
+        // A conversation that is over starts no new one: the 08:17 morning briefing came back at
+        // 08:53 as history, read again for 2 s and talked about (23 Nov).
+        if !self.going_on() {
+            self.history.clear();
+        }
         self.history.push_back((Instant::now(), Turn { user: user.to_owned(), assistant }));
         if self.history.len() > HISTORY_MOST_TURNS {
             self.history.drain(..self.history.len() - HISTORY_TURNS);
             self.history_cut = true;
         }
+    }
+
+    /// A rule's answer as the history keeps it: its first sentences, up to `HISTORY_ANSWER_WORDS`.
+    /// The morning briefing is 90 words of news and shopping the chat model would read again before
+    /// each reply; the gist is enough to go on from.
+    pub(super) fn remember_rule(&mut self, user: &str, answer: &str) {
+        let mut kept = String::new();
+        for sentence in answer.split_inclusive(['.', '?', '!']) {
+            let words = kept.split_whitespace().count() + sentence.split_whitespace().count();
+            if !kept.is_empty() && words > HISTORY_ANSWER_WORDS {
+                break;
+            }
+            kept.push_str(sentence);
+        }
+        self.remember(user, kept.trim().to_owned());
     }
 
     /// The request answered, for follow-ons. Several requests in one sentence leave no topic.

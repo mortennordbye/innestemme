@@ -121,8 +121,9 @@ impl Worker {
         };
         let (answer, raw) = match result {
             Ok(answered) if !answered.said.is_empty() => {
-                // `read`: the prompt tokens the server's cache did not hold. Many of them mean the
-                // prompt or the history changed at its start.
+                // `read_tokens` is the whole prompt; `read` is the time for what the server's cache did
+                // not hold (about 150 tokens a second on the node). A long one means the prompt or the
+                // history changed near its start.
                 info!(
                     first_sentence = ?first,
                     took = ?start.elapsed(),

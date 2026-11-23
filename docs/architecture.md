@@ -149,9 +149,11 @@ time once a conversation is over (0.2 s while the server still keeps it). A firs
 words (0.2 s). The prompt is kept the same text between answers: the household's people
 are read from Home Assistant every 30 minutes, not per answer, and a changed prompt (a new day, a new note) is sent
 to the model in the background while the house is quiet. The history grows to twelve exchanges and is then cut to
-four at once, and it holds the model's own words, so its start also stays in the cache. The log has `chat model
-answered` (first sentence, total time, `read_tokens` and `read`, the prompt the cache did not hold, and
-`tokens_per_second`).
+four at once, and it holds the model's own words, so its start also stays in the cache. A new conversation starts
+with no history (an earlier one, over, does not come back), and a rule's answer is kept as its first sentences, at
+most 30 words (the morning briefing, a Wikipedia text). The log has `chat model answered` (first sentence, total
+time, `read_tokens`, the whole prompt, and `read`, the time to read what the cache did not hold: 0.15-0.35 s for one
+new exchange, about 150 tokens a second for the rest; and `tokens_per_second`).
 
 **Skills.** One module each under `voice-assistant/src/` (weather, transit, power, music, timers, shopping,
 lights, scenes, house, lockdown, tv, news, lookup, calc, distance, party, smalltalk, jokes). A skill's module holds
