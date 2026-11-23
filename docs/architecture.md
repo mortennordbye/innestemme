@@ -47,7 +47,8 @@ keeps most of the cores; on the cluster's 6, 2 stay free for the request's draft
 weather?"), with known misspellings (`dialog.rs`).
 
 **Turns.** After an answer the assistant listens a few seconds more without the wake word (6 s on a satellite,
-8 s on the Mac), for recognised requests only, so room chatter is ignored. Not after party mode starts or stops: talk
+8 s on the Mac), for recognised requests only, so room chatter is ignored. A reply that started in the window counts
+even when it ends after it, and the satellite keeps its window open while it is said (at most 15 s more). Not after party mode starts or stops: talk
 over the loud music would be taken as a request ("play"). Speech that repeats an answer of the last 30 s is the Sonos heard back and is dropped. An
 unrecognised request after a wake gets "Sorry, I didn't catch that." only when Parakeet hears the name in the wake
 word itself, so a false wake by the TV stays silent. That check runs as soon as the device wakes, on its own
@@ -133,15 +134,16 @@ comma after five words when two more follow it (so ", sir." stays with its sente
 before the whole first sentence is written. The request sets the thread count
 (`chat-threads`, the server's CPU limit) and turns thinking off: on the cluster's CPUs both decide whether the first
 sentence comes in under two seconds (`docs/benchmarks.md`). Once the model has answered in a conversation, small talk goes to it too, so "I'm sad" fits the talk ("Goodbye"
-keeps its own answer). After a chat or small talk answer, the follow-up window
-takes a reply without the name that no rule takes, so a conversation can go on; the room-talk and echo filters
-still apply. In such a conversation an echo is a run of words from the end of the answer ("Sir.", "Reality of this
+keeps its own answer). After a chat or small talk answer, and after any answer to a request said with the name, the
+follow-up window takes a reply without the name that no rule takes ("I feel sick." after the morning briefing), so a
+conversation can go on. Such a reply has at most 12 words; the 8-word room-talk filter does not apply to it, and the
+echo filter does. In such a conversation an echo is a run of words from the end of the answer ("Sir.", "Reality of this
 home."), not any of the words said lately, as a chat answer has so many that "Tell me." counted as one. The prompt gives the model a personality
 with examples of its manner: with rules alone, Gemma refused recipes and said it had no preferences. A
 phone or Assist gets the answer as words. When the model is down, the rules' fallback answers. The model cannot act:
 the house stays with the rules. Gemma 4's sliding-window attention lets Ollama reuse its prompt cache only for a prompt that extends the one it
 read last: a new question after the same system prompt was read whole again (2 s). So every request starts with a
-fixed base, the system prompt and three example exchanges, and the base is read ahead at start, after each answer when
+fixed base, the system prompt and four example exchanges, and the base is read ahead at start, after each answer when
 the prompt changed (the satellite's room, a note) or the history was cut (with the history kept), and in quiet
 time once a conversation is over (0.2 s while the server still keeps it). A first question then reads only its own
 words (0.2 s). The prompt is kept the same text between answers: the household's people

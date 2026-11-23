@@ -42,7 +42,8 @@ can hold a device: stop a laptop instance before the cluster's starts, or the tw
   device listen again without the wake word (`continue_conversation`); not with an answer player, which the
   device would hear.
 - **Follow-ups.** With `wake-model` and an answer player, the engine listens for 6 s after an answer has played
-  ("And turn off the kitchen."), recognised requests only.
+  ("And turn off the kitchen."), recognised requests only, and with `chat-url` a short reply for the chat model.
+  Speech that started in the window keeps it open until it ends, at most 15 s more.
 - **The answer on the player is announced when the request is heard**, before it is worded, so Home
   Assistant's call and the Sonos fetch overlap the wording; the stream sends the audio once it exists. The
   device's run still ends when the answer is worded. A request the worker says may end without words ("pause the

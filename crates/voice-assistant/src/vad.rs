@@ -65,6 +65,11 @@ impl Vad {
         *self = Self { floor, ..Self::default() };
     }
 
+    /// Speech is going on: an utterance has started and has not ended yet.
+    pub fn speaking(&self) -> bool {
+        self.speaking
+    }
+
     /// The utterance so far, once per pause of `DRAFT_FRAMES`. If it ends in this pause, the
     /// finished utterance is the draft and `END_FRAMES - DRAFT_FRAMES` more frames.
     pub fn draft(&mut self) -> Option<Vec<i16>> {

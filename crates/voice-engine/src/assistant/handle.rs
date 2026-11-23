@@ -27,6 +27,7 @@ pub struct AssistantHandle {
     pub(super) events: broadcast::Sender<AssistantEvent>,
     pub(super) hear_now: Arc<AtomicBool>,
     pub(super) interrupted: Arc<AtomicBool>,
+    pub(super) speaking: Arc<AtomicBool>,
     pub pause: Arc<Pause>,
     pub screen: Arc<Screen>,
     pub party: Party,
@@ -103,6 +104,11 @@ impl AssistantHandle {
         self.hear_now.store(true, Relaxed);
     }
 
+    /// Speech is going on in the microphone: an utterance has started and not yet ended.
+    pub fn hears_speech(&self) -> bool {
+        self.speaking.load(Relaxed)
+    }
+
     /// The spoken answer to `text`, for the web page, when answering it changes nothing in the
     /// house. Nothing is played or sent to a satellite.
     pub fn preview(&self, text: String) -> tokio::sync::oneshot::Receiver<Preview> {
@@ -160,6 +166,12 @@ impl AssistantHandle {
         self.events.subscribe()
     }
 
+    /// Speech going on, as the microphone's speech detector would say.
+    #[cfg(test)]
+    pub(crate) fn set_speaking_for_tests(&self, speaking: bool) {
+        self.speaking.store(speaking, Relaxed);
+    }
+
     /// A handle with no assistant behind it, and the announcements sent to it so far.
     #[cfg(test)]
     pub(crate) fn for_tests() -> (Self, impl Fn() -> Vec<Announcement>) {
@@ -169,6 +181,7 @@ impl AssistantHandle {
             events: broadcast::channel(4).0,
             hear_now: Default::default(),
             interrupted: Default::default(),
+            speaking: Default::default(),
             pause: Default::default(),
             screen: Default::default(),
             party: Party::new(None),

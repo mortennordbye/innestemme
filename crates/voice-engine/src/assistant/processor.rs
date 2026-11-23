@@ -55,6 +55,8 @@ pub struct AssistantProcessor {
     /// A satellite started listening: stop ignoring the microphone at once.
     hear_now: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
+    /// Speech is going on in the microphone, for a satellite that keeps its window open meanwhile.
+    speaking: Arc<AtomicBool>,
     pause: Arc<Pause>,
     screen: Arc<Screen>,
     party: Party,
@@ -273,6 +275,7 @@ impl AssistantProcessor {
         let hear_now = Arc::new(AtomicBool::new(false));
         Ok(Self {
             vad: Vad::default(),
+            speaking: Arc::new(AtomicBool::new(false)),
             jobs,
             events,
             reply,
@@ -296,6 +299,7 @@ impl AssistantProcessor {
             events: self.events.clone(),
             hear_now: self.hear_now.clone(),
             interrupted: self.interrupted.clone(),
+            speaking: self.speaking.clone(),
             pause: self.pause.clone(),
             screen: self.screen.clone(),
             party: self.party.clone(),
@@ -349,6 +353,7 @@ impl FrameProcessor for AssistantProcessor {
                 let _ = self.jobs.send(Job::Draft(draft));
             }
         });
+        self.speaking.store(self.vad.speaking(), Relaxed);
         metrics.engine_step.record(start.elapsed());
 
         let n = self.reply.slots().min(output.len());

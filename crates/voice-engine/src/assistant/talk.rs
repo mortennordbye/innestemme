@@ -153,10 +153,20 @@ impl Worker {
         }
     }
 
-    /// Words without the name, after an answer of the chat model's, that go on with the
-    /// conversation ("Tired. Long day." after "And you?"): short, and not that answer heard back.
+    /// Words without the name in the follow-up window that go on with the conversation: after an
+    /// answer of the chat model's ("Tired. Long day." after "And you?"), or after any answer to a
+    /// request said with the name ("I feel sick." after the morning briefing, 23 Nov). Short, and
+    /// not that answer heard back.
     pub(super) fn talk_reply(&self, heard: &str) -> bool {
-        self.in_talk() && heard.split_whitespace().count() <= TALK_REPLY_WORDS && !self.tail_echo(heard)
+        let short = heard.split_whitespace().count() <= TALK_REPLY_WORDS;
+        if self.in_talk() {
+            return short && !self.tail_echo(heard);
+        }
+        let after_named = self.config.talk.is_some()
+            && self.conversation.follow_up()
+            && self.conversation.wake.is_none()
+            && self.conversation.window_named;
+        after_named && short && !self.echo(heard)
     }
 
     /// A conversation with the chat model is going on: its echo filter is `tail_echo`.
