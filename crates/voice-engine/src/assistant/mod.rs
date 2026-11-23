@@ -818,7 +818,7 @@ impl Worker {
         self.interrupted.store(false, Relaxed);
         // A run begun on a draft of other words would write on through this answer, on the CPU
         // the speech needs.
-        if self.draft_run.as_ref().is_some_and(|run| !run.for_request(text)) {
+        if !self.previewing && self.draft_run.as_ref().is_some_and(|run| !run.for_request(text)) {
             self.stop_draft_run();
         }
         // A slow answer (weather, departures) opens with a lead-in rendered ahead of time, which

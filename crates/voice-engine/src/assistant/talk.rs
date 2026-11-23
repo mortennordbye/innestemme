@@ -122,7 +122,8 @@ impl Worker {
         // not in `lead_in`: only a request that reaches the model gets it.
         let wants_lead = aloud && lang == Lang::English && self.render.is_some() && !self.answer_announced;
         // The run begun on the draft, when it was asked exactly this; else it stops.
-        let draft = self.draft_run.take();
+        // A typed request (a phone, Assist) leaves a run begun on a spoken draft to the voice's end.
+        let draft = if aloud { self.draft_run.take() } else { None };
         let draft = match draft {
             Some(run) if run.asked(text, lang, &system, &history, wants_lead) => Some(run),
             Some(run) => {
@@ -134,7 +135,13 @@ impl Worker {
         };
         let on_draft = draft.as_ref().map(|run| start.duration_since(run.at));
         let (heard, reader, opening) = match draft {
-            Some(run) => (run.sentences, run.reader, run.opening),
+            Some(run) => {
+                // Its lead-in was the next in turn, taken now that it is said.
+                if run.opening.is_some() {
+                    self.lead_turn = self.lead_turn.wrapping_add(1);
+                }
+                (run.sentences, run.reader, run.opening)
+            }
             None => {
                 let opening = wants_lead.then(|| self.pick_talk_lead(text));
                 match start_reader(chat, system, history, text, opening.clone(), lang, Arc::default()) {
@@ -231,10 +238,17 @@ impl Worker {
 
     /// The lead-in for a chat answer to `text`, the next of those that fit it.
     fn pick_talk_lead(&mut self, text: &str) -> String {
+        let lead = self.next_talk_lead(text);
         self.lead_turn = self.lead_turn.wrapping_add(1);
+        lead
+    }
+
+    /// The lead-in `pick_talk_lead` would give, without taking its turn: a draft's run may be stopped,
+    /// and the turn is taken only when its answer is said.
+    fn next_talk_lead(&self, text: &str) -> String {
         let leads = talk::leads_for(text);
-        let honorific = self.persona.as_ref().map(|persona| persona.honorific().to_owned());
-        lead_sentence(leads[self.lead_turn % leads.len()], honorific.as_deref())
+        let honorific = self.persona.as_ref().map(voice_assistant::persona::Persona::honorific);
+        lead_sentence(leads[self.lead_turn.wrapping_add(1) % leads.len()], honorific)
     }
 
     /// Starts the chat model on a draft that would go to it: the 640 ms closing silence then
@@ -252,7 +266,7 @@ impl Worker {
         // `answer_announced`: it still holds the last answer's, and `answer` clears it for a request
         // no rule takes.
         let wants_lead = lang == Lang::English && self.render.is_some();
-        let opening = wants_lead.then(|| self.pick_talk_lead(request));
+        let opening = wants_lead.then(|| self.next_talk_lead(request));
         let stop = Arc::new(AtomicBool::new(false));
         let started = start_reader(chat, system.clone(), history.clone(), request, opening.clone(), lang, stop.clone());
         let Some((sentences, reader)) = started else { return };

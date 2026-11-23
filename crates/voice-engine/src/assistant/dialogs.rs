@@ -1481,6 +1481,32 @@ fn a_rule_answer_stops_the_draft_run() {
     assert!(dialog.worker.draft_run.is_none());
 }
 
+/// A typed question while a spoken draft's run waits leaves that run to the voice.
+#[test]
+fn a_typed_question_leaves_the_draft_run() {
+    let chat = FakeChat::new("Whales dream in songs, sir.");
+    let mut dialog = chat.dialog(None);
+    dialog.draft("Jarvis, I had a strange dream about whales.", &[1; 4]);
+    assert!(dialog.worker.draft_run.is_some());
+    dialog.compose_aside("I wonder about the deep sea");
+    assert!(dialog.worker.draft_run.is_some());
+    assert_eq!(said(dialog.say("Jarvis, I had a strange dream about whales.")), "Whales dream in songs, sir.");
+    assert!(dialog.worker.draft_run.is_none());
+}
+
+/// A draft's run that is stopped takes no lead-in's turn: only the answer said does.
+#[test]
+fn a_stopped_draft_run_keeps_the_lead_in_turn() {
+    let chat = FakeChat::new("Indeed, sir.");
+    let mut dialog = chat.dialog(None);
+    dialog.worker.render = Some(RenderAhead::spawn(Box::new(Silent)).unwrap());
+    let before = dialog.worker.lead_turn;
+    dialog.draft("Jarvis, I was thinking about", &[1; 4]);
+    assert_eq!(dialog.worker.lead_turn, before);
+    said(dialog.say("Jarvis, I was thinking about the moon tonight."));
+    assert_eq!(dialog.worker.lead_turn, before.wrapping_add(1));
+}
+
 /// A draft a rule takes, or one said to nobody, starts no chat run.
 #[test]
 fn only_a_draft_for_the_chat_model_starts_it() {

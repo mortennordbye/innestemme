@@ -193,6 +193,10 @@ streamed. The time is from the request to the end of the first sentence, after a
   next turn of a conversation 0.40 s, a first question after a base read ahead (the system prompt and three
   example exchanges, ending with the last example) 0.21-0.24 s, and the base read again after a conversation
   0.19 s.
+- Prompt cache again (23 Nov, Ollama 0.40.15): Ollama rolls back to the end of a recent prompt, not to any shared
+  start. With the base read ahead, a request after a stopped run of its first words (1 to 64 tokens written) read
+  its 460-token prompt in 0.27-0.47 s; a new question that shares only the system prompt still read it all
+  (1.8 s). A closed stream stops Ollama at once (from inside the cluster; `kubectl port-forward` adds about 1 s).
 - End of speech to first sound: about 0.64 s end-of-turn wait, 1.2-1.8 s to the first sentence, 0.45 s for the
   Sonos to start. A cached lead-in ("Hmm.") goes out after about 1.1 s.
 
