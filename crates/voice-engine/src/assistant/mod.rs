@@ -345,6 +345,8 @@ struct Worker {
     lead_turn: usize,
     /// The chat model spoke the answer being composed, and when it finished: what it put out.
     talked: Option<(speech::Spoken, String)>,
+    /// The chat model begun on the draft of the utterance under way.
+    draft_run: Option<talk::DraftRun>,
     /// The household's people for the chat model's prompt, and when they were read.
     talk_people: (Vec<String>, Option<Instant>),
     /// The chat model's system prompt as last sent to it.
@@ -539,6 +541,13 @@ impl Worker {
     }
 
     fn utterance(&mut self, audio: &[i16], ended: Instant) {
+        self.take_utterance(audio, ended);
+        // A run begun on the draft that the answer did not take: more words came, or none went to
+        // the chat model.
+        self.stop_draft_run();
+    }
+
+    fn take_utterance(&mut self, audio: &[i16], ended: Instant) {
         // The utterance ended in the pause the draft was taken in: same speech, more silence.
         let closing = (vad::END_FRAMES - vad::DRAFT_FRAMES) as usize * FRAME_SAMPLES;
         // Kept only for the rest of a request answered from its draft.
@@ -615,6 +624,7 @@ impl Worker {
         // still takes the rest of it.
         let Some((audio, candidates)) = &self.conversation.draft else { return };
         let Some(first) = candidates.first() else { return };
+        let lang = first.lang;
         let said = voice_assistant::dialog::words(&self.config.wake.strip(&first.text).unwrap_or(first.text.clone()));
         if let Some((answered, words)) = &mut self.conversation.answered_draft {
             if audio.starts_with(answered) {
@@ -640,7 +650,12 @@ impl Worker {
             return;
         }
         let intent = intent::parse(&request);
-        if intent::split_commands(&request).is_some() || !intent.meta().complete_at_once {
+        let several = intent::split_commands(&request).is_some();
+        if !several && intent == Intent::Unknown && self.chat_takes_draft(&request, named) {
+            self.start_on_draft(&request, lang);
+            return;
+        }
+        if several || !intent.meta().complete_at_once {
             return;
         }
         let Some((audio, candidates)) = self.conversation.draft.take() else { return };
@@ -801,6 +816,11 @@ impl Worker {
 
     fn answer(&mut self, text: &str, lang: Lang, start: Instant) {
         self.interrupted.store(false, Relaxed);
+        // A run begun on a draft of other words would write on through this answer, on the CPU
+        // the speech needs.
+        if self.draft_run.as_ref().is_some_and(|run| !run.for_request(text)) {
+            self.stop_draft_run();
+        }
         // A slow answer (weather, departures) opens with a lead-in rendered ahead of time, which
         // plays while the data is fetched and its sentence synthesized.
         let lead = self.lead_in(text, lang);
