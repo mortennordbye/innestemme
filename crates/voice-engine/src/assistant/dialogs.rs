@@ -1415,6 +1415,34 @@ fn a_reply_begun_in_the_window_counts_however_long_it_goes_on() {
     assert!(!dialog.worker.conversation.follow_up());
 }
 
+/// A reply kept in the window and dropped leaves the window as it was, so the TV's next line, begun
+/// after the window, does not count.
+#[test]
+fn a_dropped_reply_does_not_keep_the_window_open() {
+    let mut dialog = Dialog::new(None);
+    let ended = Instant::now() - Duration::from_secs(2);
+    dialog.worker.conversation.follow_up_until = Some(ended - Duration::from_secs(1));
+    // The room: long, and not opening like a request.
+    dialog.worker.transcriber = Box::new(Hears("so I told him that the whole thing was never going to work out"));
+    dialog.worker.utterance(&vec![0i16; SAMPLE_RATE as usize * 3], ended);
+    assert_eq!(dialog.answers(), None);
+    assert!(!dialog.worker.conversation.follow_up());
+}
+
+/// The name of an earlier turn does not carry over: a window opened by a turn without it takes no
+/// chat reply.
+#[test]
+fn a_window_after_a_turn_without_the_name_takes_no_chat_reply() {
+    let chat = FakeChat::new("Indeed.");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, what time is it").is_some());
+    // Then a turn that ends without a request, and a window opened after it.
+    dialog.worker.end_turn(TurnEnd::Silent);
+    dialog.worker.conversation.follow_up_until = Some(Instant::now() + FOLLOW_UP);
+    assert_eq!(dialog.say("I feel sick."), None);
+    assert!(chat.asked.lock().unwrap().is_empty());
+}
+
 #[test]
 fn a_chat_model_that_is_down_leaves_the_fallback() {
     let mut dialog = Dialog::new(None);

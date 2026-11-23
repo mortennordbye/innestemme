@@ -165,7 +165,7 @@ impl Worker {
         let after_named = self.config.talk.is_some()
             && self.conversation.follow_up()
             && self.conversation.wake.is_none()
-            && self.request_addressed;
+            && self.conversation.window_named;
         after_named && short && !self.echo(heard)
     }
 

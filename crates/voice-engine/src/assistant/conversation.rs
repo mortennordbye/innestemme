@@ -168,6 +168,9 @@ pub(super) struct Conversation {
     pub(super) history: VecDeque<(Instant, Turn)>,
     /// The chat model gave the last answer, at this time: a reply without the name goes on with it.
     pub(super) last_talk: Option<Instant>,
+    /// The follow-up window is after an answer to a request said with the name: a reply without
+    /// the name may go to the chat model. Each turn's end sets it, so an older turn never counts.
+    pub(super) window_named: bool,
     /// The chat model last answered at this time, whatever answered since.
     pub(super) model_talk: Option<Instant>,
     /// The history was cut since the chat model's cache was last read again.
@@ -346,6 +349,7 @@ impl Worker {
     /// for it, and the wake that opened it.
     pub(super) fn end_turn(&mut self, end: TurnEnd) {
         let open = !std::mem::take(&mut self.conversation.follow_up_closed);
+        self.conversation.window_named = std::mem::take(&mut self.request_addressed);
         let window = |after: Duration| open.then(|| Instant::now() + after + FOLLOW_UP);
         match end {
             TurnEnd::Silent => {

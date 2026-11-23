@@ -583,21 +583,28 @@ impl Worker {
                 return;
             }
         };
-        self.keep_window_for(audio, ended);
+        let kept = self.keep_window_for(audio, ended);
         self.heard(&candidates, audio, ended, start, from_draft);
+        // Dropped, it leaves the window as it was: otherwise the room's next words, begun in the
+        // window kept for these, would keep it open in turn.
+        if let Some((until, _)) = kept.filter(|(_, kept)| self.conversation.follow_up_until == Some(*kept)) {
+            self.conversation.follow_up_until = Some(until);
+        }
         self.conversation.draft_undo = None;
     }
 
     /// A reply that began in the follow-up window is heard as said in it, however long it went on:
     /// "No I'm feeling sick like I'm not feeling well." took 6 s and ended after the window (23 Nov).
-    fn keep_window_for(&mut self, audio: &[i16], ended: Instant) {
+    /// The window's end before and after, when it was kept open.
+    fn keep_window_for(&mut self, audio: &[i16], ended: Instant) -> Option<(Instant, Instant)> {
         let length = Duration::from_secs_f32(audio.len() as f32 / SAMPLE_RATE as f32);
-        let (Some(until), Some(began)) = (self.conversation.follow_up_until, ended.checked_sub(length)) else {
-            return;
-        };
-        if began < until {
-            self.conversation.follow_up_until = Some(until.max(Instant::now() + REPLY_HEARD));
-        }
+        let until = self.conversation.follow_up_until?;
+        let began = ended.checked_sub(length)?;
+        let kept = Instant::now() + REPLY_HEARD;
+        (began < until && until < kept).then(|| {
+            self.conversation.follow_up_until = Some(kept);
+            (until, kept)
+        })
     }
 
     /// A draft that is a whole command with nothing that could follow ("pause the music", "what
@@ -665,6 +672,8 @@ impl Worker {
             Some(rest) if rest.is_empty() => {
                 info!("wake word");
                 self.conversation.follow_up_until = Some(Instant::now() + FOLLOW_UP);
+                // The window of an earlier answer is over.
+                self.conversation.window_named = false;
                 self.emit(AssistantEvent::Listening);
                 self.hush();
                 self.play(&tts::wake_chime());
