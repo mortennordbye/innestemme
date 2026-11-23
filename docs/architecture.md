@@ -146,8 +146,8 @@ echo filter does. In such a conversation an echo is a run of words from the end 
 home."), not any of the words said lately, as a chat answer has so many that "Tell me." counted as one. The prompt gives the model a personality
 with examples of its manner: with rules alone, Gemma refused recipes and said it had no preferences. A
 phone or Assist gets the answer as words. When the model is down, the rules' fallback answers. The model cannot act:
-the house stays with the rules. Gemma 4's sliding-window attention lets Ollama reuse its prompt cache only for a prompt that extends the one it
-read last: a new question after the same system prompt was read whole again (2 s). So every request starts with a
+the house stays with the rules. Gemma 4's sliding-window attention lets Ollama roll its prompt cache back only to the end of a prompt it read
+recently: a new question after the same system prompt was read whole again (2 s), as no earlier prompt ended there. So every request starts with a
 fixed base, the system prompt and four example exchanges, and the base is read ahead at start, after each answer when
 the prompt changed (the satellite's room, a note) or the history was cut (with the history kept), and in quiet
 time once a conversation is over (0.2 s while the server still keeps it). A first question then reads only its own
