@@ -86,6 +86,9 @@ const ONSET_BASELINE: Duration = Duration::from_millis(250);
 const ONSET_RISE_DB: f32 = 15.0;
 /// After an answer has played, listen this long for a follow-up without the wake word.
 const FOLLOW_UP: Duration = Duration::from_secs(6);
+/// How much longer the follow-up window stays open while speech that started in it goes on: a
+/// reply of a few sentences fits, the TV talking on does not keep it open.
+const FOLLOW_UP_SPEECH: Duration = Duration::from_secs(15);
 /// An answer with no word from the assistant for this long has lost its end: a lagged event
 /// broadcast drops events with only a warning. The longest quiet stretch of a real answer comes
 /// before its first audio (the language model, a skill's Home Assistant calls, a slow lead-in);
@@ -1191,7 +1194,11 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 self.run = Run::FollowUp(Instant::now());
                 assistant.listen();
             }
-            Run::FollowUp(since) if since.elapsed() > FOLLOW_UP => {
+            // A reply still being said when the window ends was cut off mid-sentence (23 Nov).
+            Run::FollowUp(since)
+                if since.elapsed() > FOLLOW_UP
+                    && !(assistant.hears_speech() && since.elapsed() <= FOLLOW_UP + FOLLOW_UP_SPEECH) =>
+            {
                 info!("no follow-up");
                 return self.end_run().await;
             }

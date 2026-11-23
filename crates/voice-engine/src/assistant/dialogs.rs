@@ -1321,12 +1321,12 @@ impl FakeChat {
         dialog
     }
 
-    /// The last request's messages, the system prompt first and without the base's three example
+    /// The last request's messages, the system prompt first and without the base's four example
     /// exchanges after it.
     fn last_messages(&self) -> Value {
         let last = self.asked.lock().unwrap().last().cloned().unwrap_or(Value::Null);
         let messages = last.as_array().cloned().unwrap_or_default();
-        Value::Array(messages.iter().take(1).chain(messages.iter().skip(7)).cloned().collect())
+        Value::Array(messages.iter().take(1).chain(messages.iter().skip(9)).cloned().collect())
     }
 }
 
@@ -1357,13 +1357,62 @@ fn a_reply_without_the_name_goes_on_with_the_conversation() {
     assert_eq!(messages[3]["content"], "I'm not that hungry, really.");
 }
 
+/// 23 November 2026: "I feel sick." after the morning briefing was dropped as the room.
 #[test]
-fn words_without_the_name_after_a_skill_answer_are_still_the_room() {
-    let chat = FakeChat::new("Indeed.");
+fn a_reply_after_an_answer_to_the_name_goes_to_the_chat_model() {
+    let chat = FakeChat::new("I'm sorry to hear that, sir.");
     let mut dialog = chat.dialog(None);
     assert_eq!(said(dialog.say("Jarvis, what time is it")), time_of_day(Lang::English));
+    assert_eq!(said(dialog.say("I feel sick.")), "I'm sorry to hear that, sir.");
+    let messages = chat.last_messages();
+    assert_eq!(messages.as_array().unwrap().last().unwrap()["content"], "I feel sick.");
+}
+
+#[test]
+fn words_after_an_answer_to_a_request_without_the_name_are_the_room() {
+    let chat = FakeChat::new("Indeed.");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, what time is it").is_some());
+    // A follow-up without the name, itself a skill: what follows its answer may be the room.
+    assert_eq!(said(dialog.say("what time is it")), time_of_day(Lang::English));
     assert_eq!(dialog.say("I'm not that hungry, really."), None);
     assert!(chat.asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn words_without_the_name_after_the_window_are_the_room() {
+    let chat = FakeChat::new("Indeed.");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, what time is it").is_some());
+    dialog.worker.conversation.follow_up_until = Some(Instant::now() - Duration::from_secs(1));
+    assert_eq!(dialog.say("I feel sick."), None);
+    assert!(chat.asked.lock().unwrap().is_empty());
+}
+
+/// 23 November 2026: "No I'm feeling sick like I'm not feeling well." in a chat was 9 words that do
+/// not open like a request, and the room filter took them first.
+#[test]
+fn a_chat_reply_of_nine_words_goes_on() {
+    let chat = FakeChat::new("Then take it easy today, sir.");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, I feel safe.").is_some());
+    assert_eq!(said(dialog.say("No I'm feeling sick like I'm not feeling well.")), "Then take it easy today, sir.");
+    assert_eq!(chat.asked.lock().unwrap().len(), 2);
+}
+
+/// A reply begun in the follow-up window that ends after it is heard as said in it.
+#[test]
+fn a_reply_begun_in_the_window_counts_however_long_it_goes_on() {
+    let mut dialog = Dialog::new(None);
+    let now = Instant::now();
+    let six_seconds = vec![0i16; SAMPLE_RATE as usize * 6];
+    dialog.worker.conversation.follow_up_until = Some(now - Duration::from_secs(2));
+    dialog.worker.keep_window_for(&six_seconds, now);
+    assert!(dialog.worker.conversation.follow_up());
+    // Begun after the window: not in it.
+    dialog.worker.conversation.follow_up_until = Some(now - Duration::from_secs(7));
+    dialog.worker.keep_window_for(&six_seconds, now);
+    assert!(!dialog.worker.conversation.follow_up());
 }
 
 #[test]
@@ -1519,6 +1568,6 @@ fn a_cut_history_is_read_again_after_the_answer() {
     let warmed = chat.warmed.lock().unwrap().last().cloned().unwrap();
     // The base and the four exchanges kept, ending with the last answer.
     let messages = warmed.as_array().unwrap();
-    assert_eq!(messages.len(), 1 + 6 + 2 * 4);
+    assert_eq!(messages.len(), 1 + 8 + 2 * 4);
     assert_eq!(messages.last().unwrap()["content"], "Indeed.");
 }

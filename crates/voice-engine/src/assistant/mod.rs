@@ -94,6 +94,9 @@ pub use processor::AssistantProcessor;
 const WARM_CHECK: Duration = Duration::from_secs(600);
 /// After a bare name or an answer, speech within this time needs no name.
 const FOLLOW_UP: Duration = Duration::from_secs(8);
+/// How long a reply begun in the follow-up window keeps it open once heard: long enough to decide
+/// on it, short enough that the room after it is not taken as a follow-up.
+const REPLY_HEARD: Duration = Duration::from_secs(1);
 /// How often the home's forecast and electricity prices are fetched while idle, so asking for them
 /// needs no request and no lead-in.
 const DATA_REFRESH: Duration = Duration::from_secs(240);
@@ -580,8 +583,21 @@ impl Worker {
                 return;
             }
         };
+        self.keep_window_for(audio, ended);
         self.heard(&candidates, audio, ended, start, from_draft);
         self.conversation.draft_undo = None;
+    }
+
+    /// A reply that began in the follow-up window is heard as said in it, however long it went on:
+    /// "No I'm feeling sick like I'm not feeling well." took 6 s and ended after the window (23 Nov).
+    fn keep_window_for(&mut self, audio: &[i16], ended: Instant) {
+        let length = Duration::from_secs_f32(audio.len() as f32 / SAMPLE_RATE as f32);
+        let (Some(until), Some(began)) = (self.conversation.follow_up_until, ended.checked_sub(length)) else {
+            return;
+        };
+        if began < until {
+            self.conversation.follow_up_until = Some(until.max(Instant::now() + REPLY_HEARD));
+        }
     }
 
     /// A draft that is a whole command with nothing that could follow ("pause the music", "what
@@ -735,11 +751,13 @@ impl Worker {
         // A wake word without the name is as unsure as the follow-up window: the TV's "just because
         // 2 bitches ..." set the volume to 70 percent, its "Sorry." was told "Don't mention it.".
         let unnamed = self.conversation.unnamed();
-        let room = !addressed && (self.conversation.wake.is_none() || unnamed) && room_talk(&as_heard);
-        let chat = !addressed && unnamed && matches!(parsed, Intent::SmallTalk(_));
-        // Open talk after a wake word with the name, or a reply in a conversation with the chat model.
+        // Open talk after a wake word with the name, or a reply to an answer for the chat model.
         let named_wake = self.conversation.wake.is_some() && !unnamed && self.config.talk.is_some();
         let talk_on = !addressed && unknown && (named_wake || self.talk_reply(&as_heard));
+        // A chat reply has a word limit of its own: "No I'm feeling sick like I'm not feeling well."
+        // was 9 words that do not open like a request (23 Nov).
+        let room = !addressed && (self.conversation.wake.is_none() || unnamed) && room_talk(&as_heard) && !talk_on;
+        let chat = !addressed && unnamed && matches!(parsed, Intent::SmallTalk(_));
         if !pending && (room || chat || (!addressed && unknown && self.config.llm.is_none() && !talk_on)) {
             info!(text = heard.text, "not addressed");
             self.not_understood(&heard.text, audio, ended, heard.lang, start);

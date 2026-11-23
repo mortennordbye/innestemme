@@ -230,6 +230,8 @@ const EXAMPLES: &[(&str, &str)] = &[
     ("Do you like jazz?", "Very much, sir. Late-night Coltrane is my weakness. Do you have a favourite?"),
     ("Are you happy?", "Rather, yes. The house is warm and nobody has set off the smoke alarm today."),
     ("What do you think of Mondays?", "A necessary evil, sir. I recommend strong coffee and low expectations."),
+    // "I'm feeling sick" got tea, then "have you had a chance to consider the weather today?" (23 Nov).
+    ("I don't feel well.", "I'm sorry to hear that, sir. Is it your head or your stomach? Rest and water rarely hurt."),
 ];
 
 /// Words that open something asked for; "can you" and "could you" too.
@@ -304,7 +306,8 @@ pub fn system_prompt(context: &TalkContext) -> String {
          you have no feelings, beliefs or preferences.\n\
          Share what you know freely: recipes, facts, advice, stories, poems. Your words are spoken aloud: two or \
          three short sentences, the first one short. For a recipe or a poem, give the gist and offer more. No \
-         lists, no markdown, no emoji. Ask back now and then.\n\
+         lists, no markdown, no emoji. Answer what they just said and stay on their topic; ask back about it now \
+         and then. When they say how they feel, show that you care first.\n\
          You cannot control the house from this conversation: never say you turned something on, played music or \
          set a timer; tell them what to ask instead, such as \"say: turn on the kitchen lights\". About the \
          household, use only what is written here: never make up a memory, a visit or something a person said.",
@@ -439,7 +442,7 @@ mod tests {
         assert_eq!(body["messages"][n + 2]["content"], "Why?");
         // The base alone ends with the last example: a conversation extends it.
         let base = talk.body("system", &[], None, None, Lang::English);
-        assert_eq!(base["messages"].as_array().unwrap().last().unwrap()["content"], EXAMPLES[2].1);
+        assert_eq!(base["messages"].as_array().unwrap().last().unwrap()["content"], EXAMPLES[EXAMPLES.len() - 1].1);
         // The lead-in already spoken goes last, for the model to go on from.
         let led = talk.body("system", &[], Some("Tell me a poem."), Some("Of course, sir."), Lang::English);
         let last = led["messages"].as_array().unwrap().last().unwrap().clone();

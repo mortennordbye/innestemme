@@ -821,6 +821,32 @@ async fn player_follow_up_window_closes_after_six_seconds() {
     assert_eq!(h.announced(0), NOTHING);
 }
 
+/// 23 November 2026: "No I'm feeling sick like I'm not feeling well." went on past the window, which
+/// closed in the middle of it.
+#[tokio::test(start_paused = true)]
+async fn player_follow_up_window_stays_open_while_a_reply_is_said() {
+    let mut h = Harness::server_wake(Mode::Player);
+    player_answered(&mut h).await;
+    let opens = PLAYER_START + Duration::from_secs(1) - RUN_END_DELAY;
+    assert_eq!(h.after(opens).await, ["SttStart", "assistant: hear_now"]);
+    h.assistant.set_speaking_for_tests(true);
+    assert_eq!(h.after(FOLLOW_UP + Duration::from_secs(3)).await, NOTHING);
+    h.assistant.set_speaking_for_tests(false);
+    assert_eq!(h.after(TICK).await, ["RunEnd"]);
+}
+
+/// The TV talking on does not keep the window open.
+#[tokio::test(start_paused = true)]
+async fn player_follow_up_window_closes_on_speech_that_goes_on_and_on() {
+    let mut h = Harness::server_wake(Mode::Player);
+    player_answered(&mut h).await;
+    let opens = PLAYER_START + Duration::from_secs(1) - RUN_END_DELAY;
+    assert_eq!(h.after(opens).await, ["SttStart", "assistant: hear_now"]);
+    h.assistant.set_speaking_for_tests(true);
+    assert_eq!(h.after(FOLLOW_UP + FOLLOW_UP_SPEECH).await, NOTHING);
+    assert_eq!(h.after(TICK).await, ["RunEnd"]);
+}
+
 #[tokio::test(start_paused = true)]
 async fn player_near_miss_is_not_checked_while_the_answer_plays() {
     let mut h = Harness::server_wake(Mode::Player);
