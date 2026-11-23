@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
-use super::conversation::{CHOICE_WINDOW, CONFIRM_WINDOW, RETRY_WINDOW, ROOM_WINDOW};
+use super::conversation::{CHOICE_WINDOW, CONFIRM_WINDOW, HISTORY_MAX_AGE, RETRY_WINDOW, ROOM_WINDOW};
 use super::*;
 
 /// Speech output that says nothing: the dialog is read from the answer events.
@@ -1574,6 +1574,37 @@ fn the_history_is_cut_in_blocks() {
     assert!(conversation.history_cut);
     conversation.remember("question 13", "answer 13".into());
     assert_eq!(conversation.recent_turns()[0].user, "question 9");
+}
+
+/// 23 November 2026: the 08:17 briefing and a chat about feeling sick came back as history at 08:53.
+#[test]
+fn a_conversation_that_is_over_does_not_come_back() {
+    let mut dialog = Dialog::new(None);
+    let conversation = &mut dialog.worker.conversation;
+    conversation.remember("Good morning.", "Good morning! It's 07:57.".into());
+    let (at, _) = conversation.history.back_mut().unwrap();
+    asked_earlier(at, HISTORY_MAX_AGE + Duration::from_secs(1));
+    assert!(conversation.recent_turns().is_empty());
+    conversation.remember("What's your favourite Bible?", "The Book of Job.".into());
+    let turns = conversation.recent_turns();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].user, "What's your favourite Bible?");
+}
+
+/// A long rule answer (the briefing) is kept as its first sentences, for the chat model to read.
+#[test]
+fn a_long_rule_answer_is_kept_short() {
+    let mut dialog = Dialog::new(None);
+    let briefing = "Good morning! It's 07:57. It's minus 1 degree in Oslo. Partly cloudy. The high today is 0 \
+                    degrees. On the shopping list: milk, bread and butter. In the news. From BBC News: Longest-ever \
+                    UN climate talks end with no deal as deep divisions exposed.";
+    dialog.worker.conversation.remember_rule("Good morning.", briefing);
+    let kept = &dialog.worker.conversation.recent_turns()[0].assistant;
+    assert!(kept.starts_with("Good morning! It's 07:57."), "{kept}");
+    assert!(kept.split_whitespace().count() <= 30, "{kept}");
+    assert!(!kept.contains("BBC"), "{kept}");
+    dialog.worker.conversation.remember_rule("What time is it?", "It's 07:57.");
+    assert_eq!(dialog.worker.conversation.recent_turns()[1].assistant, "It's 07:57.");
 }
 
 #[test]
