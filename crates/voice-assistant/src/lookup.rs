@@ -11,6 +11,13 @@ use crate::lang::Lang;
 /// Spoken answers stop after this many words, at a sentence end where possible: by voice the
 /// first sentence or two is the answer, and 40 words took over ten seconds to say.
 const MAX_WORDS: usize = 25;
+/// A clause shorter than this says too little to end on.
+const MIN_CLAUSE_WORDS: usize = 8;
+/// Words a sentence cut by its word count must not end on.
+const DANGLING: &[&str] = &[
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "by", "with", "from", "and", "or", "but", "which", "that",
+    "who", "is", "was", "are", "were", "its", "their", "his", "her", "as", "en", "et", "og", "i", "på", "av", "som",
+];
 
 /// Openings that ask about a topic, longest first; what follows is the topic.
 const OPENINGS: &[&str] = &[
@@ -196,7 +203,8 @@ impl Lookup {
             return Ok(None);
         }
         let summary: Summary = response.body_mut().read_json().with_context(|| format!("reading {url}"))?;
-        Ok((summary.kind == "standard" && !summary.extract.is_empty()).then_some(summary.extract))
+        Ok((summary.kind == "standard" && !summary.extract.is_empty() && !is_list(title, &summary.extract))
+            .then_some(summary.extract))
     }
 
     fn search(&self, root: &str, topic: &str) -> Result<Vec<String>> {
@@ -237,15 +245,34 @@ fn spoken(extract: &str) -> String {
     }
     let out = out.trim();
     let words: Vec<&str> = out.split_whitespace().collect();
-    // One very long first sentence: cut it, and end it.
+    // One very long first sentence: cut it at its last clause within the limit, as a cut word count
+    // left "..., which includes the." (23 Nov).
     if words.len() > MAX_WORDS {
-        return format!("{}.", words[..MAX_WORDS].join(" ").trim_end_matches([',', ';', ':']));
+        let head = &words[..MAX_WORDS];
+        let clause = head.iter().rposition(|w| w.ends_with([',', ';', ':'])).filter(|&i| i >= MIN_CLAUSE_WORDS);
+        let kept = match clause {
+            Some(i) => &head[..=i],
+            None => {
+                let end = head.iter().rposition(|w| !DANGLING.contains(&w.to_lowercase().as_str())).unwrap_or(0);
+                &head[..=end]
+            }
+        };
+        return format!("{}.", kept.join(" ").trim_end_matches([',', ';', ':']));
     }
     if out.ends_with(['.', '!', '?']) {
         out.to_owned()
     } else {
         format!("{out}.")
     }
+}
+
+/// A list article reads out as "the following is a list of episodes of The Yogi Bear Show" (23 Nov):
+/// it answers nothing.
+fn is_list(title: &str, extract: &str) -> bool {
+    let title = title.to_lowercase();
+    let extract = extract.to_lowercase();
+    ["list of", "liste over"].iter().any(|start| title.starts_with(start))
+        || ["the following is a list", "this is a list", "følgende er en liste"].iter().any(|s| extract.starts_with(s))
 }
 
 /// "Paris is ..." stays; "The Eiffel Tower is ..." reads on after "According to Wikipedia, the".
@@ -302,6 +329,16 @@ mod tests {
     }
 
     #[test]
+    fn list_articles_answer_nothing() {
+        assert!(is_list("List of The Yogi Bear Show episodes", "This is a list of episodes."));
+        assert!(is_list(
+            "Yogi Bear episodes",
+            "The following is a list of episodes of The Yogi Bear Show, an American animated television series."
+        ));
+        assert!(!is_list("Yogi Bear", "Yogi Bear is a cartoon character."));
+    }
+
+    #[test]
     fn speaks_the_first_sentences() {
         let extract = "Paris (French pronunciation: [paʁi]) is the capital and largest city of France. It has an \
                        estimated population of two million. Located on the Seine, it is the largest metropolitan \
@@ -310,6 +347,21 @@ mod tests {
         assert_eq!(
             spoken(extract),
             "Paris is the capital and largest city of France. It has an estimated population of two million."
+        );
+        let track = "Do Not Track is a deprecated non-standard HTTP header field designed to allow Internet users \
+                     to opt out of tracking by websites, which includes the collection of data regarding a user's \
+                     activity across multiple distinct contexts.";
+        assert_eq!(
+            spoken(track),
+            "Do Not Track is a deprecated non-standard HTTP header field designed to allow Internet users to opt out \
+             of tracking by websites."
+        );
+        let long = "Bob is one of the most widely known and loved characters in the long history of the animated \
+                    television series made in the town of Springfield.";
+        assert_eq!(
+            spoken(long),
+            "Bob is one of the most widely known and loved characters in the long history of the animated television \
+             series made in the town."
         );
         assert_eq!(lowercase_first("The Eiffel Tower is a tower."), "the Eiffel Tower is a tower.");
         assert_eq!(encode("Jonas Gahr_Støre"), "Jonas%20Gahr_St%C3%B8re");

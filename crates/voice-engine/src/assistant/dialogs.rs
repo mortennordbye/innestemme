@@ -1214,6 +1214,18 @@ fn long_talk_after_a_miss_is_the_room() {
     assert_eq!(dialog.say("we should really get going to the shop now"), None);
 }
 
+/// 23 November 2026: "Not at not all." after a miss looked up "Who is Not at not all?".
+#[test]
+fn an_answer_after_a_miss_is_not_a_name() {
+    let ha = FakeHa::new();
+    let mut dialog = Dialog::new(Some(&ha));
+    misheard_look_up(&mut dialog);
+    let retry = dialog.worker.conversation.pending_retry.as_ref().unwrap();
+    for reply in ["Not at not all.", "No.", "Never mind.", "Yeah.", "Okay."] {
+        assert_eq!(retry.with(reply), None, "{reply}");
+    }
+}
+
 #[test]
 fn the_name_goes_quietly_after_its_window() {
     let ha = FakeHa::new();
@@ -1397,6 +1409,17 @@ fn a_chat_reply_of_nine_words_goes_on() {
     let mut dialog = chat.dialog(None);
     assert!(dialog.say("Jarvis, I feel safe.").is_some());
     assert_eq!(said(dialog.say("No I'm feeling sick like I'm not feeling well.")), "Then take it easy today, sir.");
+    assert_eq!(chat.asked.lock().unwrap().len(), 2);
+}
+
+/// 23 November 2026: a chat reply said twice, as it got no answer, was 14 words and taken for the room.
+#[test]
+fn a_chat_reply_said_twice_goes_on() {
+    let chat = FakeChat::new("I have no view on it, sir.");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, do you believe in God?").is_some());
+    let twice = "What about do you believe in Skibberty Toilet? Do you believe in Skibberty Toilet?";
+    assert_eq!(said(dialog.say(twice)), "I have no view on it, sir.");
     assert_eq!(chat.asked.lock().unwrap().len(), 2);
 }
 
