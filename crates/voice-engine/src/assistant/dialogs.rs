@@ -221,6 +221,8 @@ impl Worker {
             reply,
             busy: Arc::default(),
             interrupted: Arc::default(),
+            answer_cut: None,
+            answer_named: Arc::default(),
             pause: Arc::default(),
             screen: Arc::default(),
             tts: Box::new(Silent),
@@ -1640,6 +1642,30 @@ fn a_stop_over_the_answer_ends_the_conversation() {
     assert!(dialog.say("Jarvis, give me a cookie recipe.").is_some());
     assert_eq!(chat.asked.lock().unwrap().len(), 2);
     assert_eq!(chat.last_messages()[1]["content"], "give me a cookie recipe.");
+}
+
+/// "Jarvis, stop" over the answer: the name check's audio ends with the name, so "stop" comes as
+/// the request after the answer was cut. It ends the conversation, and is not "stop the music".
+#[test]
+fn a_stop_after_the_answer_was_cut_ends_the_conversation() {
+    let chat = FakeChat::new("Then rest. Shall I dim the lights?");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, what should I cook tonight?").is_some());
+    dialog.worker.answer_cut = Some(Instant::now());
+    dialog.worker.woken(Instant::now(), WakeName::Heard);
+    assert_eq!(dialog.say("Stop! Stop!"), None);
+    assert!(!dialog.worker.conversation.follow_up());
+    assert!(dialog.worker.conversation.recent_turns().is_empty());
+    assert_eq!(dialog.worker.answer_cut, None);
+}
+
+#[test]
+fn a_request_after_the_answer_was_cut_is_a_request() {
+    let mut dialog = Dialog::new(None);
+    dialog.worker.answer_cut = Some(Instant::now());
+    dialog.worker.woken(Instant::now(), WakeName::Heard);
+    assert_eq!(said(dialog.say("what time is it")), time_of_day(Lang::English));
+    assert_eq!(dialog.worker.answer_cut, None);
 }
 
 #[test]

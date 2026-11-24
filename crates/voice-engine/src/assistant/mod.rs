@@ -251,6 +251,8 @@ enum Job {
     CheckName(Vec<i16>, tokio::sync::oneshot::Sender<Option<NameHeard>>),
     /// Stop said over the answer, or the button pressed, by this: the conversation is over.
     Stopped(&'static str),
+    /// A satellite cut the answer for a wake word said over it.
+    Interrupted,
     /// The wake word's name check is done: its result waits in `Worker::wake_check`.
     NameChecked,
     /// A satellite heard nothing after its wake word.
@@ -291,6 +293,11 @@ struct Worker {
     busy: Arc<AtomicBool>,
     /// Set by a satellite when the wake word is said over an answer.
     interrupted: Arc<AtomicBool>,
+    /// When a satellite last cut an answer for a wake word said over it: a stop said next ends the
+    /// conversation ("Jarvis, stop", the check's audio ending with the name).
+    answer_cut: Option<Instant>,
+    /// The answer being spoken holds the assistant's name: its echo is no wake word.
+    answer_named: Arc<AtomicBool>,
     pause: Arc<Pause>,
     screen: Arc<Screen>,
     tts: Box<dyn Tts>,
@@ -471,6 +478,7 @@ impl Worker {
             match job {
                 Job::NothingAsked => self.end_turn(TurnEnd::Silent),
                 Job::Stopped(by) => self.stopped(by),
+                Job::Interrupted => self.answer_cut = Some(Instant::now()),
                 Job::Woken(at, wake) => self.woken(at, wake),
                 Job::NameChecked => self.take_wake_name(false),
                 Job::CheckName(audio, reply) => self.check_name(audio, reply),
@@ -650,7 +658,7 @@ impl Worker {
         let named = self.config.wake.strip(&first.text).is_some();
         let request = self.config.wake.drop_trailing(&request);
         let request = self.learned_meaning(self.leaving_by_sound(&request, named).unwrap_or(request));
-        if quick::goes_on(&request) {
+        if quick::goes_on(&request) || self.stop_after_cut(&request) {
             return;
         }
         let intent = intent::parse(&request);
@@ -710,6 +718,12 @@ impl Worker {
         };
         let (request, addressed) = request;
         let request = self.config.wake.drop_trailing(&request);
+        if self.stop_after_cut(&request) {
+            self.answer_cut = None;
+            self.stopped("name");
+            return;
+        }
+        self.answer_cut = None;
         // The end of "... Or should I look up therapy?" heard back would be a look-up of its own.
         let choice_echo = |asked: &PendingChoice| sound_alike::echoes_question(&request, &asked.topic);
         let echo = if self.in_talk() { self.tail_echo(&request) } else { self.echo(&request) };
@@ -820,6 +834,7 @@ impl Worker {
 
     fn answer(&mut self, text: &str, lang: Lang, start: Instant) {
         self.interrupted.store(false, Relaxed);
+        self.answer_named.store(false, Relaxed);
         // A run begun on a draft of other words would write on through this answer, on the CPU
         // the speech needs.
         if !self.previewing && self.draft_run.as_ref().is_some_and(|run| !run.for_request(text)) {

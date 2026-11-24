@@ -59,6 +59,7 @@ impl Worker {
     /// Speaks an answer and opens the follow-up window.
     pub(super) fn say(&mut self, answer: String, lang: Lang, start: Instant) {
         self.interrupted.store(false, Relaxed);
+        self.answer_named.store(false, Relaxed);
         // Not the chat model's answer: a reply without the name no longer goes on with it.
         self.conversation.last_talk = None;
         let answer = match &mut self.persona {
@@ -75,6 +76,9 @@ impl Worker {
     pub(super) fn speak(&mut self, text: &str, lang: Lang, spoken: &mut Spoken) {
         self.said.retain(|(at, _)| at.elapsed() < ECHO_WINDOW);
         self.said.push_back((Instant::now(), text.to_owned()));
+        if self.config.wake.in_wake_word(text) {
+            self.answer_named.store(true, Relaxed);
+        }
         let (reply, events, tts, live, interrupted) =
             (&mut self.reply, &self.events, &mut self.tts, &self.live, &self.interrupted);
         for sentence in text.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty()) {

@@ -30,6 +30,10 @@ const LONGEST_REQUEST_WORDS: usize = 12;
 /// conversation. One takes about 0.25 s at six threads on the cluster.
 const NAME_WAIT: Duration = Duration::from_secs(3);
 
+/// How long after an answer was cut for the wake word a stop said alone still ends the
+/// conversation: the device listens 10 s for the request.
+const STOP_AFTER_CUT: Duration = Duration::from_secs(10);
+
 /// What a wake word tells of the assistant's name being said.
 pub(super) enum WakeName {
     /// The device's own wake word: no audio.
@@ -156,13 +160,20 @@ impl Worker {
     /// Stop said over the answer, or the button: the answer has stopped (`interrupted`), and
     /// nothing waits for a reply. A chat starts afresh after it, since it was the chat that ran on.
     pub(super) fn stopped(&mut self, by: &str) {
+        // `interrupted` stays set: the processor may not have dropped the answer's queued audio
+        // yet. The next answer clears it.
         info!(by, "answer stopped");
-        self.interrupted.store(false, Relaxed);
         self.stop_draft_run();
         self.forget_questions();
         self.conversation.restart();
         self.wake_check = None;
         self.unhush();
+    }
+
+    /// A stop phrase alone ("Stop.", "Be quiet.") right after an answer was cut for the wake word:
+    /// said to the answer, so not "stop the music" even when music plays.
+    pub(super) fn stop_after_cut(&self, request: &str) -> bool {
+        self.answer_cut.is_some_and(|at| at.elapsed() < STOP_AFTER_CUT) && voice_assistant::dialog::is_stop(request)
     }
 
     /// A satellite's near miss: answered from the name check's thread when there is one.

@@ -33,6 +33,38 @@ const STOP_PHRASES: &[&str] = &[
     "ti stille",
 ];
 
+/// What follows a stop that makes it a request: "stop the music", "cancel my timer".
+const STOP_OBJECTS: &[&str] =
+    &["the", "my", "a", "all", "music", "timer", "timers", "alarm", "song", "party", "tv", "radio", "playing"];
+
+/// The words without "please" and without a word said again right after itself ("stop stop").
+fn plain(words: &[String]) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for word in words.iter().filter(|w| *w != "please") {
+        if kept.last() != Some(word) {
+            kept.push(word.clone());
+        }
+    }
+    kept
+}
+
+fn is_stop_words(words: &[String]) -> bool {
+    STOP_PHRASES.contains(&plain(words).join(" ").as_str())
+}
+
+/// Whether `words` open with a stop phrase that no object follows: after it may come the echo of
+/// the answer, which is not a request.
+fn stop_first(words: &[String]) -> bool {
+    let words = plain(words);
+    (1..=words.len().min(3))
+        .any(|n| is_stop_words(&words[..n]) && words.get(n).is_none_or(|next| !STOP_OBJECTS.contains(&next.as_str())))
+}
+
+/// Whether `text` is a stop phrase and nothing else ("Stop.", "Stop, stop!", "Please be quiet.").
+pub fn is_stop(text: &str) -> bool {
+    is_stop_words(&words(text))
+}
+
 /// Ways transcribers write known names. An explicit list rather than an edit distance, which would
 /// also match common words. For Freya, "fredag" (Friday) and "fela" (fiddle) are close
 /// mishearings but everyday Norwegian, so they are left out; for Homie, so is "home".
@@ -98,21 +130,36 @@ impl WakeWord {
         &self.name
     }
 
-    /// `word` is normalized. Also true for greeting and name written as one word ("heyhomie").
     /// Whether `text` is a stop said to the assistant: a stop phrase right before the name that
-    /// ends it ("Stop, Jarvis"), or right after the name and ending the text ("Jarvis, stop").
-    /// Over an answer most of the audio is its echo, so a stop word elsewhere ("a quiet evening")
-    /// is the answer, and "Jarvis, stop the music" is a request.
+    /// ends it ("Stop, Jarvis", "Stop, hey Jarvis"), or one right after the name ("Jarvis, stop",
+    /// "Jarvis, stop stop", then the answer's echo). Over an answer most of the audio is its echo,
+    /// so a stop word elsewhere ("a quiet evening") is the answer, and "Jarvis, stop the music" is
+    /// a request.
     pub fn stop_with_name(&self, text: &str) -> bool {
         let words = words(text);
-        let is_stop = |part: &[String]| STOP_PHRASES.contains(&part.join(" ").as_str());
-        words.iter().enumerate().filter(|(_, w)| self.matches(w)).any(|(i, _)| {
-            let before = i + 1 == words.len() && (1..=i.min(3)).any(|n| is_stop(&words[i - n..i]));
-            let after = &words[i + 1..];
-            before || (!after.is_empty() && after.len() <= 3 && is_stop(after))
+        self.name_positions(&words).into_iter().any(|i| {
+            let mut before = &words[..i];
+            if before.last().is_some_and(|w| is_greeting(w)) {
+                before = &before[..before.len() - 1];
+            }
+            let ends = i + 1 == words.len();
+            let before = ends && (1..=before.len().min(3)).any(|n| is_stop_words(&before[before.len() - n..]));
+            before || stop_first(&words[i + 1..])
         })
     }
 
+    /// Where the name is in `words`: one of its spellings, or an everyday word it is heard as right
+    /// after a greeting.
+    fn name_positions(&self, words: &[String]) -> Vec<usize> {
+        (0..words.len())
+            .filter(|&i| {
+                self.matches(&words[i])
+                    || (i > 0 && is_greeting(&words[i - 1]) && self.after_greeting.contains(&words[i].as_str()))
+            })
+            .collect()
+    }
+
+    /// `word` is normalized. Also true for greeting and name written as one word ("heyhomie").
     pub fn matches(&self, word: &str) -> bool {
         let is_name = |w: &str| self.spellings.iter().any(|s| s == w);
         is_name(word)
@@ -123,8 +170,7 @@ impl WakeWord {
     /// the everyday words it is heard as right after a greeting.
     pub fn in_wake_word(&self, text: &str) -> bool {
         let words: Vec<String> = text.split_whitespace().map(normalize).collect();
-        words.iter().any(|w| self.matches(w))
-            || words.windows(2).any(|pair| is_greeting(&pair[0]) && self.after_greeting.contains(&pair[1].as_str()))
+        !self.name_positions(&words).is_empty()
     }
 
     /// For a whole transcribed utterance: `Some(request)` when it starts with the name, possibly
@@ -207,9 +253,18 @@ mod tests {
     #[test]
     fn a_stop_counts_only_next_to_the_name() {
         let wake = WakeWord::new("Jarvis");
-        for said in
-            ["Jarvis, stop!", "Hey Jarvis. Stop it.", "Jarvis, that's enough.", "Stop, Jarvis.", "Hold kjeft, Jarvis"]
-        {
+        for said in [
+            "Jarvis, stop!",
+            "Hey Jarvis. Stop it.",
+            "Jarvis, that's enough.",
+            "Stop, Jarvis.",
+            "Hold kjeft, Jarvis",
+            "Jarvis stop once upon a",
+            "Jarvis, stop, stop.",
+            "Jarvis, please stop.",
+            "Stop, hey Jarvis.",
+            "Hey drivers, stop.",
+        ] {
             assert!(wake.stop_with_name(said), "{said}");
         }
         for said in [
@@ -221,6 +276,16 @@ mod tests {
             "Stop. Jarvis, what time is it",
         ] {
             assert!(!wake.stop_with_name(said), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_stop_alone_is_a_stop_phrase_and_nothing_else() {
+        for said in ["Stop.", "Stop! Stop!", "Please be quiet.", "That's enough.", "Stopp."] {
+            assert!(is_stop(said), "{said}");
+        }
+        for said in ["Stop the music.", "Stop the timer", "Bus stop", "Quiet music"] {
+            assert!(!is_stop(said), "{said}");
         }
     }
 
