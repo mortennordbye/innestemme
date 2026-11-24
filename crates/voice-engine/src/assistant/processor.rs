@@ -62,6 +62,7 @@ pub struct AssistantProcessor {
     party: Party,
     activity: Arc<Activity>,
     voice_gender: Option<Arc<VoiceGender>>,
+    names: Option<NameChecker>,
     was_busy: bool,
     frame: u64,
     deaf_until: u64,
@@ -272,6 +273,7 @@ impl AssistantProcessor {
             worker.name_checker = Some(NameChecker::spawn(listener, worker.config.wake.clone(), jobs.clone())?);
         }
         info!(elapsed = ?start.elapsed(), "listener warmed up");
+        let names = worker.name_checker.clone();
         std::thread::Builder::new().name("assistant".into()).spawn(move || worker.run(rx))?;
         let hear_now = Arc::new(AtomicBool::new(false));
         Ok(Self {
@@ -288,6 +290,7 @@ impl AssistantProcessor {
             party,
             activity,
             voice_gender,
+            names,
             was_busy: false,
             frame: 0,
             deaf_until: 0,
@@ -306,6 +309,7 @@ impl AssistantProcessor {
             party: self.party.clone(),
             activity: self.activity.clone(),
             voice_gender: self.voice_gender.clone(),
+            names: self.names.clone(),
         }
     }
 }

@@ -16,6 +16,23 @@ pub fn phrase(text: &str) -> String {
     words(text).join(" ")
 }
 
+/// What stops an answer while it plays ("Jarvis, stop", "be quiet").
+const STOP_PHRASES: &[&str] = &[
+    "stop",
+    "stop it",
+    "stop talking",
+    "be quiet",
+    "quiet",
+    "shut up",
+    "enough",
+    "that's enough",
+    "cancel",
+    "stopp",
+    "slutt",
+    "hold kjeft",
+    "ti stille",
+];
+
 /// Ways transcribers write known names. An explicit list rather than an edit distance, which would
 /// also match common words. For Freya, "fredag" (Friday) and "fela" (fiddle) are close
 /// mishearings but everyday Norwegian, so they are left out; for Homie, so is "home".
@@ -82,6 +99,20 @@ impl WakeWord {
     }
 
     /// `word` is normalized. Also true for greeting and name written as one word ("heyhomie").
+    /// Whether `text` is a stop said to the assistant: a stop phrase right before the name that
+    /// ends it ("Stop, Jarvis"), or right after the name and ending the text ("Jarvis, stop").
+    /// Over an answer most of the audio is its echo, so a stop word elsewhere ("a quiet evening")
+    /// is the answer, and "Jarvis, stop the music" is a request.
+    pub fn stop_with_name(&self, text: &str) -> bool {
+        let words = words(text);
+        let is_stop = |part: &[String]| STOP_PHRASES.contains(&part.join(" ").as_str());
+        words.iter().enumerate().filter(|(_, w)| self.matches(w)).any(|(i, _)| {
+            let before = i + 1 == words.len() && (1..=i.min(3)).any(|n| is_stop(&words[i - n..i]));
+            let after = &words[i + 1..];
+            before || (!after.is_empty() && after.len() <= 3 && is_stop(after))
+        })
+    }
+
     pub fn matches(&self, word: &str) -> bool {
         let is_name = |w: &str| self.spellings.iter().any(|s| s == w);
         is_name(word)
@@ -172,6 +203,26 @@ pub fn is_greeting(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_counts_only_next_to_the_name() {
+        let wake = WakeWord::new("Jarvis");
+        for said in
+            ["Jarvis, stop!", "Hey Jarvis. Stop it.", "Jarvis, that's enough.", "Stop, Jarvis.", "Hold kjeft, Jarvis"]
+        {
+            assert!(wake.stop_with_name(said), "{said}");
+        }
+        for said in [
+            "for a quiet evening at home. Jarvis",
+            "Jarvis, stop the music",
+            "Jarvis, cancel the timer",
+            "quiet evening Jarvis",
+            "Hey Jarvis.",
+            "Stop. Jarvis, what time is it",
+        ] {
+            assert!(!wake.stop_with_name(said), "{said}");
+        }
+    }
 
     /// Parakeet on the living room Voice PE's wake words (`examples/wake_text.rs`).
     #[test]

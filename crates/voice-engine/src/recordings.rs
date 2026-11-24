@@ -2,7 +2,7 @@
 //! than `dump-keep-days` before the newest one are deleted. Counting from the newest recording, not
 //! from today, keeps the last days of real use through a week with nobody talking to it, so a
 //! replay always has a day to run. The age comes from the millisecond stamp in the file name
-//! (`run-<ms>.wav`, `utterance-<ms>.wav`), not the file time, which a copy or an NFS volume can
+//! (`run-<ms>.wav`, `utterance-<ms>.wav`, `answer-<ms>.wav`), not the file time, which a copy or an NFS volume can
 //! change. Files with other names are never touched.
 
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ pub fn prune(dir: &Path, keep: Duration) -> std::io::Result<usize> {
 /// The millisecond stamp of a recording's file name.
 fn stamp(path: &Path) -> Option<u128> {
     let name = path.file_name()?.to_str()?.strip_suffix(".wav")?;
-    let ms = name.strip_prefix("run-").or_else(|| name.strip_prefix("utterance-"))?;
+    let ms = ["run-", "utterance-", "answer-"].iter().find_map(|prefix| name.strip_prefix(prefix))?;
     ms.parse().ok()
 }
 

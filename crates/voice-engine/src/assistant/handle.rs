@@ -13,7 +13,7 @@ use crate::party::Party;
 use crate::screen::Screen;
 
 use super::pause::Pause;
-use super::wake::WakeName;
+use super::wake::{NameChecker, NameHeard, NameReply, WakeName};
 use super::{Announcement, AssistantEvent, Job, Preview};
 
 /// The end of the audio before the wake word fired that holds the wake word: 1.5 s at 16 kHz. More
@@ -33,6 +33,9 @@ pub struct AssistantHandle {
     pub party: Party,
     pub activity: Arc<Activity>,
     pub(super) voice_gender: Option<Arc<VoiceGender>>,
+    /// The name check's own thread: a near miss over an answer cannot wait for the worker, which
+    /// is busy speaking it.
+    pub(super) names: Option<NameChecker>,
 }
 
 impl AssistantHandle {
@@ -80,9 +83,14 @@ impl AssistantHandle {
     }
 
     /// Whether the assistant's name is in `audio` (24 kHz); `None` when it could not be transcribed.
-    pub fn check_name(&self, audio: Vec<i16>) -> tokio::sync::oneshot::Receiver<Option<bool>> {
+    pub fn check_name(&self, audio: Vec<i16>) -> tokio::sync::oneshot::Receiver<Option<NameHeard>> {
         let (reply, answer) = tokio::sync::oneshot::channel();
-        let _ = self.jobs.send(Job::CheckName(audio, reply));
+        match &self.names {
+            Some(names) => names.check(audio, NameReply::Satellite(reply)),
+            None => {
+                let _ = self.jobs.send(Job::CheckName(audio, reply));
+            }
+        }
         answer
     }
 
@@ -96,6 +104,13 @@ impl AssistantHandle {
     /// synthesized.
     pub fn interrupt(&self) {
         self.interrupted.store(true, Relaxed);
+    }
+
+    /// Stop said over the answer, or the button pressed: the answer stops and the conversation
+    /// ends, with nothing said. `by` is for the log.
+    pub fn stop(&self, by: &'static str) {
+        self.interrupted.store(true, Relaxed);
+        let _ = self.jobs.send(Job::Stopped(by));
     }
 
     /// A satellite listens for a follow-up after an answer has played: hear the microphone at once,
@@ -187,6 +202,7 @@ impl AssistantHandle {
             party: Party::new(None),
             activity: Default::default(),
             voice_gender: None,
+            names: None,
         };
         let announced = move || {
             received.try_iter().filter_map(|job| if let Job::Announce(a) = job { Some(a) } else { None }).collect()
@@ -249,7 +265,7 @@ pub(crate) struct Calls {
     hear_now: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
     /// Name checks not answered yet, oldest first.
-    pub(crate) name_checks: std::collections::VecDeque<tokio::sync::oneshot::Sender<Option<bool>>>,
+    pub(crate) name_checks: std::collections::VecDeque<tokio::sync::oneshot::Sender<Option<NameHeard>>>,
 }
 
 #[cfg(test)]
@@ -268,6 +284,7 @@ impl Calls {
                     format!("check_name {} samples", audio.len())
                 }
                 Job::NothingAsked => "gave_up".into(),
+                Job::Stopped(by) => format!("stop by {by}"),
                 Job::Satellite(names) => format!("satellite {names:?}"),
                 _ => "another job".into(),
             });
