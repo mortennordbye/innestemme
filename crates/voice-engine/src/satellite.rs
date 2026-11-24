@@ -78,6 +78,8 @@ const WORDING_WAIT: Duration = Duration::from_secs(3);
 const RUN_END_DELAY: Duration = Duration::from_millis(250);
 /// The longest stretch kept of what is heard over one answer: 2 minutes at 16 kHz, 3.8 MB.
 const ANSWER_HEARD_MOST: usize = 120 * DEVICE_RATE as usize;
+/// At most one name check this often while an answer plays.
+const ANSWER_CHECK_EVERY: Duration = Duration::from_secs(3);
 /// Announced over an answer to stop it, and what an answer announced early plays when no words come:
 /// 0.3 s at 24 kHz. An empty wav was never tried on the Sonos.
 const SILENCE: usize = 7200;
@@ -315,6 +317,9 @@ struct WakeListener {
     checking: Option<NameCheck>,
     /// The last `WAKE_PREROLL` of audio while waiting for the wake word.
     preroll: VecDeque<i16>,
+    /// When a near miss over an answer last went to the name check: the answer's echo makes many,
+    /// and each check takes the CPU the answer's speech needs.
+    checked_over_answer: Option<Instant>,
 }
 
 impl WakeListener {
@@ -327,6 +332,7 @@ impl WakeListener {
             near_miss_checked: false,
             checking: None,
             preroll: VecDeque::new(),
+            checked_over_answer: None,
         }
     }
 
@@ -340,7 +346,7 @@ impl WakeListener {
     }
 
     /// Scores a chunk of the stream, until the wake word is heard.
-    fn listen(&mut self, pcm: &[i16], assistant: &AssistantHandle) -> Result<Option<Woken>> {
+    fn listen(&mut self, pcm: &[i16], assistant: &AssistantHandle, answer_playing: bool) -> Result<Option<Woken>> {
         self.preroll.extend(pcm);
         let excess = self.preroll.len().saturating_sub(WAKE_PREROLL);
         self.preroll.drain(..excess);
@@ -372,10 +378,21 @@ impl WakeListener {
         let Some(score) = scored else { return Ok(None) };
         if score < threshold {
             // Past its peak, the name, if it was said, is in the preroll.
-            let check = self.check_from.is_some_and(|from| self.near_miss >= from && score < self.near_miss);
-            // Over an answer too: the player is loud, and "Jarvis, stop" scores low under it.
+            let mut check = self.check_from.is_some_and(|from| self.near_miss >= from && score < self.near_miss);
+            // Over an answer too: the player is loud, and "Jarvis, stop" scores low under it. Not
+            // over one that says the name, whose echo would wake, and at most once in a while.
+            let held_back = answer_playing
+                && (assistant.answer_says_name()
+                    || self.checked_over_answer.is_some_and(|at| at.elapsed() < ANSWER_CHECK_EVERY));
             if check && !self.near_miss_checked && self.checking.is_none() {
                 self.near_miss_checked = true;
+            } else {
+                check = false;
+            }
+            if check && !held_back {
+                if answer_playing {
+                    self.checked_over_answer = Some(Instant::now());
+                }
                 let wake: Vec<i16> = self.preroll.iter().copied().collect();
                 let answer = assistant.check_name(resample::to_24k(&wake, DEVICE_RATE));
                 let score = self.near_miss;
@@ -1127,9 +1144,11 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
 
     /// Scores the continuous stream; only audio after the wake word goes on to the engine.
     async fn listen_for_wake_word(&mut self, pcm: &[i16], assistant: &AssistantHandle) -> Result<()> {
+        let playing = self.answer_playing();
         let Some(listener) = &mut self.server_wake else { return Ok(()) };
-        match listener.listen(pcm, assistant)? {
-            Some(Woken { stop: true, .. }) if self.answer_playing() => self.stop_answer(assistant, "name").await,
+        match listener.listen(pcm, assistant, playing)? {
+            // Also when the answer ended while the name was checked.
+            Some(Woken { stop: true, .. }) => self.stop_answer(assistant, "name").await,
             Some(Woken { wake, since, .. }) => self.wake(assistant, wake, since).await,
             None => Ok(()),
         }
@@ -1296,8 +1315,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
     }
 
     /// The session has ended: the device is gone, so only the assistant is told.
-    fn closed(&self, assistant: &AssistantHandle) {
+    fn closed(&mut self, assistant: &AssistantHandle) {
         self.tell_unanswered(assistant);
+        self.save_answer_heard();
     }
 
     fn save_recording(&mut self) {
@@ -1309,14 +1329,15 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
         }
     }
 
+    /// On a thread for blocking work: up to 3.8 MB to the recordings volume would hold up the
+    /// wake word scoring.
     fn save_answer_heard(&mut self) {
         let audio = std::mem::take(&mut self.answer_heard);
-        if let Some(dir) = &self.dump {
-            match crate::assistant::save_wav(dir, "answer", &audio, DEVICE_RATE) {
-                Ok(path) => info!(path = %path.display(), "heard over the answer saved"),
-                Err(error) => warn!(%error, "could not save what was heard over the answer"),
-            }
-        }
+        let (Some(dir), false) = (self.dump.clone(), audio.is_empty()) else { return };
+        tokio::task::spawn_blocking(move || match crate::assistant::save_wav(&dir, "answer", &audio, DEVICE_RATE) {
+            Ok(path) => info!(path = %path.display(), "heard over the answer saved"),
+            Err(error) => warn!(%error, "could not save what was heard over the answer"),
+        });
     }
 
     async fn end_run(&mut self) -> Result<()> {

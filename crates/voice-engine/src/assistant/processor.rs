@@ -55,6 +55,7 @@ pub struct AssistantProcessor {
     /// A satellite started listening: stop ignoring the microphone at once.
     hear_now: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
+    answer_named: Arc<AtomicBool>,
     /// Speech is going on in the microphone, for a satellite that keeps its window open meanwhile.
     speaking: Arc<AtomicBool>,
     pause: Arc<Pause>,
@@ -80,6 +81,7 @@ impl AssistantProcessor {
         let (reply_tx, reply) = rtrb::RingBuffer::new(SAMPLE_RATE as usize * 60);
         let busy = Arc::new(AtomicBool::new(false));
         let interrupted = Arc::new(AtomicBool::new(false));
+        let answer_named = Arc::new(AtomicBool::new(false));
         let pause = Arc::new(Pause::default());
         let screen = Arc::new(Screen::default());
         let party = config.party.clone();
@@ -139,6 +141,8 @@ impl AssistantProcessor {
             reply: reply_tx,
             busy: busy.clone(),
             interrupted: interrupted.clone(),
+            answer_cut: None,
+            answer_named: answer_named.clone(),
             pause: pause.clone(),
             screen: screen.clone(),
             tts,
@@ -285,6 +289,7 @@ impl AssistantProcessor {
             busy,
             hear_now,
             interrupted,
+            answer_named,
             pause,
             screen,
             party,
@@ -303,6 +308,7 @@ impl AssistantProcessor {
             events: self.events.clone(),
             hear_now: self.hear_now.clone(),
             interrupted: self.interrupted.clone(),
+            answer_named: self.answer_named.clone(),
             speaking: self.speaking.clone(),
             pause: self.pause.clone(),
             screen: self.screen.clone(),

@@ -52,10 +52,12 @@ can hold a device: stop a laptop instance before the cluster's starts, or the tw
   (`no words for the answer announced early: ending it`). The follow-up window counts from the later of the
   announce plus 0.8 s and the first audio plus 0.4 s.
 - **Interrupting.** "Hey Jarvis" over an answer stops it and listens. Under the loud player the wake word often
-  scores low, so a near miss over the answer also goes to the name check: the name alone stops the answer and
-  listens, the name with a stop word ("Jarvis, stop", "Jarvis, be quiet") stops it and ends the conversation
-  (`stop over the answer by="name"`). The center button over an answer does the same (`by="button"`). After a
-  stop nothing is said, no follow-up window opens, and the chat starts afresh.
+  scores low, so a near miss over the answer also goes to the name check, at most once every 3 s, and not while
+  the answer itself says the name. The name alone stops the answer and listens; a stop said next ("Stop.", "Be
+  quiet.") ends the conversation, even with music playing. A stop next to the name in the checked audio ("Stop,
+  Jarvis") ends it at once (`stop over the answer by="name"`); "Jarvis, stop the music" is a request. The
+  center button over an answer ends it too (`by="button"`). After a stop nothing is said, no follow-up window
+  opens, and the chat starts afresh.
 - **The room.** "Turn off the lights" without a room means the satellite's room: its area in Home Assistant,
   looked up by the device's name when it connects. `room` overrides it. Renaming the device in Home Assistant
   breaks the lookup.

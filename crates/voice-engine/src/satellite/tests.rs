@@ -275,7 +275,7 @@ impl Harness {
 
     /// The session ends (the device dropped the connection): the bridge is closed and dropped.
     fn disconnect(self) -> Vec<String> {
-        let Self { bridge, assistant, mut calls, device, .. } = self;
+        let Self { mut bridge, assistant, mut calls, device, .. } = self;
         bridge.closed(&assistant);
         drop(bridge);
         drop(assistant);
@@ -784,12 +784,24 @@ async fn player_answer_heard_over_is_saved_once_played() {
     assert!(h.bridge.answer_heard.len() > before);
     h.after(Duration::from_secs(10)).await;
     assert!(h.bridge.answer_heard.is_empty());
-    let saved: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| e.ok()?.file_name().into_string().ok())
-        .filter(|name| name.starts_with("answer-"))
-        .collect();
-    assert_eq!(saved.len(), 1, "{saved:?}");
+    // Written on a blocking thread.
+    let saved = || -> Vec<String> {
+        std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                    .filter(|name| name.starts_with("answer-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for _ in 0..200 {
+        if !saved().is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(saved().len(), 1, "{:?}", saved());
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -822,6 +834,53 @@ async fn player_name_over_the_answer_interrupts_it_and_listens() {
         ["WakeWordEnd", "SttStart", "assistant: woke_named", "assistant: interrupt", "assistant: hear_now"]
     );
     assert_eq!(h.announced(1), [format!("{ENTITY} {BASE}/speech/1.wav 40")]);
+}
+
+/// "Stop, Jarvis" checked as the answer ends: the result comes after it has played, and still stops.
+#[tokio::test(start_paused = true)]
+async fn player_stop_heard_after_the_answer_ended_still_stops() {
+    let mut h = Harness::server_wake(Mode::Player);
+    story_playing(&mut h).await;
+    h.audio(0.4).await;
+    assert_eq!(h.audio(0.25).await, ["assistant: check_name 3072 samples"]);
+    h.bridge.follow_up_at = None;
+    h.spoken().await;
+    h.bridge.follow_up_at = None;
+    assert!(!h.bridge.answer_playing());
+    h.calls.name_checks.pop_front().unwrap().send(Some(NameHeard { named: true, stop: true })).unwrap();
+    assert_eq!(h.audio(0.0).await, ["assistant: stop by name", "assistant: interrupt"]);
+}
+
+/// The answer's echo makes near misses: at most one goes to the name check every few seconds.
+#[tokio::test(start_paused = true)]
+async fn player_near_misses_over_the_answer_are_checked_at_most_now_and_then() {
+    let mut h = Harness::server_wake(Mode::Player);
+    story_playing(&mut h).await;
+    h.audio(0.4).await;
+    assert_eq!(h.audio(0.25).await, ["assistant: check_name 3072 samples"]);
+    h.calls.name_checks.pop_front().unwrap().send(Some(NameHeard { named: false, stop: false })).unwrap();
+    h.audio(0.0).await;
+    h.audio(0.4).await;
+    assert_eq!(h.audio(0.25).await, NOTHING);
+    h.audio(0.0).await;
+    tokio::time::advance(ANSWER_CHECK_EVERY).await;
+    h.audio(0.4).await;
+    assert_eq!(h.audio(0.25).await, ["assistant: check_name 12288 samples"]);
+}
+
+/// An answer that says the name: its echo is not checked for it.
+#[tokio::test(start_paused = true)]
+async fn player_answer_that_says_the_name_is_not_checked_for_it() {
+    let mut h = Harness::server_wake(Mode::Player);
+    story_playing(&mut h).await;
+    h.assistant.set_answer_named_for_tests(true);
+    h.audio(0.4).await;
+    assert_eq!(h.audio(0.25).await, NOTHING);
+    // A full wake word over it still interrupts it.
+    assert_eq!(
+        h.audio(0.9).await,
+        ["WakeWordEnd", "SttStart", "assistant: woke_on 4608 samples", "assistant: interrupt", "assistant: hear_now"]
+    );
 }
 
 // --- The follow-up window ---------------------------------------------------------------------

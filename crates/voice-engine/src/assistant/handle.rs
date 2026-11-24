@@ -27,6 +27,7 @@ pub struct AssistantHandle {
     pub(super) events: broadcast::Sender<AssistantEvent>,
     pub(super) hear_now: Arc<AtomicBool>,
     pub(super) interrupted: Arc<AtomicBool>,
+    pub(super) answer_named: Arc<AtomicBool>,
     pub(super) speaking: Arc<AtomicBool>,
     pub pause: Arc<Pause>,
     pub screen: Arc<Screen>,
@@ -104,6 +105,12 @@ impl AssistantHandle {
     /// synthesized.
     pub fn interrupt(&self) {
         self.interrupted.store(true, Relaxed);
+        let _ = self.jobs.send(Job::Interrupted);
+    }
+
+    /// The answer being spoken says the assistant's name: a near miss over it may be its echo.
+    pub fn answer_says_name(&self) -> bool {
+        self.answer_named.load(Relaxed)
     }
 
     /// Stop said over the answer, or the button pressed: the answer stops and the conversation
@@ -187,6 +194,12 @@ impl AssistantHandle {
         self.speaking.store(speaking, Relaxed);
     }
 
+    /// The answer being spoken says the name, as the worker would set it.
+    #[cfg(test)]
+    pub(crate) fn set_answer_named_for_tests(&self, named: bool) {
+        self.answer_named.store(named, Relaxed);
+    }
+
     /// A handle with no assistant behind it, and the announcements sent to it so far.
     #[cfg(test)]
     pub(crate) fn for_tests() -> (Self, impl Fn() -> Vec<Announcement>) {
@@ -196,6 +209,7 @@ impl AssistantHandle {
             events: broadcast::channel(4).0,
             hear_now: Default::default(),
             interrupted: Default::default(),
+            answer_named: Default::default(),
             speaking: Default::default(),
             pause: Default::default(),
             screen: Default::default(),
@@ -285,6 +299,8 @@ impl Calls {
                 }
                 Job::NothingAsked => "gave_up".into(),
                 Job::Stopped(by) => format!("stop by {by}"),
+                // Recorded by the `interrupted` flag below.
+                Job::Interrupted => continue,
                 Job::Satellite(names) => format!("satellite {names:?}"),
                 _ => "another job".into(),
             });
