@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
-use voice_assistant::dialog::WakeWord;
+use voice_assistant::dialog::{says_stop, WakeWord};
 use voice_assistant::lang::Lang;
 use voice_assistant::voice_gender::Gender;
 use voice_assistant::whisper::Transcribe;
@@ -40,16 +40,25 @@ pub(super) enum WakeName {
     Heard,
 }
 
+/// What a name check heard in a satellite's near miss of the wake word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NameHeard {
+    pub named: bool,
+    /// A stop came with the name ("Jarvis, stop"): over an answer it ends the conversation.
+    pub stop: bool,
+}
+
 /// Where a name check's result goes.
 pub(super) enum NameReply {
     /// The worker's own wake: it takes the result when a reply or the music needs it.
     Wake(mpsc::Sender<Option<bool>>),
     /// A satellite's near miss of the wake word.
-    Satellite(tokio::sync::oneshot::Sender<Option<bool>>),
+    Satellite(tokio::sync::oneshot::Sender<Option<NameHeard>>),
 }
 
 /// The name check with a model of its own, on a thread of its own. On the worker thread it held up
 /// the request's draft by about a quarter of a second (Loki, Nov 2026: p50 248 ms, p90 315 ms).
+#[derive(Clone)]
 pub(super) struct NameChecker {
     checks: mpsc::Sender<(Vec<i16>, NameReply)>,
 }
@@ -65,14 +74,14 @@ impl NameChecker {
         let (checks, received) = mpsc::channel::<(Vec<i16>, NameReply)>();
         std::thread::Builder::new().name("name-check".into()).spawn(move || {
             for (audio, reply) in received {
-                let named = name_in(listener.as_mut(), &wake, &audio);
+                let heard = name_in(listener.as_mut(), &wake, &audio);
                 match reply {
                     NameReply::Wake(result) => {
-                        let _ = result.send(named);
+                        let _ = result.send(heard.map(|h| h.named));
                         let _ = jobs.send(Job::NameChecked);
                     }
                     NameReply::Satellite(result) => {
-                        let _ = result.send(named);
+                        let _ = result.send(heard);
                     }
                 }
             }
@@ -88,7 +97,7 @@ impl NameChecker {
 }
 
 /// Whether a wake word's audio holds the assistant's name; `None` when it could not be transcribed.
-fn name_in(transcriber: &mut dyn Transcribe, wake: &WakeWord, audio: &[i16]) -> Option<bool> {
+fn name_in(transcriber: &mut dyn Transcribe, wake: &WakeWord, audio: &[i16]) -> Option<NameHeard> {
     let start = Instant::now();
     let heard = match transcriber.transcribe(audio) {
         Ok(candidates) => candidates.into_iter().next().map(|c| c.text).unwrap_or_default(),
@@ -99,7 +108,7 @@ fn name_in(transcriber: &mut dyn Transcribe, wake: &WakeWord, audio: &[i16]) -> 
     };
     let named = wake.in_wake_word(&heard);
     info!(heard, named, took = ?start.elapsed(), "wake word check");
-    Some(named)
+    Some(NameHeard { named, stop: named && says_stop(&heard) })
 }
 
 impl Worker {
@@ -137,15 +146,27 @@ impl Worker {
                 self.wake_check = Some(check);
             }
             None => {
-                let named = name_in(self.transcriber.as_mut(), &self.config.wake, &audio);
+                let named = name_in(self.transcriber.as_mut(), &self.config.wake, &audio).map(|h| h.named);
                 self.conversation.set_wake_named(named);
                 self.hush_if_named();
             }
         }
     }
 
+    /// Stop said over the answer, or the button: the answer has stopped (`interrupted`), and
+    /// nothing waits for a reply. A chat starts afresh after it, since it was the chat that ran on.
+    pub(super) fn stopped(&mut self, by: &str) {
+        info!(by, "answer stopped");
+        self.interrupted.store(false, Relaxed);
+        self.stop_draft_run();
+        self.forget_questions();
+        self.conversation.restart();
+        self.wake_check = None;
+        self.unhush();
+    }
+
     /// A satellite's near miss: answered from the name check's thread when there is one.
-    pub(super) fn check_name(&mut self, audio: Vec<i16>, reply: tokio::sync::oneshot::Sender<Option<bool>>) {
+    pub(super) fn check_name(&mut self, audio: Vec<i16>, reply: tokio::sync::oneshot::Sender<Option<NameHeard>>) {
         match &self.name_checker {
             Some(checker) => checker.check(audio, NameReply::Satellite(reply)),
             None => {
@@ -402,6 +423,6 @@ mod tests {
         let start = Instant::now();
         woken.worker.check_name(vec![0; SAMPLE_RATE as usize], reply);
         assert!(start.elapsed() < CHECK / 4);
-        assert_eq!(answer.blocking_recv(), Ok(Some(true)));
+        assert_eq!(answer.blocking_recv(), Ok(Some(NameHeard { named: true, stop: false })));
     }
 }

@@ -1626,6 +1626,22 @@ fn a_wake_word_without_the_name_stays_unnamed_after_the_first_words() {
     assert!(chat.asked.lock().unwrap().is_empty());
 }
 
+/// Stop over the answer, or the button: the conversation is over, so the words after it are the
+/// room, and a later chat starts afresh.
+#[test]
+fn a_stop_over_the_answer_ends_the_conversation() {
+    let chat = FakeChat::new("Then rest. Shall I dim the lights?");
+    let mut dialog = chat.dialog(None);
+    assert!(dialog.say("Jarvis, what should I cook tonight?").is_some());
+    dialog.worker.stopped("button");
+    assert!(!dialog.worker.conversation.follow_up());
+    assert_eq!(dialog.say("I'm not that hungry, really."), None);
+    assert_eq!(chat.asked.lock().unwrap().len(), 1);
+    assert!(dialog.say("Jarvis, give me a cookie recipe.").is_some());
+    assert_eq!(chat.asked.lock().unwrap().len(), 2);
+    assert_eq!(chat.last_messages()[1]["content"], "give me a cookie recipe.");
+}
+
 #[test]
 fn the_chat_answer_heard_back_goes_nowhere() {
     let chat = FakeChat::new("Anything else? The bins go out on Tuesday morning.");

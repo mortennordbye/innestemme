@@ -82,6 +82,7 @@ use quick::{bare_stop, music_by_sound};
 use screen::SCREEN_MOMENT;
 use shopping::LIST_REPLY_WORDS;
 use speech::Spoken;
+pub use wake::NameHeard;
 use wake::{NameChecker, WakeName};
 
 pub use handle::AssistantHandle;
@@ -247,7 +248,9 @@ enum Job {
     /// A satellite heard its wake word itself, at this time, with what is known of the name in it.
     Woken(Instant, WakeName),
     /// Whether the name is in this audio (24 kHz): a near miss of the wake word.
-    CheckName(Vec<i16>, tokio::sync::oneshot::Sender<Option<bool>>),
+    CheckName(Vec<i16>, tokio::sync::oneshot::Sender<Option<NameHeard>>),
+    /// Stop said over the answer, or the button pressed, by this: the conversation is over.
+    Stopped(&'static str),
     /// The wake word's name check is done: its result waits in `Worker::wake_check`.
     NameChecked,
     /// A satellite heard nothing after its wake word.
@@ -467,6 +470,7 @@ impl Worker {
             }
             match job {
                 Job::NothingAsked => self.end_turn(TurnEnd::Silent),
+                Job::Stopped(by) => self.stopped(by),
                 Job::Woken(at, wake) => self.woken(at, wake),
                 Job::NameChecked => self.take_wake_name(false),
                 Job::CheckName(audio, reply) => self.check_name(audio, reply),

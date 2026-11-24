@@ -41,7 +41,7 @@ use voice_proto::{Codec, Header, Kind, HEADER_LEN, MAX_DATAGRAM, PACKET_SAMPLES,
 use serde_json::json;
 use voice_assistant::ha::HomeAssistant;
 
-use crate::assistant::{AnnounceOn, AssistantEvent, AssistantHandle};
+use crate::assistant::{AnnounceOn, AssistantEvent, AssistantHandle, NameHeard};
 use crate::metrics::{Clip, SpeechClips};
 
 const DEVICE_RATE: u32 = 16_000;
@@ -76,6 +76,8 @@ const FIRST_AUDIO_LAG: Duration = Duration::from_millis(400);
 const WORDING_WAIT: Duration = Duration::from_secs(3);
 /// The device takes a few tens of milliseconds from the end of speech to waiting for the answer.
 const RUN_END_DELAY: Duration = Duration::from_millis(250);
+/// The longest stretch kept of what is heard over one answer: 2 minutes at 16 kHz, 3.8 MB.
+const ANSWER_HEARD_MOST: usize = 120 * DEVICE_RATE as usize;
 /// Announced over an answer to stop it, and what an answer announced early plays when no words come:
 /// 0.3 s at 24 kHz. An empty wav was never tried on the Sonos.
 const SILENCE: usize = 7200;
@@ -239,7 +241,7 @@ pub async fn run(cfg: SatelliteConfig, assistant: AssistantHandle, speech: Arc<S
 
 /// A near miss of the wake word sent to the assistant to hear whether the name is in it.
 struct NameCheck {
-    answer: tokio::sync::oneshot::Receiver<Option<bool>>,
+    answer: tokio::sync::oneshot::Receiver<Option<NameHeard>>,
     score: f32,
     /// The 16 kHz audio that was checked.
     wake: Vec<i16>,
@@ -292,6 +294,9 @@ struct Bridge<'a, D: SatelliteDevice = Device> {
     /// its wake. The assistant may still hear it, and is told at the listening timeout when it
     /// does not.
     unheard_since: Option<Instant>,
+    /// With `dump`: what the microphone hears while an answer plays on the player, the answer's
+    /// echo and anyone talking over it, saved as `answer-<ms>.wav` once it has played.
+    answer_heard: Vec<i16>,
 }
 
 /// The server-side wake word: the detector and what it has heard of the current stream.
@@ -335,7 +340,7 @@ impl WakeListener {
     }
 
     /// Scores a chunk of the stream, until the wake word is heard.
-    fn listen(&mut self, pcm: &[i16], assistant: &AssistantHandle, answer_playing: bool) -> Result<Option<Woken>> {
+    fn listen(&mut self, pcm: &[i16], assistant: &AssistantHandle) -> Result<Option<Woken>> {
         self.preroll.extend(pcm);
         let excess = self.preroll.len().saturating_sub(WAKE_PREROLL);
         self.preroll.drain(..excess);
@@ -347,10 +352,10 @@ impl WakeListener {
         if let Some(check) = &mut self.checking {
             check.since.extend_from_slice(pcm);
             match check.answer.try_recv() {
-                Ok(Some(true)) => {
+                Ok(Some(NameHeard { named: true, stop })) => {
                     let check = self.checking.take().expect("checked above");
-                    info!(score = format!("{:.2}", check.score), "wake word confirmed by its name");
-                    return Ok(Some(Woken { wake: check.wake, since: Some(check.since) }));
+                    info!(score = format!("{:.2}", check.score), stop, "wake word confirmed by its name");
+                    return Ok(Some(Woken { wake: check.wake, since: Some(check.since), stop }));
                 }
                 Ok(_) => {
                     // Taken outside the log call: its fields are not evaluated when INFO is off.
@@ -368,7 +373,8 @@ impl WakeListener {
         if score < threshold {
             // Past its peak, the name, if it was said, is in the preroll.
             let check = self.check_from.is_some_and(|from| self.near_miss >= from && score < self.near_miss);
-            if check && !self.near_miss_checked && self.checking.is_none() && !answer_playing {
+            // Over an answer too: the player is loud, and "Jarvis, stop" scores low under it.
+            if check && !self.near_miss_checked && self.checking.is_none() {
                 self.near_miss_checked = true;
                 let wake: Vec<i16> = self.preroll.iter().copied().collect();
                 let answer = assistant.check_name(resample::to_24k(&wake, DEVICE_RATE));
@@ -385,7 +391,7 @@ impl WakeListener {
         }
         info!(score = format!("{score:.2}"), threshold, "wake word");
         self.checking = None;
-        Ok(Some(Woken { wake: self.preroll.drain(..).collect(), since: None }))
+        Ok(Some(Woken { wake: self.preroll.drain(..).collect(), since: None, stop: false }))
     }
 }
 
@@ -394,6 +400,8 @@ impl WakeListener {
 struct Woken {
     wake: Vec<i16>,
     since: Option<Vec<i16>>,
+    /// The name check heard a stop with the name ("Jarvis, stop").
+    stop: bool,
 }
 
 /// How a session's answers reach the room, chosen once from the device and the settings. Each
@@ -872,6 +880,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
             run_end_at: None,
             answer_event_at: None,
             unheard_since: None,
+            answer_heard: Vec::new(),
         }
     }
 
@@ -899,6 +908,11 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                     if let Some(wake) = &mut self.server_wake {
                         wake.reset();
                     }
+                } else if self.server_wake.is_some() && self.answer_playing() {
+                    // The button: with the wake word heard here, the device starts a run of its own
+                    // only for it.
+                    self.stop_answer(assistant, "button").await?;
+                    self.end_run().await?;
                 } else {
                     info!(wake_word = request.wake_word_phrase, "device woke");
                     self.device.event(Event::SttStart, &[]).await?;
@@ -924,6 +938,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 self.delivery.watch_onset(&pcm);
                 assistant.party.feed(&pcm);
                 if self.run == Run::WakeWord && self.server_wake.is_some() {
+                    if self.dump.is_some() && self.player_answer() && self.answer_heard.len() < ANSWER_HEARD_MOST {
+                        self.answer_heard.extend_from_slice(&pcm);
+                    }
                     return self.listen_for_wake_word(&pcm, assistant).await;
                 }
                 if self.dump.is_some() && self.run != Run::Idle {
@@ -1110,12 +1127,25 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
 
     /// Scores the continuous stream; only audio after the wake word goes on to the engine.
     async fn listen_for_wake_word(&mut self, pcm: &[i16], assistant: &AssistantHandle) -> Result<()> {
-        let playing = self.answer_playing();
         let Some(listener) = &mut self.server_wake else { return Ok(()) };
-        match listener.listen(pcm, assistant, playing)? {
-            Some(Woken { wake, since }) => self.wake(assistant, wake, since).await,
+        match listener.listen(pcm, assistant)? {
+            Some(Woken { stop: true, .. }) if self.answer_playing() => self.stop_answer(assistant, "name").await,
+            Some(Woken { wake, since, .. }) => self.wake(assistant, wake, since).await,
             None => Ok(()),
         }
+    }
+
+    /// Stop over the answer, or the button: the player goes quiet, no follow-up window opens, and
+    /// the device goes back to streaming for the wake word.
+    async fn stop_answer(&mut self, assistant: &AssistantHandle, by: &'static str) -> Result<()> {
+        info!(by, "stop over the answer");
+        if let Some(wake) = &mut self.server_wake {
+            wake.reset();
+        }
+        self.follow_up_at = None;
+        assistant.stop(by);
+        self.delivery.interrupt(self.speech, &self.base_url);
+        Ok(())
     }
 
     /// An answer is on the player, or has just played and a follow-up may come.
@@ -1168,6 +1198,9 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
 
     /// Paces streamed answer audio and times out a wake word with no request.
     async fn tick(&mut self, assistant: &AssistantHandle) -> Result<()> {
+        if !self.answer_heard.is_empty() && !self.player_answer() {
+            self.save_answer_heard();
+        }
         if self.run_end_at.is_some_and(|at| Instant::now() >= at) {
             self.run_end_at = None;
             if self.run == Run::Answering {
@@ -1271,6 +1304,16 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
         if let (Some(dir), false) = (&self.dump, audio.is_empty()) {
             if let Err(error) = crate::assistant::save_wav(dir, "run", &audio, DEVICE_RATE) {
                 warn!(%error, "could not save the run");
+            }
+        }
+    }
+
+    fn save_answer_heard(&mut self) {
+        let audio = std::mem::take(&mut self.answer_heard);
+        if let Some(dir) = &self.dump {
+            match crate::assistant::save_wav(dir, "answer", &audio, DEVICE_RATE) {
+                Ok(path) => info!(path = %path.display(), "heard over the answer saved"),
+                Err(error) => warn!(%error, "could not save what was heard over the answer"),
             }
         }
     }

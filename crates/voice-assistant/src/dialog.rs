@@ -16,6 +16,29 @@ pub fn phrase(text: &str) -> String {
     words(text).join(" ")
 }
 
+/// What stops an answer while it plays ("Jarvis, stop", "be quiet").
+const STOP_PHRASES: &[&str] = &[
+    "stop",
+    "stop it",
+    "stop talking",
+    "be quiet",
+    "quiet",
+    "shut up",
+    "enough",
+    "that's enough",
+    "cancel",
+    "stopp",
+    "slutt",
+    "hold kjeft",
+    "ti stille",
+];
+
+/// Whether `text` holds a phrase that stops an answer, as whole words.
+pub fn says_stop(text: &str) -> bool {
+    let said = format!(" {} ", phrase(text));
+    STOP_PHRASES.iter().any(|stop| said.contains(&format!(" {stop} ")))
+}
+
 /// Ways transcribers write known names. An explicit list rather than an edit distance, which would
 /// also match common words. For Freya, "fredag" (Friday) and "fela" (fiddle) are close
 /// mishearings but everyday Norwegian, so they are left out; for Homie, so is "home".
@@ -172,6 +195,18 @@ pub fn is_greeting(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_phrases_are_whole_words() {
+        for said in
+            ["Jarvis, stop!", "Hey Jarvis. Stop it.", "Jarvis, that's enough.", "Jarvis, stopp.", "Hold kjeft, Jarvis"]
+        {
+            assert!(says_stop(said), "{said}");
+        }
+        for said in ["Hey Jarvis.", "Jarvis, the bus stops at nine.", "Jarvis, a quieter song", "unstoppable"] {
+            assert!(!says_stop(said), "{said}");
+        }
+    }
 
     /// Parakeet on the living room Voice PE's wake words (`examples/wake_text.rs`).
     #[test]

@@ -729,6 +729,97 @@ async fn player_wake_word_after_the_answer_was_spoken_but_still_plays_interrupts
     assert_eq!(h.bridge.follow_up_at, None);
 }
 
+/// An answer on the player, with the device streaming for the wake word again under it.
+async fn story_playing(h: &mut Harness) {
+    h.stream().await;
+    h.audio(0.9).await;
+    h.heard("tell me a story").await;
+    h.answer("Once upon a time.").await;
+    assert_eq!(h.announced(1), [answer_on_player(0)]);
+    h.after(RUN_END_DELAY).await;
+    h.stream().await;
+    h.speech(1.0).await;
+    h.take();
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_button_over_the_answer_stops_it() {
+    let mut h = Harness::server_wake(Mode::Player);
+    story_playing(&mut h).await;
+    // The button: the device stops its stream and starts a run without the wake word.
+    h.stop().await;
+    assert_eq!(h.start().await, ["accept", "RunStart", "RunEnd", "assistant: stop by button", "assistant: interrupt"]);
+    assert_eq!(h.announced(1), [format!("{ENTITY} {BASE}/speech/1.wav 40")]);
+    assert!(!h.player_clip());
+    // No follow-up window after it.
+    assert_eq!(h.spoken().await, NOTHING);
+    assert_eq!(h.bridge.follow_up_at, None);
+    h.stream().await;
+    assert_eq!(h.after(Duration::from_secs(10)).await, NOTHING);
+}
+
+#[tokio::test(start_paused = true)]
+async fn player_button_with_nothing_playing_starts_a_request() {
+    let mut h = Harness::server_wake(Mode::Player);
+    h.stream().await;
+    h.stop().await;
+    assert_eq!(h.start().await, ["accept", "RunStart", "SttStart", "assistant: woke", "assistant: hear_now"]);
+}
+
+/// With `dump`, what the microphone heard while the answer played is kept: the echo, and anyone
+/// talking over it.
+#[tokio::test(start_paused = true)]
+async fn player_answer_heard_over_is_saved_once_played() {
+    let dir = std::env::temp_dir().join(format!("answer-heard-{}", std::process::id()));
+    let mut h = Harness::server_wake(Mode::Player);
+    h.bridge.dump = Some(dir.clone());
+    story_playing(&mut h).await;
+    h.audio(0.0).await;
+    h.audio(0.0).await;
+    assert!(!h.bridge.answer_heard.is_empty());
+    h.spoken().await;
+    h.after(Duration::from_secs(10)).await;
+    assert!(h.bridge.answer_heard.is_empty());
+    let saved: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|name| name.starts_with("answer-"))
+        .collect();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// "Jarvis, stop" under the loud player scores under the threshold: the near miss's name check
+/// hears it.
+#[tokio::test(start_paused = true)]
+async fn player_name_and_stop_over_the_answer_stops_it() {
+    let mut h = Harness::server_wake(Mode::Player);
+    story_playing(&mut h).await;
+    assert_eq!(h.audio(0.4).await, NOTHING);
+    assert_eq!(h.audio(0.25).await, ["assistant: check_name 3072 samples"]);
+    h.calls.name_checks.pop_front().unwrap().send(Some(NameHeard { named: true, stop: true })).unwrap();
+    assert_eq!(h.audio(0.0).await, ["assistant: stop by name", "assistant: interrupt"]);
+    assert_eq!(h.announced(1), [format!("{ENTITY} {BASE}/speech/1.wav 40")]);
+    assert_eq!(h.spoken().await, NOTHING);
+    assert_eq!(h.bridge.follow_up_at, None);
+}
+
+/// The name alone over the answer, scored low: as a full wake word, it stops the answer and
+/// listens.
+#[tokio::test(start_paused = true)]
+async fn player_name_over_the_answer_interrupts_it_and_listens() {
+    let mut h = Harness::server_wake(Mode::Player);
+    story_playing(&mut h).await;
+    h.audio(0.4).await;
+    assert_eq!(h.audio(0.25).await, ["assistant: check_name 3072 samples"]);
+    h.calls.name_checks.pop_front().unwrap().send(Some(NameHeard { named: true, stop: false })).unwrap();
+    assert_eq!(
+        h.audio(0.0).await,
+        ["WakeWordEnd", "SttStart", "assistant: woke_named", "assistant: interrupt", "assistant: hear_now"]
+    );
+    assert_eq!(h.announced(1), [format!("{ENTITY} {BASE}/speech/1.wav 40")]);
+}
+
 // --- The follow-up window ---------------------------------------------------------------------
 
 #[tokio::test(start_paused = true)]
@@ -845,15 +936,6 @@ async fn player_follow_up_window_closes_on_speech_that_goes_on_and_on() {
     h.assistant.set_speaking_for_tests(true);
     assert_eq!(h.after(FOLLOW_UP + FOLLOW_UP_SPEECH).await, NOTHING);
     assert_eq!(h.after(TICK).await, ["RunEnd"]);
-}
-
-#[tokio::test(start_paused = true)]
-async fn player_near_miss_is_not_checked_while_the_answer_plays() {
-    let mut h = Harness::server_wake(Mode::Player);
-    player_answered(&mut h).await;
-    for score in [0.35, 0.4, 0.25, 0.0] {
-        assert_eq!(h.audio(score).await, NOTHING);
-    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -1140,7 +1222,7 @@ async fn near_miss_with_the_name_wakes() {
         let mut h = Harness::server_wake(mode);
         near_miss(&mut h).await;
         assert_eq!(h.audio(0.0).await, NOTHING, "{mode:?}");
-        h.calls.name_checks.pop_front().unwrap().send(Some(true)).unwrap();
+        h.calls.name_checks.pop_front().unwrap().send(Some(NameHeard { named: true, stop: false })).unwrap();
         assert_eq!(
             h.audio(0.0).await,
             ["WakeWordEnd", "SttStart", "assistant: woke_named", "assistant: hear_now"],
@@ -1157,7 +1239,7 @@ async fn near_miss_with_the_name_wakes() {
 async fn near_miss_without_the_name_keeps_streaming() {
     let mut h = Harness::server_wake(Mode::Player);
     near_miss(&mut h).await;
-    h.calls.name_checks.pop_front().unwrap().send(Some(false)).unwrap();
+    h.calls.name_checks.pop_front().unwrap().send(Some(NameHeard { named: false, stop: false })).unwrap();
     assert_eq!(h.audio(0.0).await, NOTHING);
     assert!(h.wake().checking.is_none());
     assert!(h.bridge.mic.is_empty());
@@ -1172,7 +1254,7 @@ async fn near_miss_without_the_name_is_cleared_with_logging_off() {
     let _off =
         tracing::subscriber::set_default(tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).finish());
     near_miss(&mut h).await;
-    h.calls.name_checks.pop_front().unwrap().send(Some(false)).unwrap();
+    h.calls.name_checks.pop_front().unwrap().send(Some(NameHeard { named: false, stop: false })).unwrap();
     assert_eq!(h.audio(0.0).await, NOTHING);
     assert!(h.wake().checking.is_none());
 }
@@ -1197,7 +1279,7 @@ async fn near_miss_check_that_does_not_answer_lets_the_wake_word_go() {
     assert_eq!(h.audio(0.0).await, NOTHING);
     assert!(h.wake().checking.is_none());
     let late = h.calls.name_checks.pop_front().unwrap();
-    assert!(late.send(Some(true)).is_err());
+    assert!(late.send(Some(NameHeard { named: true, stop: false })).is_err());
     assert_eq!(h.audio(0.0).await, NOTHING);
 }
 
