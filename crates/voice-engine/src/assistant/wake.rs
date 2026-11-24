@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
-use voice_assistant::dialog::{says_stop, WakeWord};
+use voice_assistant::dialog::WakeWord;
 use voice_assistant::lang::Lang;
 use voice_assistant::voice_gender::Gender;
 use voice_assistant::whisper::Transcribe;
@@ -108,7 +108,7 @@ fn name_in(transcriber: &mut dyn Transcribe, wake: &WakeWord, audio: &[i16]) -> 
     };
     let named = wake.in_wake_word(&heard);
     info!(heard, named, took = ?start.elapsed(), "wake word check");
-    Some(NameHeard { named, stop: named && says_stop(&heard) })
+    Some(NameHeard { named, stop: named && wake.stop_with_name(&heard) })
 }
 
 impl Worker {

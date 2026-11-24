@@ -938,7 +938,7 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
                 self.delivery.watch_onset(&pcm);
                 assistant.party.feed(&pcm);
                 if self.run == Run::WakeWord && self.server_wake.is_some() {
-                    if self.dump.is_some() && self.player_answer() && self.answer_heard.len() < ANSWER_HEARD_MOST {
+                    if self.dump.is_some() && self.answer_playing() && self.answer_heard.len() < ANSWER_HEARD_MOST {
                         self.answer_heard.extend_from_slice(&pcm);
                     }
                     return self.listen_for_wake_word(&pcm, assistant).await;
@@ -1198,7 +1198,8 @@ impl<'a, D: SatelliteDevice> Bridge<'a, D> {
 
     /// Paces streamed answer audio and times out a wake word with no request.
     async fn tick(&mut self, assistant: &AssistantHandle) -> Result<()> {
-        if !self.answer_heard.is_empty() && !self.player_answer() {
+        // Until the player has played it, not until it is synthesized, which is faster.
+        if !self.answer_heard.is_empty() && !self.answer_playing() {
             self.save_answer_heard();
         }
         if self.run_end_at.is_some_and(|at| Instant::now() >= at) {

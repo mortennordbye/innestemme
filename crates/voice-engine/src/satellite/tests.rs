@@ -777,7 +777,11 @@ async fn player_answer_heard_over_is_saved_once_played() {
     h.audio(0.0).await;
     h.audio(0.0).await;
     assert!(!h.bridge.answer_heard.is_empty());
+    // Synthesized, but still on the player: what it plays from here on is kept too.
     h.spoken().await;
+    let before = h.bridge.answer_heard.len();
+    h.audio(0.0).await;
+    assert!(h.bridge.answer_heard.len() > before);
     h.after(Duration::from_secs(10)).await;
     assert!(h.bridge.answer_heard.is_empty());
     let saved: Vec<String> = std::fs::read_dir(&dir)
