@@ -1614,6 +1614,18 @@ fn open_talk_after_a_wake_word_without_the_name_is_the_room() {
     assert!(chat.asked.lock().unwrap().is_empty());
 }
 
+/// 23 and 24 November 2026: a false wake on the TV, its first words dropped ("What a poster?"),
+/// then "The nightmare." went to the chat model, which talked over the room.
+#[test]
+fn a_wake_word_without_the_name_stays_unnamed_after_the_first_words() {
+    let chat = FakeChat::new("Nightmares are simply the mind's way of tidying up.");
+    let mut dialog = chat.dialog(None);
+    dialog.worker.conversation.wake = Some(Wake { at: Instant::now() - Duration::from_secs(5), named: Some(false) });
+    assert_eq!(dialog.say("What a poster?"), None);
+    assert_eq!(dialog.say("The nightmare."), None);
+    assert!(chat.asked.lock().unwrap().is_empty());
+}
+
 #[test]
 fn the_chat_answer_heard_back_goes_nowhere() {
     let chat = FakeChat::new("Anything else? The bins go out on Tuesday morning.");

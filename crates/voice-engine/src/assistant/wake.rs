@@ -216,7 +216,13 @@ impl Worker {
         // it is worse than none; a real request said wrong is said again. Whether the name was in
         // the wake word tells best. It is no gate for requests: it misses the name in about one
         // real wake in twenty.
-        let addressed = match self.conversation.wake.as_mut().and_then(|wake| wake.named.take()) {
+        // A name heard earns one reply only. A name not heard stays for the whole run: taken, the
+        // run read as named, and the TV's next words went to the chat model (23 and 24 Nov).
+        let named = self.conversation.wake.as_mut().and_then(|wake| match wake.named {
+            Some(true) => wake.named.take(),
+            named => named,
+        });
+        let addressed = match named {
             Some(named) => named,
             None => sounds_like_a_request(text),
         };
