@@ -17,6 +17,9 @@ use crate::llm::Turn;
 
 /// The longest answer, in tokens: a few spoken sentences, a poem's gist.
 const MAX_TOKENS: u32 = 120;
+/// How long a load of the model may take: from the cluster's NFS a cold one took up to 190 s. A
+/// request that gives up first also makes the server give up the load.
+const LOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 pub struct Talk {
@@ -27,6 +30,7 @@ pub struct Talk {
     /// limit it wrote 1.2 tokens/s instead of 9.
     threads: u32,
     agent: ureq::Agent,
+    loader: ureq::Agent,
 }
 
 /// A chat answer, and what it cost.
@@ -50,6 +54,11 @@ impl Answered {
     pub fn speed(&self) -> f32 {
         self.written_tokens as f32 / self.written.as_secs_f32().max(0.001)
     }
+}
+
+/// Whether Ollama's `/api/ps` answer lists `model`.
+fn holds(running: &Value, model: &str) -> bool {
+    running["models"].as_array().is_some_and(|models| models.iter().any(|m| m["name"] == model || m["model"] == model))
 }
 
 fn nanos(value: &Value) -> Duration {
@@ -78,6 +87,34 @@ impl Talk {
             model: model.to_owned(),
             threads,
             agent: ureq::Agent::config_builder().timeout_global(Some(timeout)).build().into(),
+            loader: ureq::Agent::config_builder().timeout_global(Some(LOAD_TIMEOUT)).build().into(),
+        }
+    }
+
+    /// Whether the server holds the model in memory. A new or restarted server has none, and the
+    /// first request then waits for the load.
+    pub fn loaded(&self) -> Result<bool> {
+        let mut response = self
+            .agent
+            .get(&format!("{}/api/ps", self.url))
+            .call()
+            .map_err(|e| anyhow!("chat model server not reachable: {e}"))?;
+        let running: Value = response.body_mut().read_json().context("chat model server answer is not JSON")?;
+        Ok(holds(&running, &self.model))
+    }
+
+    /// Loads the model into memory, and waits for it as long as a load from disk can take.
+    pub fn load(&self) -> Result<()> {
+        let body = json!({ "model": self.model, "messages": [], "stream": false, "keep_alive": -1 });
+        let mut response = self
+            .loader
+            .post(&format!("{}/api/chat", self.url))
+            .send_json(&body)
+            .map_err(|e| anyhow!("chat model load failed: {e}"))?;
+        let reply: Value = response.body_mut().read_json().context("chat model answer is not JSON")?;
+        match reply["error"].as_str() {
+            Some(error) => Err(anyhow!("chat model: {error}")),
+            None => Ok(()),
         }
     }
 
@@ -403,6 +440,14 @@ fn tidy(sentence: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_model_counts_as_loaded_only_when_the_server_lists_it() {
+        let running = json!({ "models": [{ "name": "gemma4:e2b-it-qat", "model": "gemma4:e2b-it-qat" }] });
+        assert!(holds(&running, "gemma4:e2b-it-qat"));
+        assert!(!holds(&running, "qwen3:4b-instruct"));
+        assert!(!holds(&json!({ "models": [] }), "gemma4:e2b-it-qat"));
+    }
 
     #[test]
     fn a_misheard_whole_request_is_put_right() {

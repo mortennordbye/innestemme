@@ -29,6 +29,20 @@ const TALK_REPLY_WORDS: usize = 12;
 const FILLER_AFTER: Duration = Duration::from_millis(400);
 /// How often the household's people are read again from Home Assistant for the prompt.
 const PEOPLE_REFRESH: Duration = Duration::from_secs(30 * 60);
+/// How often, while idle, the engine asks whether the chat model server still holds the model: a
+/// new or restarted server has none.
+const LOADED_CHECK: Duration = Duration::from_secs(60);
+
+/// The chat model's load into a server that lost it, in the background.
+#[derive(Default)]
+pub(super) struct ModelLoad {
+    /// When the server was last asked whether it holds the model.
+    pub(super) checked: Option<Instant>,
+    /// A load is under way: a request now would wait behind it, so it gets the fallback at once.
+    pub(super) loading: Arc<AtomicBool>,
+    /// A load finished: the server's prompt cache is empty and the base goes back in.
+    pub(super) done: Arc<AtomicBool>,
+}
 
 /// The words of `heard`, a sentence said again counted once: "What about do you believe in
 /// Skibberty Toilet? Do you believe in Skibberty Toilet?" was 14 words, and a reply said twice for want
@@ -111,6 +125,11 @@ impl Worker {
     /// it failed and nothing was spoken, so the rules' fallback answers.
     pub(super) fn converse(&mut self, text: &str, lang: Lang) -> Option<String> {
         let chat = self.config.talk.clone()?;
+        if self.talk_load.loading.load(Relaxed) {
+            info!("chat model still loading; the fallback answers");
+            self.stop_draft_run();
+            return None;
+        }
         let system = self.talk_prompt();
         let history = self.conversation.recent_turns();
         let start = Instant::now();
@@ -216,7 +235,11 @@ impl Worker {
             }
             failed => {
                 match failed {
-                    Err(error) => warn!(%error, "chat model failed"),
+                    Err(error) => {
+                        warn!(%error, "chat model failed");
+                        // The server may have lost the model: the next idle moment asks.
+                        self.talk_load.checked = None;
+                    }
                     Ok(_) => warn!("chat model said nothing"),
                 }
                 if !spoken.started() {
@@ -256,6 +279,9 @@ impl Worker {
     /// sentences wait until the utterance ends with the same words; nothing is spoken before.
     pub(super) fn start_on_draft(&mut self, request: &str, lang: Lang) {
         let Some(chat) = self.config.talk.clone() else { return };
+        if self.talk_load.loading.load(Relaxed) {
+            return;
+        }
         if self.draft_run.as_ref().is_some_and(|run| run.request == request) {
             return;
         }
@@ -375,6 +401,12 @@ impl Worker {
     /// after each answer and while idle; most times it finds nothing to do.
     pub(super) fn keep_talk_warm(&mut self) {
         let Some(chat) = self.config.talk.clone() else { return };
+        if self.talk_load.loading.load(Relaxed) {
+            return;
+        }
+        if self.talk_load.done.swap(false, Relaxed) {
+            self.talk_warmed.clear();
+        }
         self.refresh_talk_people();
         let system = self.talk_prompt();
         let cut = std::mem::take(&mut self.conversation.history_cut);
@@ -395,6 +427,40 @@ impl Worker {
         });
         if let Err(error) = spawned {
             warn!(%error, "could not start the chat model warm-up");
+        }
+    }
+
+    /// Loads the chat model again in the background when its server no longer holds it (a new
+    /// Ollama pod after an update): without this each request waited for the load, gave up after
+    /// `chat-timeout-secs` and so made the server give it up too. Run while idle.
+    pub(super) fn keep_talk_loaded(&mut self) {
+        let Some(chat) = self.config.talk.clone() else { return };
+        let load = &mut self.talk_load;
+        if load.loading.load(Relaxed) || load.checked.is_some_and(|at| at.elapsed() < LOADED_CHECK) {
+            return;
+        }
+        load.checked = Some(Instant::now());
+        let (loading, done) = (load.loading.clone(), load.done.clone());
+        loading.store(true, Relaxed);
+        let spawned = std::thread::Builder::new().name("chat-load".into()).spawn(move || {
+            match chat.loaded() {
+                Ok(true) => {}
+                Ok(false) => {
+                    info!(model = chat.model(), "chat model not in memory; loading it");
+                    let start = Instant::now();
+                    match chat.load() {
+                        Ok(()) => info!(elapsed = ?start.elapsed(), "chat model loaded"),
+                        Err(error) => warn!(%error, "chat model load failed"),
+                    }
+                    done.store(true, Relaxed);
+                }
+                Err(error) => tracing::debug!(%error, "could not ask whether the chat model is loaded"),
+            }
+            loading.store(false, Relaxed);
+        });
+        if let Err(error) = spawned {
+            self.talk_load.loading.store(false, Relaxed);
+            warn!(%error, "could not start the chat model load check");
         }
     }
 
