@@ -183,6 +183,7 @@ impl AssistantProcessor {
             talk_people: (Vec::new(), None),
             talk_warmed: String::new(),
             talk_base_gone: false,
+            talk_load: Default::default(),
             answer_announced: false,
             last_audio: None,
             room: None,

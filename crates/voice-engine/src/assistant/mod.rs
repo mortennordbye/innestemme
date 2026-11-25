@@ -363,6 +363,8 @@ struct Worker {
     talk_warmed: String,
     /// A conversation has been in the chat model's cache since the base was last read.
     talk_base_gone: bool,
+    /// The chat model's load into a server that lost it.
+    talk_load: talk::ModelLoad,
     /// The answer being composed has sent its `Answer` event (a lead-in's), which a satellite
     /// takes as the start of the reply: a second one would start it again.
     answer_announced: bool,
@@ -447,6 +449,7 @@ impl Worker {
                     }
                     self.keep_warm();
                     if !talking {
+                        self.keep_talk_loaded();
                         self.keep_talk_warm();
                     }
                     if !talking && self.refreshed.is_none_or(|at| at.elapsed() >= DATA_REFRESH) {

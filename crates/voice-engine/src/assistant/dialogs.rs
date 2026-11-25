@@ -264,6 +264,7 @@ impl Worker {
             talk_people: (Vec::new(), None),
             talk_warmed: String::new(),
             talk_base_gone: false,
+            talk_load: Default::default(),
             answer_announced: false,
             last_audio: None,
             room: None,
@@ -1299,6 +1300,18 @@ impl FakeChat {
         warmed: &Mutex<Vec<Value>>,
     ) -> std::io::Result<()> {
         let mut reader = BufReader::new(stream.try_clone()?);
+        let mut request_line = String::new();
+        reader.read_line(&mut request_line)?;
+        if request_line.starts_with("GET /api/ps") {
+            // A server that has lost the model, as a new Ollama pod.
+            let none = json!({ "models": [] }).to_string();
+            let mut stream = stream;
+            return write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{none}",
+                none.len()
+            );
+        }
         let mut length = 0;
         loop {
             let mut header = String::new();
@@ -1578,6 +1591,34 @@ fn a_window_after_a_turn_without_the_name_takes_no_chat_reply() {
     dialog.worker.end_turn(TurnEnd::Silent);
     dialog.worker.conversation.follow_up_until = Some(Instant::now() + FOLLOW_UP);
     assert_eq!(dialog.say("I feel sick."), None);
+    assert!(chat.asked.lock().unwrap().is_empty());
+}
+
+/// 25 November 2026: an Ollama update started a pod without the model. Each request waited for the
+/// load, gave up after 60 s and so made the server give it up too, until it was loaded by hand.
+#[test]
+fn a_server_without_the_model_gets_it_loaded_in_the_background() {
+    let chat = FakeChat::new("Butter, sugar and flour, sir.");
+    let mut dialog = chat.dialog(None);
+    dialog.worker.keep_talk_loaded();
+    let start = Instant::now();
+    while !dialog.worker.talk_load.done.load(Relaxed) && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(dialog.worker.talk_load.done.load(Relaxed));
+    assert!(chat.warmed.lock().unwrap().iter().any(|messages| messages == &json!([])));
+    // The prompt cache went with the model: the base goes back in.
+    dialog.worker.talk_warmed = "the old base".into();
+    dialog.worker.keep_talk_warm();
+    assert_ne!(dialog.worker.talk_warmed, "the old base");
+}
+
+#[test]
+fn a_question_while_the_chat_model_loads_gets_the_fallback_at_once() {
+    let chat = FakeChat::new("Butter, sugar and flour, sir.");
+    let mut dialog = chat.dialog(None);
+    dialog.worker.talk_load.loading.store(true, Relaxed);
+    assert_eq!(said(dialog.say("Jarvis, give me a cookie recipe.")), "Sorry, I can't help with that yet.");
     assert!(chat.asked.lock().unwrap().is_empty());
 }
 

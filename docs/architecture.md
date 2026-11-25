@@ -145,7 +145,12 @@ conversation can go on. Such a reply has at most 12 words, a sentence said twice
 echo filter does. In such a conversation an echo is a run of words from the end of the answer ("Sir.", "Reality of this
 home."), not any of the words said lately, as a chat answer has so many that "Tell me." counted as one. The prompt gives the model a personality
 with examples of its manner: with rules alone, Gemma refused recipes and said it had no preferences. A
-phone or Assist gets the answer as words. When the model is down, the rules' fallback answers. The model cannot act:
+phone or Assist gets the answer as words. When the model is down, the rules' fallback answers. Once a minute in
+quiet time, and after a request failed, the engine asks Ollama (`/api/ps`) whether it still holds the model; a new
+or restarted Ollama has none, and a cold load from the cluster's NFS takes up to minutes. The engine then loads it in
+the background with a 5 minute limit (log: `chat model not in memory; loading it`, then `chat model loaded`), and
+until it is loaded a request gets the fallback at once (`chat model still loading; the fallback answers`): a request
+that waited for the load gave up after `chat-timeout-secs`, and that made Ollama give up the load too. The model cannot act:
 the house stays with the rules. Gemma 4's sliding-window attention lets Ollama roll its prompt cache back only to the end of a prompt it read
 recently: a new question after the same system prompt was read whole again (2 s), as no earlier prompt ended there. So every request starts with a
 fixed base, the system prompt and four example exchanges, and the base is read ahead at start, after each answer when
