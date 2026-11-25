@@ -418,12 +418,18 @@ impl Worker {
         // Jobs taken off the channel early, to see whether a draft is still worth transcribing.
         let mut queued = VecDeque::new();
         loop {
+            // Here and not only when idle: a steady stream of jobs (the TV's wake words) can keep the
+            // wait below from ever running out, and a restart of the chat model's server that is
+            // not seen leaves its prompt cache empty.
+            if !self.talking() {
+                self.keep_talk_loaded();
+            }
             // Wake up for the next timer, and now and then to keep the language model warm.
             let next_timer = self.timers.next_deadline().map(|at| at.saturating_duration_since(Instant::now()));
             let wait = next_timer.map_or(WARM_CHECK, |t| t.min(WARM_CHECK));
             // During a conversation, to let rendering ahead go on soon after it.
             let wait = if self.talking() { wait.min(Duration::from_secs(1)) } else { wait };
-            let wait = wait.min(DATA_REFRESH);
+            let wait = wait.min(DATA_REFRESH).min(talk::LOADED_CHECK);
             let wait = match self.conversation.after_answer_at() {
                 Some(at) => wait.min(at.saturating_duration_since(Instant::now())),
                 None => wait,
@@ -449,7 +455,6 @@ impl Worker {
                     }
                     self.keep_warm();
                     if !talking {
-                        self.keep_talk_loaded();
                         self.keep_talk_warm();
                     }
                     if !talking && self.refreshed.is_none_or(|at| at.elapsed() >= DATA_REFRESH) {

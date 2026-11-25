@@ -31,7 +31,7 @@ const FILLER_AFTER: Duration = Duration::from_millis(400);
 const PEOPLE_REFRESH: Duration = Duration::from_secs(30 * 60);
 /// How often, while idle, the engine asks whether the chat model server still holds the model: a
 /// new or restarted server has none.
-const LOADED_CHECK: Duration = Duration::from_secs(60);
+pub(super) const LOADED_CHECK: Duration = Duration::from_secs(60);
 
 /// The chat model's load into a server that lost it, in the background.
 #[derive(Default)]
