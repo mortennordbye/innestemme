@@ -40,8 +40,10 @@ pub(super) struct ModelLoad {
     pub(super) checked: Option<Instant>,
     /// A load is under way: a request now would wait behind it, so it gets the fallback at once.
     pub(super) loading: Arc<AtomicBool>,
-    /// A load finished: the server's prompt cache is empty and the base goes back in.
+    /// A load finished, or the server came back: its prompt cache is empty and the base goes back in.
     pub(super) done: Arc<AtomicBool>,
+    /// The server could not be reached at the last check.
+    lost: Arc<AtomicBool>,
 }
 
 /// The words of `heard`, a sentence said again counted once: "What about do you believe in
@@ -440,12 +442,19 @@ impl Worker {
             return;
         }
         load.checked = Some(Instant::now());
-        let (loading, done) = (load.loading.clone(), load.done.clone());
-        loading.store(true, Relaxed);
+        let (loading, done, lost) = (load.loading.clone(), load.done.clone(), load.lost.clone());
         let spawned = std::thread::Builder::new().name("chat-load".into()).spawn(move || {
             match chat.loaded() {
-                Ok(true) => {}
+                // A server that came back with the model (it loads it before it is ready) holds no
+                // prompt cache either.
+                Ok(true) => {
+                    if lost.swap(false, Relaxed) {
+                        done.store(true, Relaxed);
+                    }
+                }
                 Ok(false) => {
+                    lost.store(false, Relaxed);
+                    loading.store(true, Relaxed);
                     info!(model = chat.model(), "chat model not in memory; loading it");
                     let start = Instant::now();
                     match chat.load() {
@@ -453,13 +462,15 @@ impl Worker {
                         Err(error) => warn!(%error, "chat model load failed"),
                     }
                     done.store(true, Relaxed);
+                    loading.store(false, Relaxed);
                 }
-                Err(error) => tracing::debug!(%error, "could not ask whether the chat model is loaded"),
+                Err(error) => {
+                    lost.store(true, Relaxed);
+                    tracing::debug!(%error, "could not ask whether the chat model is loaded");
+                }
             }
-            loading.store(false, Relaxed);
         });
         if let Err(error) = spawned {
-            self.talk_load.loading.store(false, Relaxed);
             warn!(%error, "could not start the chat model load check");
         }
     }
