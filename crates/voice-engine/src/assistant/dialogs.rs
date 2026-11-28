@@ -1501,6 +1501,11 @@ fn more_words_after_the_draft_ask_the_chat_model_again() {
     let mut dialog = chat.dialog(None);
     assert_eq!(dialog.draft("Jarvis, I was thinking about", &[1; 4]), None);
     assert!(dialog.worker.draft_run.is_some());
+    // The run is stopped next: without this wait it could stop before the server saw it (CI, 28 Nov).
+    let start = Instant::now();
+    while chat.asked.lock().unwrap().is_empty() && start.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(said(dialog.say("Jarvis, I was thinking about the moon tonight.")), "The moon is a fine companion.");
     assert_eq!(last_asked(&chat), "I was thinking about the moon tonight.");
     assert_eq!(chat.asked.lock().unwrap().len(), 2);
