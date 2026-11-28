@@ -326,6 +326,7 @@ impl Worker {
             && !self.previewing
             && self.awaiting().is_none()
             && !super::follow_up::sounds_like_a_command(request)
+            && !super::follow_up::only_sounds(request)
             // A wake counts once its name check said yes: most wakes are the TV, and while the check
             // is pending `unnamed` is false.
             && (named || conversation.wake_named() == Some(true) || self.talk_reply(request))

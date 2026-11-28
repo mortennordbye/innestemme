@@ -1676,6 +1676,19 @@ fn open_talk_after_a_wake_word_with_the_name_goes_to_the_chat_model() {
     assert_eq!(said(dialog.say("give me a cookie recipe")), "Butter, sugar and flour.");
 }
 
+/// 28 November 2026: "Hey Jarvis" and a breath, heard as "Oh", got chamomile tea from the chat
+/// model. Sounds alone get no reply, and the device listens on for the request.
+#[test]
+fn a_sound_after_a_wake_word_with_the_name_gets_no_reply() {
+    let chat = FakeChat::new("Perhaps a nice cup of chamomile tea would be soothing.");
+    let mut dialog = chat.dialog(None);
+    dialog.worker.conversation.wake = Some(Wake { at: Instant::now() - Duration::from_secs(2), named: Some(true) });
+    assert_eq!(dialog.say("Oh."), None);
+    assert_eq!(dialog.say("Hmm, um."), None);
+    assert!(chat.asked.lock().unwrap().is_empty());
+    assert_eq!(said(dialog.say("give me a cookie recipe")), "Perhaps a nice cup of chamomile tea would be soothing.");
+}
+
 #[test]
 fn open_talk_after_a_wake_word_without_the_name_is_the_room() {
     let chat = FakeChat::new("Indeed.");

@@ -14,7 +14,7 @@ use voice_proto::SAMPLE_RATE;
 use crate::activity::Outcome;
 use crate::unhandled::Reason;
 
-use super::follow_up::sounds_like_a_request;
+use super::follow_up::{only_sounds, sounds_like_a_request};
 use super::hush::Hushed;
 use super::{AssistantEvent, Job, Wake, Worker, FOLLOW_UP};
 
@@ -235,6 +235,11 @@ impl Worker {
         let length = Duration::from_secs_f32(audio.len() as f32 / SAMPLE_RATE as f32);
         let began = ended.checked_sub(length);
         if length < WAKE_TAIL_LONGEST && began.is_none_or(|began| began < woken + WAKE_TAIL) {
+            return;
+        }
+        // A breath after the wake word: the device still listens for the request.
+        if only_sounds(text) {
+            info!(text, "only sounds; no reply");
             return;
         }
         // A long stretch of words after a wake is the TV or a conversation, not a request: no reply
