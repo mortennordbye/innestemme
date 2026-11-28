@@ -142,6 +142,18 @@ impl Persona {
         &self.honorifics
     }
 
+    /// A chat answer for whoever is speaking now: the chat model's prompt always says one
+    /// honorific, as a prompt that changed with each voice made the server read all of it again
+    /// (2.6-3.6 s, 27 Nov). The other honorifics become the current one, or go with no one addressed.
+    pub fn readdress(&self, text: &str) -> String {
+        let mut text = text.to_owned();
+        for other in self.honorifics.iter().filter(|h| !h.is_empty() && **h != self.honorific) {
+            text =
+                if self.honorific.is_empty() { unaddressed(&text, other) } else { swap(&text, other, &self.honorific) };
+        }
+        text
+    }
+
     /// ", sir", or nothing when no one is addressed.
     fn comma(&self) -> String {
         comma(&self.honorific)
@@ -345,6 +357,59 @@ fn with_honorific(sentence: &str, honorific: &str) -> String {
     }
 }
 
+/// "Sir" with a capital, as at the start of a sentence.
+fn capital(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
+/// Each `from` as a whole word, `before` coming right before it, replaced by `to`: "sir" in "sire"
+/// stays.
+fn replace_word(text: &str, before: &str, from: &str, to: &str) -> String {
+    let pattern = format!("{before}{from}");
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(&pattern) {
+        let end = at + pattern.len();
+        let starts = rest[..at].chars().last().is_none_or(|c| !c.is_alphanumeric()) || !before.is_empty();
+        let ends = rest[end..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+        out.push_str(&rest[..at]);
+        out.push_str(if starts && ends { to } else { &rest[at..end] });
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// "Very well, sir." as "Very well, ma'am.", and "Sir, ..." as "Ma'am, ...".
+fn swap(text: &str, from: &str, to: &str) -> String {
+    let text = replace_word(text, "", from, to);
+    replace_word(&text, "", &capital(from), &capital(to))
+}
+
+/// The honorific taken out: "Very well, sir." as "Very well.", "Sir, the lights are on." as "The
+/// lights are on.", "Yes sir." as "Yes.".
+fn unaddressed(text: &str, word: &str) -> String {
+    let mut text = replace_word(text, ", ", word, "");
+    text = replace_word(&text, " ", word, "");
+    let opening = format!("{}, ", capital(word));
+    let mut out = String::new();
+    for sentence in text.split_inclusive(['.', '?', '!']) {
+        let lead = sentence.len() - sentence.trim_start().len();
+        let (space, body) = sentence.split_at(lead);
+        match body.strip_prefix(&opening) {
+            Some(rest) => {
+                out.push_str(space);
+                out.push_str(&capital(rest));
+            }
+            // "Sir." said as a sentence of its own.
+            None if body.eq_ignore_ascii_case(&format!("{word}.")) => {}
+            None => out.push_str(sentence),
+        }
+    }
+    out.trim().to_owned()
+}
+
 fn has_word(text: &str, word: &str) -> bool {
     text.split(|c: char| !c.is_alphanumeric()).any(|w| w.eq_ignore_ascii_case(word))
 }
@@ -488,6 +553,22 @@ mod tests {
         // An answer that already says "sir" is left alone for her too.
         p.address("ma'am");
         assert_eq!(p.style("Very well, sir.", NIGHT), "Very well, sir.");
+    }
+
+    /// The chat model's prompt says "sir" for everyone: its answers are readdressed.
+    #[test]
+    fn a_chat_answer_is_readdressed() {
+        let mut p = Persona::with_seed("sir", 1).with_others(&["ma'am", ""]);
+        let answer = "Sir, it is late. That sounds quite vexing, sir. Have you tried tea, sir? Yes sir. Sire.";
+        assert_eq!(p.readdress(answer), answer);
+        p.address("ma'am");
+        assert_eq!(
+            p.readdress(answer),
+            "Ma'am, it is late. That sounds quite vexing, ma'am. Have you tried tea, ma'am? Yes ma'am. Sire."
+        );
+        p.address("");
+        assert_eq!(p.readdress(answer), "It is late. That sounds quite vexing. Have you tried tea? Yes. Sire.");
+        assert_eq!(p.readdress("I see, sir. Sir."), "I see.");
     }
 
     #[test]

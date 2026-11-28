@@ -108,6 +108,9 @@ room, a request is its own, and an answer ("Not at all.", "No.", "Okay.") is not
 speaker embedding model (3D-Speaker's CAM++, through sherpa-onnx) and a logistic regression on it that says how
 female the voice sounds. It runs on a thread of its own as the device wakes, about 20 ms on an M4 Pro, and is
 done long before the answer is worded, so it adds no time. Below 0.85 either way the answer has no honorific.
+The chat model's prompt always says `honorific` ("sir"), and the engine turns each sentence of its answer to the
+voice's honorific before it is spoken: a prompt that changed with the voice made the server read all of it again
+(2.6-3.6 s, 27 Nov).
 Follow-ups keep the wake word's verdict; the device's own wake word, which sends no audio, gets none. The
 classifier is trained on LibriSpeech by `examples/voice_gender_train.rs`, and `examples/voice_gender.rs` scores
 recordings.

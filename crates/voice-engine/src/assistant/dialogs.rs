@@ -1755,6 +1755,25 @@ fn a_chat_goes_on_without_the_name_for_one_reply() {
     assert_eq!(chat.asked.lock().unwrap().len(), 4);
 }
 
+/// 27 November 2026: the prompt said "sir", "ma'am" or nothing by the voice of each wake word, and
+/// each change made the server read all of it again (7 s to the first sentence). It says "sir" for
+/// everyone now, and the answer is turned to whoever speaks.
+#[test]
+fn a_chat_answer_addresses_whoever_speaks_with_one_prompt() {
+    let chat = FakeChat::new("Very well, sir. Sleep well.");
+    let mut dialog = chat.dialog(None);
+    dialog.worker.config.honorific = Some("sir".into());
+    let mut persona = voice_assistant::persona::Persona::new("sir").with_others(&["ma'am", ""]);
+    persona.address("ma'am");
+    dialog.worker.persona = Some(persona);
+    assert_eq!(said(dialog.say("Jarvis, I feel safe.")), "Very well, ma'am.");
+    let ma_am = chat.last_messages()[0]["content"].as_str().unwrap().to_owned();
+    assert!(ma_am.contains("Address the person as \"sir\""), "{ma_am}");
+    dialog.worker.persona.as_mut().unwrap().address("");
+    assert_eq!(said(dialog.say("Jarvis, I feel safe.")), "Very well.");
+    assert_eq!(chat.last_messages()[0]["content"].as_str().unwrap(), ma_am);
+}
+
 /// 27 November 2026: "Turn off the sticks." went to the chat model, which said "The sticks are
 /// currently positioned where they need to be.": a command no rule takes is not talk.
 #[test]
