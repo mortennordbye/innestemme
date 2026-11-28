@@ -74,7 +74,7 @@ use crate::screen::Screen;
 use crate::unhandled::{Reason, UnhandledLog};
 
 use conversation::{AfterAnswer, Awaiting, Conversation, PendingChoice, PendingRetry, TurnEnd, Wake};
-use follow_up::room_talk;
+use follow_up::{only_sounds, room_talk};
 use home::confirmation;
 use hush::{HUSH_CAP, HUSH_QUIET};
 use leads::capitalize;
@@ -805,7 +805,7 @@ impl Worker {
         let unnamed = self.conversation.unnamed();
         // Open talk after a wake word with the name, or a reply to an answer for the chat model.
         let named_wake = self.conversation.wake.is_some() && !unnamed && self.config.talk.is_some();
-        let talk_on = !addressed && unknown && (named_wake || self.talk_reply(&as_heard));
+        let talk_on = !addressed && unknown && !only_sounds(&as_heard) && (named_wake || self.talk_reply(&as_heard));
         // A chat reply has a word limit of its own: "No I'm feeling sick like I'm not feeling well."
         // was 9 words that do not open like a request (23 Nov).
         let room = !addressed && (self.conversation.wake.is_none() || unnamed) && room_talk(&as_heard) && !talk_on;

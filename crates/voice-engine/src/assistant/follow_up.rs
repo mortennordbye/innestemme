@@ -114,6 +114,16 @@ const REQUEST_OPENINGS: &[&str] = &[
 const REQUEST_FILLER: &[&str] =
     &["hey", "hi", "ok", "okay", "please", "so", "um", "uh", "oh", "and", "now", "just", "hei", "kjære"];
 
+/// Sounds, not words: what Parakeet hears in a breath or the end of the wake word.
+const SOUNDS: &[&str] =
+    &["oh", "ah", "uh", "um", "umm", "hm", "hmm", "mm", "mhm", "er", "erm", "eh", "huh", "ooh", "aah"];
+
+/// Whether `text` holds only sounds. "Hey Jarvis" and a breath was heard as "Oh", and the chat
+/// model answered it with chamomile tea (28 Nov).
+pub(super) fn only_sounds(text: &str) -> bool {
+    voice_assistant::dialog::words(text).iter().all(|w| SOUNDS.contains(&w.as_str()))
+}
+
 /// Words that open a command for the house, not talk: what no rule takes with one of them is a
 /// command misheard, and the chat model would pretend to do it ("Turn off the sticks." got "The
 /// sticks are currently positioned where they need to be.", 27 Nov).
