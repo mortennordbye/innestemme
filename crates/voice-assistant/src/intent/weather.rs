@@ -237,15 +237,24 @@ pub(super) fn wants_clothes(words: &[String]) -> bool {
     any(CLOTHES) && any(CLOTHES_VERBS)
 }
 
+/// Verbs after "I" that make it the English pronoun.
+const ENGLISH_VERBS: &[&str] = &[
+    "don't", "dont", "do", "did", "didn't", "am", "was", "think", "know", "want", "need", "guess", "mean", "have",
+    "will", "would", "can", "can't", "just", "really",
+];
+
 /// Where a weather question asks about: the name after the last place marker, without times;
 /// `None` for the home.
 pub(super) fn place_of(words: &[String]) -> Option<String> {
     let time = |w: &str| TIME_WORDS.contains(&w.trim_end_matches("'s")) || w.starts_with(|c: char| c.is_ascii_digit());
     // "I" first or after these is the English pronoun, not the Norwegian "in": "I always do weather
     // today", "do I need an umbrella".
+    // Before an English verb too: "What's the temperature raising? I don't know." took "don't
+    // know" as the place (25 Nov).
     let pronoun = |i: usize| {
         i == 0
             || ["do", "should", "will", "can", "shall", "would", "could", "must", "if"].contains(&words[i - 1].as_str())
+            || words.get(i + 1).is_some_and(|next| ENGLISH_VERBS.contains(&next.as_str()))
     };
     let place = words
         .iter()
@@ -360,6 +369,14 @@ pub(super) mod tests {
     }
 
     /// Places Parakeet heard wrong stay places; the geocoder and the sound-alike check sort them out.
+    #[test]
+    fn i_before_a_verb_is_no_place() {
+        let words = |t: &str| crate::dialog::words(t);
+        assert_eq!(place_of(&words("What's the temperature raising? I don't know.")), None);
+        assert_eq!(place_of(&words("what's the weather i think")), None);
+        assert_eq!(place_of(&words("hva er været i Bergen")).as_deref(), Some("bergen"));
+    }
+
     #[test]
     fn misheard_places_stay_places() {
         assert_eq!(parse("How is the weather in us of tomorrow?"), weather(Some("us of"), Day::Tomorrow));

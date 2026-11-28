@@ -133,6 +133,20 @@ fn related(topic: &str, title: &str) -> bool {
     stems(topic).iter().any(|t| title.contains(t))
 }
 
+/// Short words of a topic that an article need not hold.
+const MINOR: &[&str] = &["and", "for", "the", "with", "from", "about", "its", "his", "her", "og", "med", "fra", "om"];
+
+/// Whether `text` holds each word of `topic`, by its first four letters.
+fn fits(topic: &str, text: &str) -> bool {
+    let stem = |w: String| -> String { w.chars().take(4).collect() };
+    let text: Vec<String> = text.split_whitespace().map(normalize).map(stem).collect();
+    topic
+        .split_whitespace()
+        .map(normalize)
+        .filter(|w| w.chars().count() >= 3 && !ARTICLES.contains(&w.as_str()) && !MINOR.contains(&w.as_str()))
+        .all(|w| text.contains(&stem(w)))
+}
+
 pub struct Lookup {
     agent: ureq::Agent,
     /// Where Wikipedia is asked instead, for tests: they must not reach the real site.
@@ -183,7 +197,9 @@ impl Lookup {
             // A hit that shares no word with the topic is a misheard request ("what's the clap
             // shoe" found a murder case), not an answer to it.
             for title in self.search(root, topic)?.into_iter().filter(|t| related(topic, t)) {
-                extract = self.summary(root, &title)?;
+                // One shared word is too little: "Norwegian International Day" found International
+                // Men's Day (25 Nov). Each word of the topic is in the hit's title or its summary.
+                extract = self.summary(root, &title)?.filter(|text| fits(topic, &format!("{title} {text}")));
                 if extract.is_some() {
                     break;
                 }
@@ -306,6 +322,15 @@ mod tests {
         assert!(related("norwegian krone", "Norway"));
         assert!(related("jonas gahr støre", "Jonas Gahr Støre"));
         assert!(!related("clap shoe", "Danilo Restivo"));
+    }
+
+    #[test]
+    fn a_search_hit_holds_each_word_of_the_topic() {
+        assert!(fits("black holes", "Black hole A black hole is a region of spacetime."));
+        assert!(fits("jonas gahr støre", "Jonas Gahr Støre Jonas Gahr Støre is a Norwegian politician."));
+        // 25 November 2026.
+        assert!(!fits("Norwegian International Day", "International Men's Day International Men's Day is a day."));
+        assert!(!fits("national play in Norway", "Norway national football team The team represents Norway."));
     }
 
     #[test]
