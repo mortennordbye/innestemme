@@ -142,7 +142,10 @@ keeps its own answer). After a chat or small talk answer, after any answer to a 
 after the name said alone ("Jarvis."), the follow-up window takes a reply without the name that no rule takes ("I feel sick." after the morning briefing; said alone, "I feel safe." is read as "I feel sick.", a known
 mishearing, log `chat request put right`), so a
 conversation can go on. Such a reply has at most 12 words, a sentence said twice counted once; the 8-word room-talk filter does not apply to it, and the
-echo filter does. In such a conversation an echo is a run of words from the end of the answer ("Sir.", "Reality of this
+echo filter does. Only one such reply in a row goes on: after it, the name is needed again, as the TV in each
+follow-up window kept a chat going for 3 to 6 answers (27 Nov). Words that open like a command for the house
+("turn", "switch", "play", "pause", "volume", ...) and that no rule takes never go to the chat model, which would
+pretend to do them; the answer is "Sorry, I didn't get that." In such a conversation an echo is a run of words from the end of the answer ("Sir.", "Reality of this
 home."), not any of the words said lately, as a chat answer has so many that "Tell me." counted as one. The prompt gives the model a personality
 with examples of its manner: with rules alone, Gemma refused recipes and said it had no preferences. A
 phone or Assist gets the answer as words. When the model is down, the rules' fallback answers. Once a minute in

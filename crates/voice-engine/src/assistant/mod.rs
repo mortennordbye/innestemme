@@ -710,6 +710,7 @@ impl Worker {
                 // The window of an earlier answer is over; this one was opened by the name, so what
                 // no rule takes in it goes to the chat model, as after "Jarvis, ..." said whole.
                 self.conversation.window_named = true;
+                self.conversation.turns_unnamed = 0;
                 self.emit(AssistantEvent::Listening);
                 self.hush();
                 self.play(&tts::wake_chime());
@@ -1024,6 +1025,15 @@ impl Worker {
         }
         let small_talk = matches!(intent, Intent::SmallTalk(kind) if kind != voice_assistant::smalltalk::Chat::Goodbye);
         let to_model = intent == Intent::Unknown || (small_talk && self.talking_with_model());
+        if intent == Intent::Unknown && self.config.llm.is_none() && follow_up::sounds_like_a_command(text) {
+            self.unhandled(Reason::Unknown, text, None);
+            let sorry = if lang == Lang::Norwegian {
+                "Beklager, det fikk jeg ikke med meg."
+            } else {
+                "Sorry, I didn't get that."
+            };
+            return Some(sorry.into());
+        }
         if to_model && self.config.llm.is_none() {
             if let Some(answer) = self.converse(text, lang) {
                 return Some(answer);

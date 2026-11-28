@@ -114,6 +114,24 @@ const REQUEST_OPENINGS: &[&str] = &[
 const REQUEST_FILLER: &[&str] =
     &["hey", "hi", "ok", "okay", "please", "so", "um", "uh", "oh", "and", "now", "just", "hei", "kjære"];
 
+/// Words that open a command for the house, not talk: what no rule takes with one of them is a
+/// command misheard, and the chat model would pretend to do it ("Turn off the sticks." got "The
+/// sticks are currently positioned where they need to be.", 27 Nov).
+const COMMAND_OPENINGS: &[&str] = &[
+    "turn", "switch", "dim", "brighten", "play", "pause", "resume", "skip", "mute", "unmute", "volume", "louder",
+    "quieter", "lock", "unlock", "arm", "disarm", "shuffle", "slå", "skru", "spill",
+];
+/// Asking words before a command: "can you turn off ...".
+const COMMAND_POLITE: &[&str] = &["can", "could", "would", "will", "you", "kan", "du"];
+
+/// Whether unrecognised words open like a command for the house.
+pub(super) fn sounds_like_a_command(text: &str) -> bool {
+    text.split_whitespace()
+        .map(voice_assistant::dialog::normalize)
+        .find(|w| !w.is_empty() && !REQUEST_FILLER.contains(&w.as_str()) && !COMMAND_POLITE.contains(&w.as_str()))
+        .is_some_and(|w| COMMAND_OPENINGS.contains(&w.as_str()))
+}
+
 /// Words in a follow-up without the name, past which it has to open like a request: a long
 /// sentence that does not is the TV or the room.
 const FOLLOW_UP_MOST_WORDS: usize = 8;
@@ -312,6 +330,16 @@ mod tests {
                     Heather Barnett in Bournemouth, England, in November 2002.";
         assert!(is_echo(&[wiki], "With a 40 year tariff for murdering his barn it 40 stop"));
         assert!(!is_echo(&["Tomorrow in Oslo: heavy rain, 3 to 6 degrees."], "And what about tomorrow in Bergen?"));
+    }
+
+    #[test]
+    fn commands_by_their_opening() {
+        assert!(sounds_like_a_command("Turn off the sticks."));
+        assert!(sounds_like_a_command("Can you please turn on the kitchen?"));
+        assert!(sounds_like_a_command("Okay, play something nice."));
+        assert!(!sounds_like_a_command("Tell me a joke."));
+        assert!(!sounds_like_a_command("How are you feeling?"));
+        assert!(!sounds_like_a_command("I feel sick."));
     }
 
     #[test]
