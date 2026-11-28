@@ -24,6 +24,8 @@ use crate::unhandled::Reason;
 
 /// The longest reply without the name that goes on with a conversation: longer is the room or the TV.
 const TALK_REPLY_WORDS: usize = 12;
+/// How many answered turns in a row without the name a chat goes on for.
+const TALK_REPLIES_UNNAMED: u8 = 1;
 /// How long after the lead-in has played a quiet chat model gets a filler ("Let me see."): a pause
 /// longer than this reads as the assistant having stopped.
 const FILLER_AFTER: Duration = Duration::from_millis(400);
@@ -321,6 +323,7 @@ impl Worker {
             && self.config.llm.is_none()
             && !self.previewing
             && self.awaiting().is_none()
+            && !super::follow_up::sounds_like_a_command(request)
             // A wake counts once its name check said yes: most wakes are the TV, and while the check
             // is pending `unnamed` is false.
             && (named || conversation.wake_named() == Some(true) || self.talk_reply(request))
@@ -347,6 +350,9 @@ impl Worker {
     /// not that answer heard back.
     pub(super) fn talk_reply(&self, heard: &str) -> bool {
         let short = words_said_once(heard) <= TALK_REPLY_WORDS;
+        if self.conversation.turns_unnamed >= TALK_REPLIES_UNNAMED {
+            return false;
+        }
         if self.in_talk() {
             return short && !self.tail_echo(heard);
         }

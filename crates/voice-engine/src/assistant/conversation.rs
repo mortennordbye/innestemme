@@ -178,6 +178,9 @@ pub(super) struct Conversation {
     /// The follow-up window is after an answer to a request said with the name: a reply without
     /// the name may go to the chat model. Each turn's end sets it, so an older turn never counts.
     pub(super) window_named: bool,
+    /// Answered turns since a request was last said with the name. The TV in the follow-up window
+    /// kept a chat going for 3 to 6 answers (27 Nov), so only the first reply goes on without it.
+    pub(super) turns_unnamed: u8,
     /// The chat model last answered at this time, whatever answered since.
     pub(super) model_talk: Option<Instant>,
     /// The history was cut since the chat model's cache was last read again.
@@ -376,7 +379,13 @@ impl Worker {
     /// for it, and the wake that opened it.
     pub(super) fn end_turn(&mut self, end: TurnEnd) {
         let open = !std::mem::take(&mut self.conversation.follow_up_closed);
-        self.conversation.window_named = std::mem::take(&mut self.request_addressed);
+        let named = std::mem::take(&mut self.request_addressed);
+        self.conversation.window_named = named;
+        if named {
+            self.conversation.turns_unnamed = 0;
+        } else if !matches!(end, TurnEnd::Silent) {
+            self.conversation.turns_unnamed = self.conversation.turns_unnamed.saturating_add(1);
+        }
         let window = |after: Duration| open.then(|| Instant::now() + after + FOLLOW_UP);
         match end {
             TurnEnd::Silent => {

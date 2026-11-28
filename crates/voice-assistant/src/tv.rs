@@ -166,17 +166,26 @@ const TITLE_START: &[&str] =
 /// Words before a show's name that only say which episode: Plex plays the next one anyway.
 const NEXT_EPISODE: &[&str] = &["the", "next", "new", "latest", "episode", "of", "neste", "episode", "av"];
 
+/// How the speech-to-text hears "Plex" at the end of a request: "turn on Harry Potter one on
+/// plagues" (27 Nov).
+const PLEX_HEARD: &[&str] = &["plex", "plagues"];
+
 /// "Put on Exit on NRK", "play Skam on NRK TV", "I want to watch Exit from NRK", "sett på Exit på NRK";
 /// `service` is "nrk" or "plex".
 fn title_on(words: &[String], service: &str) -> Option<String> {
-    let at = words.iter().position(|w| w == service)?;
+    let heard = |w: &String| if service == "plex" { PLEX_HEARD.contains(&w.as_str()) } else { w == service };
+    let at = words.iter().position(heard)?;
     if at < 2 || !["on", "from", "in", "på", "fra"].contains(&words[at - 1].as_str()) {
         return None;
     }
     let before = &words[..at - 1];
     let start = before.iter().position(|w| !POLITE.contains(&w.as_str()))?;
     let first = before[start].as_str();
-    if !OPEN_WORDS.contains(&first) && !TITLE_START.contains(&first) && !["next", "neste"].contains(&first) {
+    // "Turn on Harry Potter on Plex": "turn" opens a title only with "on" after it.
+    let turn_on = first == "turn" && before.get(start + 1).is_some_and(|w| w == "on");
+    let start = if turn_on { start + 1 } else { start };
+    let opens = OPEN_WORDS.contains(&first) || TITLE_START.contains(&first) || ["next", "neste"].contains(&first);
+    if !turn_on && !opens {
         return None;
     }
     let title: Vec<&str> = before[start..]
@@ -716,6 +725,9 @@ mod tests {
         assert_eq!(tv("put on the next episode of The Office on Plex"), Some(Plex("the office".into())));
         assert_eq!(tv("sett på neste episode av Skam på Plex"), Some(Plex("skam".into())));
         assert_eq!(tv("next episode of The Office on Plex"), Some(Plex("the office".into())));
+        // 27 November 2026, as heard.
+        assert_eq!(tv("Turn on Harry Potter one on plagues."), Some(Plex("harry potter one".into())));
+        assert_eq!(tv("turn on The Office on Plex"), Some(Plex("the office".into())));
         assert_eq!(tv("open Plex"), Some(App("plex".into())));
         assert_eq!(tv("put NRK on the TV"), Some(App("nrk".into())));
         assert_eq!(tv("put on NRK"), Some(App("nrk".into())));

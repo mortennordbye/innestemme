@@ -1738,6 +1738,45 @@ fn open_talk_after_small_talk_goes_on_without_the_name() {
     assert_eq!(said(dialog.say("Can you tell me a poem?")), "The sea is wide.");
 }
 
+/// 27 November 2026: the TV in each follow-up window kept a chat going for 3 to 6 answers ("Hi
+/// Moscasia. Hi Scott.", "Sama Sam.", "It's again on his head again."). One reply goes on without the
+/// name; after that the name is needed again.
+#[test]
+fn a_chat_goes_on_without_the_name_for_one_reply() {
+    let chat = FakeChat::new("Indeed, sir.");
+    let mut dialog = chat.dialog(None);
+    assert_eq!(said(dialog.say("Jarvis, easy things cut off the east.")), "Indeed, sir.");
+    assert_eq!(said(dialog.say("Hi Moscasia. Hi Scott.")), "Indeed, sir.");
+    assert_eq!(dialog.say("Sama Sam."), None);
+    assert_eq!(chat.asked.lock().unwrap().len(), 2);
+    // The name again opens one more reply.
+    assert_eq!(said(dialog.say("Jarvis, I feel safe.")), "Indeed, sir.");
+    assert_eq!(said(dialog.say("Not at home though.")), "Indeed, sir.");
+    assert_eq!(chat.asked.lock().unwrap().len(), 4);
+}
+
+/// 27 November 2026: "Turn off the sticks." went to the chat model, which said "The sticks are
+/// currently positioned where they need to be.": a command no rule takes is not talk.
+#[test]
+fn a_misheard_command_does_not_go_to_the_chat_model() {
+    let chat = FakeChat::new("The sticks are currently positioned where they need to be.");
+    let mut dialog = chat.dialog(None);
+    assert_eq!(said(dialog.say("Jarvis, turn off the sticks.")), "Sorry, I didn't get that.");
+    assert!(chat.asked.lock().unwrap().is_empty());
+}
+
+/// 27 November 2026: "Cole it's a very flaxy deck outside." from the TV after the weather was
+/// answered by the chat model, and the TV's next words went on with it.
+#[test]
+fn after_a_skill_answer_one_reply_goes_to_the_chat_model() {
+    let chat = FakeChat::new("Quite so, sir.");
+    let mut dialog = chat.dialog(None);
+    assert_eq!(said(dialog.say("Jarvis, what time is it")), time_of_day(Lang::English));
+    assert_eq!(said(dialog.say("Cole it's a very flaxy deck outside.")), "Quite so, sir.");
+    assert_eq!(dialog.say("Other in this climate."), None);
+    assert_eq!(chat.asked.lock().unwrap().len(), 1);
+}
+
 /// 22 November 2026: "Sir." from the end of "What sort of cookies are you in the mood for, sir?"
 /// was answered.
 #[test]
@@ -1759,7 +1798,7 @@ fn a_short_reply_in_words_said_earlier_goes_on() {
     let mut dialog = chat.dialog(None);
     assert!(dialog.say("Jarvis, I want").is_some());
     *chat.reply.lock().unwrap() = "Psalm 23 is rather profound. It speaks of comfort.";
-    assert!(dialog.say("What is your favourite Bible quote?").is_some());
+    assert!(dialog.say("Jarvis, what is your favourite Bible quote?").is_some());
     assert!(dialog.say("Tell me.").is_some());
     assert_eq!(chat.asked.lock().unwrap().len(), 3);
 }
