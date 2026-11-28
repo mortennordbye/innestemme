@@ -1063,7 +1063,42 @@ impl Worker {
                 }
             }
         }
+        if let Intent::Lookup(topic) = &intent {
+            return Some(self.look_up(topic, Some(text), lang));
+        }
         self.act(intent, lang)
+    }
+
+    /// The article about `topic`. With no article that fits, the chat model answers `request`
+    /// when there is one: "What is the Norwegian International Day?" found International Men's
+    /// Day, where the model knows 17 May (25 Nov).
+    fn look_up(&mut self, topic: &str, request: Option<&str>, lang: Lang) -> String {
+        let no = lang == Lang::Norwegian;
+        match self.lookup.answer(topic, lang) {
+            Ok(Some(answer)) => {
+                // An article's sentences change rarely but are endless: not for the speech cache.
+                let sentences = answer.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty());
+                self.live.extend(sentences.map(str::to_owned));
+                answer
+            }
+            Ok(None) => {
+                let talked = request.filter(|_| self.config.llm.is_none()).and_then(|text| self.converse(text, lang));
+                match talked {
+                    Some(answer) => answer,
+                    None if no => format!("Beklager, jeg fant ingenting om {topic}."),
+                    None => format!("Sorry, I couldn't find anything about {topic}."),
+                }
+            }
+            Err(error) => {
+                warn!(error = format!("{error:#}"), "lookup failed");
+                if no {
+                    "Beklager, jeg får ikke slått det opp nå."
+                } else {
+                    "Sorry, I couldn't look that up right now."
+                }
+                .into()
+            }
+        }
     }
 
     /// The answer to the question asked back, when `text` answers it. Whatever was waiting is
@@ -1432,25 +1467,7 @@ impl Worker {
                 answer
             }
             Intent::Briefing => self.briefing(lang),
-            Intent::Lookup(topic) => match self.lookup.answer(&topic, lang) {
-                Ok(Some(answer)) => {
-                    // An article's sentences change rarely but are endless: not for the speech cache.
-                    let sentences = answer.split_inclusive(['.', '?', '!']).map(str::trim).filter(|s| !s.is_empty());
-                    self.live.extend(sentences.map(str::to_owned));
-                    answer
-                }
-                Ok(None) if no => format!("Beklager, jeg fant ingenting om {topic}."),
-                Ok(None) => format!("Sorry, I couldn't find anything about {topic}."),
-                Err(error) => {
-                    warn!(error = format!("{error:#}"), "lookup failed");
-                    if no {
-                        "Beklager, jeg får ikke slått det opp nå."
-                    } else {
-                        "Sorry, I couldn't look that up right now."
-                    }
-                    .into()
-                }
-            },
+            Intent::Lookup(topic) => self.look_up(&topic, None, lang),
             Intent::News => match self.news.answer(lang) {
                 Ok(headlines) => {
                     self.live.extend(headlines.live);

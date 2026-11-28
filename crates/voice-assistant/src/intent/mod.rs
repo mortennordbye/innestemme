@@ -122,6 +122,17 @@ fn is_news(words: &[String]) -> bool {
     words.iter().any(|w| news.contains(&w.as_str())) && !words.windows(2).any(|p| p[0] == "good" && p[1] == "news")
 }
 
+/// "Turn off the news", "stop the news", "switch the news off": a request to end it.
+fn ends_the_news(words: &[String]) -> bool {
+    let has = |w: &str| words.iter().any(|x| x == w);
+    let first = words.iter().map(String::as_str).find(|w| !["please", "can", "could", "you", "just"].contains(w));
+    match first {
+        Some("turn" | "switch" | "shut") => has("off"),
+        Some("stop") => true,
+        _ => false,
+    }
+}
+
 fn is_briefing(words: &[String]) -> bool {
     let phrase: Vec<&str> = words
         .iter()
@@ -401,6 +412,10 @@ fn rules(text: &str, notes: bool) -> Intent {
             return Intent::Briefing;
         }
         if is_news(&words) {
+            // "Turn off the news" is the TV's news, never a reading of it (27 Nov).
+            if ends_the_news(&words) {
+                return Intent::Tv(TvCommand::Power(false));
+            }
             return Intent::News;
         }
         if let Some(query) = crate::distance::parse(text) {
@@ -696,6 +711,12 @@ mod tests {
         assert!(matches!(parse("How long is it from Oslo to Shanghai?"), Intent::Distance(_)));
         assert_eq!(parse("Can you look up Edvard Munch?"), Intent::Lookup("Edvard Munch".into()));
         assert_eq!(parse("read me the headlines"), Intent::News);
+        // 27 November 2026: "Hey Jarvis, turn off the news" would have read the news.
+        let tv_off = Intent::Tv(TvCommand::Power(false));
+        assert_eq!(parse("Turn off the news."), tv_off);
+        assert_eq!(parse("Can you switch the news off?"), tv_off);
+        assert_eq!(parse("Stop the news."), tv_off);
+        assert_eq!(parse("Turn on the news."), Intent::News);
         assert_eq!(parse("Hva er nyhetene?"), Intent::News);
         assert_eq!(parse("thanks a lot"), Intent::Thanks);
         assert_eq!(parse("Never mind."), Intent::Cancel);

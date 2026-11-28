@@ -83,6 +83,11 @@ a wake, or with the name up to 5 minutes after the last answer, while no questio
 filters still apply, and "never mind" ends the topic. While a party plays and nothing asked back waits, "<verb> the
 party" with a known sound-alike of "stop" ("shop the party", "drop the party") stops it; "join the party" or cheering does not.
 
+**Look-ups.** The exact article comes first; else a search hit counts only when each main word of the topic is
+in its title or its first sentences ("Norwegian International Day" found International Men's Day, 25 Nov). With
+no article that fits, the chat model answers the request when there is one; without it, "Sorry, I couldn't find
+anything about ...". "Turn off the news" and "stop the news" turn off the TV and never start the news reading.
+
 **Ask when unsure.** The look-up takes every "what is ..." that no other rule takes, so a misheard skill word went
 to Wikipedia ("What's therapy?" right after a temperature question). The transcriber gives one transcript, so the
 only sign of doubt is a topic that sounds like a skill word. `sound_alike.rs` keeps a short table of what the

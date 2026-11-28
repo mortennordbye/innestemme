@@ -67,13 +67,15 @@ pub fn is_stop(text: &str) -> bool {
 
 /// Ways transcribers write known names. An explicit list rather than an edit distance, which would
 /// also match common words. For Freya, "fredag" (Friday) and "fela" (fiddle) are close
-/// mishearings but everyday Norwegian, so they are left out; for Homie, so is "home".
+/// mishearings but everyday Norwegian, so they are left out; for Homie, so is "home". "Dorvis" is
+/// from the name check (27 Nov).
 const SPELLINGS: &[(&str, &[&str])] = &[
     (
         "jarvis",
         &[
             "jarvis", "jarvis's", "jarvis'", "jarris", "jervis", "jarvus", "jarviss", "jarves", "javis", "jaris",
-            "jarvas", "jarviz", "jarvice", "jarbis", "charvis", "jervis's", "darvis", "jargis", "ajaris",
+            "jarvas", "jarviz", "jarvice", "jarbis", "charvis", "jervis's", "darvis", "jargis", "ajaris", "dorvis",
+            "dravis",
         ],
     ),
     ("homie", &["homie", "homies", "homie's", "homey", "homy", "homi", "hommie", "homee", "homeie"]),
@@ -321,6 +323,8 @@ mod tests {
             "Ajaris",
             "Hey Doris.",
             "Hey James.",
+            // The name check, 27 Nov.
+            "Scratch. Hey Dorvis.",
         ] {
             assert!(wake.in_wake_word(heard), "{heard}");
         }

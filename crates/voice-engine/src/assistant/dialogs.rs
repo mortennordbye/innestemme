@@ -144,8 +144,15 @@ fn answer(path: &str, data: Value, house: &mut House) -> (&'static str, String) 
         return ("200 OK", rendered);
     }
     // Wikipedia's article summaries, served beside Home Assistant: every topic has an article.
+    // A topic with no article of its own, whose search finds one that shares a word with it.
+    if path.starts_with("/w/api.php") {
+        return ("200 OK", json!({ "query": { "search": [{ "title": "International Men's Day" }] } }).to_string());
+    }
     if let Some(title) = path.strip_prefix("/api/rest_v1/page/summary/") {
-        let title = title.replace('_', " ");
+        let title = title.replace('_', " ").replace("%27", "'");
+        if title.eq_ignore_ascii_case("norwegian international day") {
+            return ("404 Not Found", "{}".into());
+        }
         return ("200 OK", json!({ "type": "standard", "extract": format!("{title} is a test article.") }).to_string());
     }
     let Some(service) = path.strip_prefix("/api/services/") else { return ("404 Not Found", "{}".into()) };
@@ -1145,6 +1152,22 @@ fn other_words_after_the_choice_are_a_new_request() {
     assert_eq!(said(dialog.say("Jarvis, what time is it")), time_of_day(Lang::English));
     assert_eq!(dialog.worker.awaiting(), None);
     assert!(dialog.worker.conversation.pending_choice.is_none());
+}
+
+/// 25 November 2026: "What is the Norwegian International Day?" got International Men's Day, a
+/// search hit that shared one word with it. No article fits, so the chat model answers.
+#[test]
+fn a_search_hit_without_the_topic_goes_to_the_chat_model() {
+    let ha = FakeHa::new();
+    let chat = FakeChat::new("Norway's national day is the 17th of May.");
+    let mut dialog = chat.dialog(Some(&ha));
+    let answer = said(dialog.say("Jarvis, what is the Norwegian International Day?"));
+    assert_eq!(answer, "Norway's national day is the 17th of May.");
+    assert_eq!(last_asked(&chat), "what is the Norwegian International Day?");
+    // Without a chat model the answer is that nothing was found, not the other article.
+    let mut dialog = Dialog::new(Some(&ha));
+    let answer = said(dialog.say("Jarvis, what is the Norwegian International Day?"));
+    assert!(answer.starts_with("Sorry, I couldn't find anything about"), "{answer}");
 }
 
 #[test]
