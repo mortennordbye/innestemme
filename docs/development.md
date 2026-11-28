@@ -49,6 +49,7 @@ recordings in `target/utterances`. Say so before anything plays on the real spea
 |---|---|
 | `cargo run -p voice-assistant --example home -- "what's on the shopping list"` | one home request through the rules and Home Assistant, without audio; scenes, scripts, light levels, phones and the TV only act with `RUN=1`, shopping list changes always do |
 | `cargo run --release -p voice-assistant --example llm_eval -- <url> <model>` | the language model's accuracy and latency on fixed cases |
+| `cargo run --release -p voice-assistant --example talk_eval -- <url> gemma4:e2b-it-qat scripts/talk/requests.txt` | how many chat answers end with a question, on requests from the logs |
 | `cargo run --release -p voice-assistant --example wake_score -- hey_jarvis target/utterances/run-*.wav` | openWakeWord's score on recordings, to pick `wake-threshold` |
 | `cargo run --release -p voice-assistant --example wake_text -- hey_jarvis target/utterances/run-*.wav` | what Parakeet hears in each wake word |
 | `cargo run --release -p voice-assistant --example stt_eval -- target/utterances/utterance-*.wav` | Whisper's transcripts and times; `stt_score` scores lists against a reference |

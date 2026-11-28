@@ -188,6 +188,7 @@ impl Worker {
             };
             match next {
                 Ok(sentence) => {
+                    let sentence = self.readdressed(&sentence);
                     filler_at = None;
                     first.get_or_insert_with(|| start.elapsed());
                     if aloud {
@@ -234,8 +235,9 @@ impl Worker {
                     tokens_per_second = format!("{:.1}", answered.speed()),
                     "chat model answered"
                 );
-                self.unhandled(Reason::LanguageModel, text, Some(&answered.said));
-                (answered.said, answered.raw)
+                let said = self.readdressed(&answered.said);
+                self.unhandled(Reason::LanguageModel, text, Some(&said));
+                (said, answered.raw)
             }
             failed => {
                 match failed {
@@ -363,6 +365,11 @@ impl Worker {
         after_named && short && !self.echo(heard)
     }
 
+    /// The chat model's words for whoever is speaking now.
+    fn readdressed(&self, text: &str) -> String {
+        self.persona.as_ref().map_or_else(|| text.to_owned(), |persona| persona.readdress(text))
+    }
+
     /// A conversation with the chat model is going on: its echo filter is `tail_echo`.
     pub(super) fn in_talk(&self) -> bool {
         self.config.talk.is_some()
@@ -382,7 +389,9 @@ impl Worker {
             home: self.config.home.as_deref(),
             room: self.room.as_deref(),
             today: &today,
-            honorific: self.persona.as_ref().map(|persona| persona.honorific()),
+            // One honorific for every voice, so the prompt and the server's cache of it stay the
+            // same; `readdress` turns the answer to whoever speaks.
+            honorific: self.persona.as_ref().and(self.config.honorific.as_deref()),
             people,
             notes: &notes,
         })

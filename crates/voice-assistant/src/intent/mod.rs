@@ -307,11 +307,18 @@ const MISHEARD: &[(&[&str], &[&str])] = &[
     (&["temperature", "in", "size"], &["temperature", "inside"]),
 ];
 
+/// "Lights" as heard at the end of a switch command: "Turn off the kitchen lines." (27 Nov). Only
+/// there, as "lines" is a word of its own elsewhere.
+const LIGHTS_HEARD: &[&str] = &["lines", "lites", "lytes"];
+
 /// The request with known mishearings put right, as normalised words; unchanged when there are none.
 fn corrected(text: &str) -> std::borrow::Cow<'_, str> {
-    let words: Vec<String> = crate::dialog::words(text);
+    let mut words: Vec<String> = crate::dialog::words(text);
+    let switch = words.first().is_some_and(|w| w == "turn" || w == "switch");
+    let lights = words.last_mut().filter(|last| switch && LIGHTS_HEARD.contains(&last.as_str()));
+    let fixed = lights.map(|last| *last = "lights".into()).is_some();
     let mut out: Vec<&str> = Vec::with_capacity(words.len());
-    let (mut i, mut changed) = (0, false);
+    let (mut i, mut changed) = (0, fixed);
     while i < words.len() {
         let rest = &words[i..];
         let fix =
@@ -632,6 +639,10 @@ mod tests {
     fn logged_mishearings() {
         use crate::tv::Screen;
         assert_eq!(parse("Stand out."), Intent::Routine(Routine::StandDown));
+        // 27 November 2026: "lights" as "lines", only at the end of a switch command.
+        let lights = Intent::Lights { on: false, target: "turn off the kitchen lights".into() };
+        assert_eq!(parse("Turn off the kitchen lines."), lights);
+        assert!(!matches!(parse("Read me the lines."), Intent::Lights { .. }));
         assert_eq!(parse("Initially lockdown."), Intent::Routine(Routine::Lockdown));
         assert_eq!(parse("In the shape, lock down."), Intent::Routine(Routine::Lockdown));
         assert_eq!(parse("Is the lockdown still on?"), Intent::Unknown);
